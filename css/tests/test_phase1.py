@@ -599,23 +599,21 @@ def test_reflect_mode_dispatch_plan_a():
     call_systems = []
     def _track(system, user):
         call_systems.append(system[:80])
-        if "success analyst" in system.lower():
-            return '{"rule_attributions": [], "success_patterns": [], "robustness_warnings": []}'
-        if "failure analyst" in system.lower():
-            return '{"failure_patterns": []}'
-        if "contrastive analyst" in system.lower():
-            return '{"contrastive_signals": []}'
-        return '[{"op": "append", "content": "plan_a rule", "reason": "synthesized"}]'
+        # plan_a v2: every unit is a per-minibatch *proposer* that directly emits
+        # an edit list. Return one minimal edit so each minibatch yields a patch.
+        return '{"diagnosis": "d", "edits": [{"op": "add_section", "content": "### T\\nplan_a rule", "rationale": "x"}]}'
 
     client = StubLLMClient(optimizer_fn=_track)
     cfg = CSSConfig(reflect_mode="plan_a", minibatch_size=10)
     results = _make_results_mixed()
     sb = StepBuffer()
     patches = reflect_epoch(client, "# Strategy", "# Rules", results, sb, cfg=cfg)
-    assert len(patches) >= 1  # plan_a returns one patch per generator (default num_generators=3)
-    assert all(p.source_type == "synthesized" for p in patches)
-    # Should have called success, failure, contrastive, AND edit generator (4+ calls)
-    assert len(call_systems) >= 4
+    assert len(patches) >= 1  # plan_a v2 returns one patch per minibatch / contrastive unit
+    # Per-minibatch source types (no more single "synthesized" generator stage).
+    assert all(p.source_type in ("failure", "success", "contrastive") for p in patches)
+    # Each proposer call was made (at least one unit produced an edit).
+    assert len(call_systems) >= 1
+    assert any(p.patch.edits for p in patches)
 
 
 def test_reflect_mode_dispatch_plan_b():

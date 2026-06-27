@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 __all__ = [
     "aggregate_patches",
     "jaccard_dedup_edits",
+    "llm_merge_coordinator",
     "llm_semantic_dedup",
     "select_top_edits",
 ]
@@ -160,6 +161,166 @@ def aggregate_patches(raw_patches: list[RawPatch]) -> Patch:
             f"into {len(edits)} distinct edits"
         ),
     )
+
+
+# ── LLM merge coordinator (one-shot; replaces mechanical aggregate for plan_a v2) ─
+
+_MERGE_COORDINATOR_SYSTEM = """\
+You are a skill-edit coordinator. You receive the CURRENT `rules.md` and several
+independently-proposed edit patches — from different minibatches of failure /
+success / contrastive analysis within ONE optimization step. Merge them into ONE
+coherent, non-redundant, MINIMAL set of edits to `rules.md`.
+
+Rules:
+1. FUSE same-theme edits into ONE best-worded edit; set `support_count` to how many
+   input patches proposed that theme (cross-minibatch agreement = systematic).
+2. GAP-ALIGN against the current `rules.md`: if a theme is already covered by an
+   existing `###` section, emit a `rewrite_section` of that section (target = the
+   existing heading) — never a duplicate `add_section`. If genuinely new, emit
+   `add_section`. For a small change inside an existing section, prefer a refinement
+   op (insert_after / replace / delete).
+3. INDEPENDENCE: at most one output edit per `###` section / text region.
+4. PRIORITY on conflict: failure- and contrastive-driven edits outrank
+   success-driven ones. Never let a success edit weaken or remove a fix the failure
+   / contrastive edits introduce; keep validated success guidance otherwise intact.
+5. PRESERVE unique insights from single patches.
+6. Every output edit is MINIMAL and SINGLE-THEME. Do NOT collapse the set into one
+   giant edit or a rewritten document — output a SET of small, independent edits.
+
+`target` is a SEMANTIC pointer (section heading, or a description / approximate
+quote of the spot); it is resolved by meaning. Op tiers: structural = add_section /
+rewrite_section / delete_section; refinement = insert_after / replace / delete /
+append.
+
+Output ONLY this JSON object (no fences, no prose):
+{
+  "reasoning": "<key consolidation decisions>",
+  "edits": [
+    {"op": "...", "target": "<omit for add_section/append>",
+     "content": "<markdown, ONE theme; omit for delete/delete_section>", "rationale": "<why>",
+     "support_count": <int>, "source_type": "failure|success|contrastive"}
+  ]
+}"""
+
+
+def _section_headings(rules: str) -> str:
+    """A compact list of the current ``###`` section headings (merge context)."""
+    if not rules:
+        return ""
+    heads = [ln.strip() for ln in rules.split("\n") if ln.strip().startswith("### ")]
+    return "\n".join(f"  {i+1}. {h}" for i, h in enumerate(heads))
+
+
+def _edit_from_merge_dict(d: dict) -> Edit | None:
+    """Build an :class:`Edit` from one coordinator-output edit dict (validated)."""
+    from css.data.edit import EDIT_OPS
+
+    op = str(d.get("op", "")).strip().lower()
+    if op not in EDIT_OPS:
+        return None
+    target = str(d.get("target", "") or "")
+    if op in ("insert_after", "replace", "delete", "rewrite_section", "delete_section") and not target:
+        return None
+    try:
+        support = int(d.get("support_count", 1) or 1)
+    except (TypeError, ValueError):
+        support = 1
+    src = d.get("source_type")
+    if src not in ("failure", "success", "contrastive", "synthesized"):
+        src = "failure"
+    return Edit(
+        op=op,  # type: ignore[arg-type]
+        content=str(d.get("content", "") or ""),
+        target=target,
+        support_count=max(1, support),
+        source_type="failure" if src in ("failure", "contrastive", "synthesized") else "success",
+        reason=str(d.get("rationale", "") or d.get("reason", "") or ""),
+    )
+
+
+def llm_merge_coordinator(
+    client: "LLMClient",
+    rules: str,
+    raw_patches: list[RawPatch],
+    *,
+    cfg=None,
+) -> Patch:
+    """One-shot LLM merge of all minibatch patches into a clean, minimal edit set.
+
+    Unlike :func:`aggregate_patches` (which only key-dedups and can never FUSE two
+    differently-worded edits on the same theme), this coordinator reads the current
+    ``rules.md`` plus every proposed edit and returns a SET of small, single-theme,
+    non-overlapping edits — fusing same-theme proposals, gap-aligning against the
+    existing sections (rewrite vs add), enforcing independence, and counting
+    cross-minibatch support.  Degrades to the deterministic
+    :func:`aggregate_patches` on any LLM/parse failure, so the step never stalls.
+    """
+    patches = [rp for rp in raw_patches if rp is not None and rp.patch is not None]
+    proposed: list[dict] = []
+    for rp in patches:
+        for e in rp.patch.edits:
+            if isinstance(e, Edit):
+                proposed.append({
+                    "op": e.op, "target": e.target, "content": e.content,
+                    "rationale": e.reason, "source_type": rp.source_type or e.source_type or "failure",
+                })
+    if not proposed:
+        return Patch(edits=[], reasoning="llm_merge: no proposed edits")
+    # A single proposed edit needs no merge.
+    if len(proposed) == 1:
+        return aggregate_patches(patches)
+
+    user = (
+        "## Current rules.md\n"
+        + (rules.strip() if rules and rules.strip() else "(empty)")
+        + "\n\n## rules.md section index\n"
+        + (_section_headings(rules) or "(none)")
+        + f"\n\n## Proposed edits to merge ({len(proposed)} total)\n"
+        + json.dumps(proposed, ensure_ascii=False, indent=2)
+    )
+    try:
+        text, _usage = client.complete_optimizer(
+            _MERGE_COORDINATOR_SYSTEM, user, max_tokens=8192
+        )
+    except Exception:  # noqa: BLE001
+        return aggregate_patches(patches)
+
+    raw = _parse_merge_output(text)
+    if raw is None:
+        return aggregate_patches(patches)
+    edits: list[Edit] = []
+    for d in raw:
+        e = _edit_from_merge_dict(d)
+        if e is not None:
+            edits.append(e)
+    if not edits:
+        # The model returned an empty/invalid set; fall back to deterministic merge
+        # only if there genuinely were edits to keep.
+        return Patch(edits=[], reasoning="llm_merge: coordinator returned no edits")
+    return Patch(
+        edits=edits,
+        reasoning=f"llm_merge: {len(proposed)} proposed -> {len(edits)} merged edits",
+    )
+
+
+def _parse_merge_output(text: str) -> list[dict] | None:
+    """Extract the ``edits`` list from the coordinator's JSON response."""
+    if not text:
+        return None
+    for pattern in (
+        re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL),
+        re.compile(r"\{.*\}", re.DOTALL),
+    ):
+        m = pattern.search(text)
+        if not m:
+            continue
+        try:
+            obj = json.loads(m.group(1) if "```" in pattern.pattern else m.group(0))
+        except (json.JSONDecodeError, ValueError, IndexError):
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("edits"), list):
+            return [e for e in obj["edits"] if isinstance(e, dict)]
+    return None
 
 
 def jaccard_dedup_edits(

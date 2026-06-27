@@ -52,8 +52,9 @@ class CSSConfig:
     minibatch_size: int = 8             # trajectories per L0 minibatch
     max_l0_steps_per_epoch: int = 20    # safety cap on L0 steps within an epoch
     batch_size: int = 40                # tasks per batch in batch-step architecture
-    num_generators: int = 3             # independent edit generators (Stage 2)
-    max_edits_per_step: int = 3         # max edits selected per step after aggregate
+    num_generators: int = 3             # deprecated (plan_a v1 N-generator stage); unused by per-minibatch plan_a
+    l0_edit_budget: int = 3             # max edits each minibatch proposer may emit (L)
+    max_edits_per_step: int = 6         # max edits applied per step after the merge coordinator
 
     # ── L1 STRATEGY CYCLE ────────────────────────────────────────────────
     max_l1_iterations: int = 3          # max hypothesis-test-verify iterations

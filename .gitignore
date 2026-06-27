@@ -20,3 +20,6 @@ analysis_reports/
 # experiment artifacts (large, not source)
 runs/
 OUTPUT_PATH
+
+# mechanism validation dumps
+mechanism_validation_*.md

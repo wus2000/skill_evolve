@@ -841,6 +841,177 @@ OUTPUT FORMAT:
 Output ONLY the JSON object — no prose, no markdown fences, no commentary."""
 
 
+# ── Per-minibatch fused proposers (plan_a v2) ────────────────────────────────
+# Each minibatch / contrastive unit DIRECTLY proposes a few MINIMAL, single-theme,
+# gap-filling edits — the small scope (one ~8-trajectory batch) keeps edits small.
+# Cross-minibatch dedup + independence is the merge coordinator's job
+# (css.optimizer.aggregate.llm_merge_coordinator). This replaces the v1 two-stage
+# "rich analysts -> N whole-document generators", which produced redundant stacked
+# playbooks because each global generator wrote a complete document.
+
+# The shared edit-production spec used by all three proposers. The only thing that
+# differs per source is the analysis lens and the diagnosis field (below).
+_EDIT_SPEC = """\
+`rules.md` is the agent's tactical playbook: `###` sections, one theme each,
+free-form markdown inside. You are shown the current `rules.md` and its section
+index. `strategy.md` is READ-ONLY context — `rules.md` executes that strategy;
+never restate or contradict it.
+
+## Edit operations — two tiers
+Structural (establish or restructure a theme):
+  - add_section     — a new `### Theme` section (the theme is not present yet).
+  - rewrite_section — rewrite one existing section in place, keeping its heading
+                      (the section is substantially wrong or disorganized).
+  - delete_section  — remove an obsolete or harmful section.
+Refinement (a small change inside an existing section):
+  - insert_after    — add a point after a given spot.
+  - replace         — fix a phrase or rule.
+  - delete          — remove a line.
+  - append          — add at the end (last resort, when no section fits).
+Use a structural op to scaffold or restructure a theme; once a relevant section
+exists, refine inside it with a refinement op.
+
+## Rules for every edit
+- ONE edit = ONE theme. Never bundle multiple themes.
+- Gap-fill: add only what is missing, fix only what is wrong. Never restate
+  guidance already in `rules.md`; if a section already covers the theme, improve
+  it — do not add a duplicate.
+- `target` is a SEMANTIC pointer for the apply tool: give the section heading, or
+  describe and approximately quote the spot. It is resolved by meaning, so be
+  clear — you need not copy exact text. (Omit `target` for add_section / append.)
+- Generalizable tactics only; never hardcode task-specific values (file paths,
+  cell addresses, expected values, entity names).
+- Direct and actionable: address the agent ("When you …, do …"), mechanically
+  followable — not commentary.
+
+## Budget
+Produce AT MOST L edits; fewer is better; emit an EMPTY list if `rules.md` already
+covers this batch."""
+
+_SYSTEM_FAILURE_PROPOSER = """\
+You optimize the tactical playbook (`rules.md`) of a frozen task agent. You are
+given a SMALL BATCH of FAILED trajectories. Find the systematic mistakes they
+share and propose the fewest, smallest edits that would prevent them.
+
+""" + _EDIT_SPEC + """
+
+## Analysis
+Identify the 1-3 most COMMON failure mechanisms across the batch — each appearing
+in two or more trajectories; ignore one-off quirks. Classify each as one of:
+rule_missing | rule_wrong | rule_ignored | data_exploration | code_error | other.
+
+## Output — only this JSON object (no fences, no prose)
+{
+  "failure_summary": [{"type": "<one of the above>", "count": <int>, "description": "<one line>"}],
+  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the pattern this fixes + which trajectories show it>"}]
+}"""
+
+_SYSTEM_SUCCESS_PROPOSER = """\
+You optimize the tactical playbook (`rules.md`) of a frozen task agent. You are
+given a SMALL BATCH of SUCCESSFUL trajectories. Codify the recurring effective
+behaviours that drove them, for any not already in `rules.md`, so the agent
+reproduces them reliably.
+
+""" + _EDIT_SPEC + """
+
+## Analysis
+Identify the 1-3 winning behaviours SHARED across the batch — each appearing in
+two or more trajectories; ignore one-off lucky moves.
+
+## Output — only this JSON object (no fences, no prose)
+{
+  "success_patterns": [{"count": <int>, "description": "<one line>"}],
+  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the behaviour this codifies + which trajectories show it>"}]
+}"""
+
+_SYSTEM_CONTRASTIVE_PROPOSER = """\
+You optimize the tactical playbook (`rules.md`) of a frozen task agent. You are
+given multiple rollouts of the SAME task under the SAME rules — some passed, some
+failed. The difference lies in what the agent did, not in the task: this contrast
+is the strongest tactical signal. Codify what the passing rollout did that the
+failing one did not.
+
+""" + _EDIT_SPEC + """
+
+## Analysis
+Find the decisive DIVERGENCE: what the passing rollout(s) did differently that led
+to success while the failing one(s) went wrong.
+
+## Output — only this JSON object (no fences, no prose)
+{
+  "divergence": "<one line: what the passing rollout did that the failing did not>",
+  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the divergence this codifies, citing both paths>"}]
+}"""
+
+
+def _run_minibatch_proposer(
+    client: "LLMClient",
+    strategy: str,
+    rules: str,
+    rollouts: list["TaskResult"],
+    system_prompt: str,
+    source_type: str,
+    *,
+    cfg: "CSSConfig",
+    contrastive_group: "TaskRolloutGroup | None" = None,
+    rejected: "list[Edit] | None" = None,
+    failure_pats: "list[str] | None" = None,
+) -> "RawPatch":
+    """One minibatch/unit → a RawPatch of AT MOST ``cfg.l0_edit_budget`` small edits.
+
+    Fuses analysis + edit-generation in a single call (SkillOpt-style): the small
+    scope of one minibatch keeps the proposed edits small and single-theme. Never
+    raises — a malformed/failed call yields an empty patch.
+    """
+    if contrastive_group is not None:
+        traj = _render_contrastive_group(contrastive_group, cfg.tool_trunc)
+    else:
+        traj = _render_minibatch(rollouts, cfg.tool_trunc)
+
+    budget = max(1, int(getattr(cfg, "l0_edit_budget", 3)))
+    sections: list[str] = [
+        "## strategy.md (READ-ONLY)\n" + (strategy.strip() or "(empty)"),
+        "## rules.md (EDIT TARGET — current)\n"
+        + (rules.strip() if rules and rules.strip() else "(empty)"),
+    ]
+    section_index = _extract_section_index(rules)
+    if section_index:
+        sections.append(
+            "## rules.md section index (existing themes — do NOT duplicate these)\n"
+            + section_index
+        )
+    sections.append(
+        f"## Edit budget\nProduce AT MOST L={budget} minimal single-theme edits. "
+        "Fewer is better; empty list if already covered."
+    )
+    sections.append("## Trajectories\n" + traj)
+    if failure_pats:
+        sections.append(
+            "## Recent unresolved failure patterns\n"
+            + "\n".join(f"- {p}" for p in failure_pats)
+        )
+    if rejected:
+        sections.append(
+            "## Previously rejected edits (do NOT re-propose)\n"
+            + _render_rejected_edits(rejected)
+        )
+    user = "\n\n".join(sections)
+
+    try:
+        text, _usage = client.complete_optimizer(system_prompt, user, max_tokens=8192)
+    except Exception:  # noqa: BLE001 — a proposer failure must not crash the step
+        text = ""
+
+    edits: list[Edit] = []
+    for d in _parse_edit_list(text)[:budget]:  # enforce the per-minibatch budget
+        edit = _edit_from_dict(d, source_type)
+        if edit is not None:
+            edits.append(edit)
+    return RawPatch(
+        patch=Patch(edits=edits), source_type=source_type, batch_size=len(rollouts)
+    )
+
+
 def _reflect_epoch_plan_a(
     client: "LLMClient",
     strategy: str,
@@ -850,151 +1021,55 @@ def _reflect_epoch_plan_a(
     *,
     cfg: "CSSConfig",
 ) -> list["RawPatch"]:
-    """Plan A: three-way analysis → N independent edit generators (two-stage)."""
+    """Plan A v2: per-minibatch fused proposers → raw patches (merged downstream).
+
+    Each minibatch of failures, each minibatch of successes, and each contrastive
+    (mixed-outcome) task directly emits a few minimal, single-theme, gap-filling
+    edits. The small per-minibatch scope keeps edits small; cross-minibatch dedup,
+    gap-alignment against the current rules.md, and independence are handled by the
+    merge coordinator in the aggregate stage.
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from css.tracing import log_event
 
     groups = _group_by_task(results)
     pure_pass, pure_fail, mixed = _triage_groups(groups)
     max_workers = getattr(cfg, "max_api_workers", 32)
-
-    # ── Stage 1: parallel analysis (three analyst types) ────────────────
-    # Each produces structured insights, not edits.
-    stage1_futures: dict = {}
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        # Success analyst
-        if pure_pass:
-            stage1_futures["success"] = pool.submit(
-                _run_success_analyst, client, strategy, rules, pure_pass,
-                tool_trunc=cfg.tool_trunc,
-            )
-
-        # Failure analyst (plan_a style: produces diagnoses, not edits)
-        if pure_fail:
-            fail_rollouts = [r for g in pure_fail for r in g.rollouts]
-            for batch in _chunk(fail_rollouts, cfg.minibatch_size):
-                key = f"fail_{id(batch)}"
-                stage1_futures[key] = pool.submit(
-                    _run_analyst_structured, client, strategy, rules, batch,
-                    _SYSTEM_FAILURE_ANALYST_A, cfg.tool_trunc,
-                )
-
-        # Contrastive analyst (plan_a style: produces signals, not edits)
-        for g in mixed:
-            key = f"contrastive_{g.task_id}"
-            stage1_futures[key] = pool.submit(
-                _run_analyst_structured, client, strategy, rules, g.rollouts,
-                _SYSTEM_CONTRASTIVE_ANALYST_A, cfg.tool_trunc,
-                contrastive_group=g,
-            )
-
-        # Collect results
-        success_insights = ""
-        failure_diagnoses: list[str] = []
-        contrastive_signals: list[str] = []
-
-        for key, fut in stage1_futures.items():
-            result = fut.result()
-            if key == "success":
-                success_insights = result
-            elif key.startswith("fail_"):
-                if result:
-                    failure_diagnoses.append(result)
-            elif key.startswith("contrastive_"):
-                if result:
-                    contrastive_signals.append(result)
-
-    from css.tracing import log_event
-    log_event("reflect_plan_a_success_insights",
-              insights_text=(success_insights or "")[:2000])
-    log_event("reflect_plan_a_failure_diagnosis",
-              n_diagnoses=len(failure_diagnoses))
-    log_event("reflect_plan_a_contrastive",
-              n_signals=len(contrastive_signals))
-
-    # ── Stage 2: N independent edit generators with evidence subset splitting ──
     rejected = step_buffer.recent_rejected_edits(cfg.W) if step_buffer else []
     failure_pats = step_buffer.recent_failure_patterns(cfg.W) if step_buffer else []
 
-    num_generators = getattr(cfg, "num_generators", 3)
+    # Build the per-unit task list: (system_prompt, rollouts, source_type, contrastive_group)
+    units: list[tuple[str, list, str, object]] = []
+    if pure_fail:
+        fail_rollouts = [r for g in pure_fail for r in g.rollouts]
+        for batch in _chunk(fail_rollouts, cfg.minibatch_size):
+            units.append((_SYSTEM_FAILURE_PROPOSER, batch, "failure", None))
+    if pure_pass:
+        succ_rollouts = [r for g in pure_pass for r in g.rollouts]
+        for batch in _chunk(succ_rollouts, cfg.minibatch_size):
+            units.append((_SYSTEM_SUCCESS_PROPOSER, batch, "success", None))
+    for g in mixed:
+        units.append((_SYSTEM_CONTRASTIVE_PROPOSER, g.rollouts, "contrastive", g))
 
-    # All generators see success_insights (for protection of validated behaviors).
-    # failure_diagnoses and contrastive_signals are randomly distributed so each
-    # generator works from a different evidence subset.
-    all_evidence = list(failure_diagnoses) + list(contrastive_signals)
-    rng = random.Random(getattr(cfg, "seed", 0))
-    rng.shuffle(all_evidence)
+    raw_patches: list[RawPatch] = []
+    if not units:
+        return raw_patches
 
-    evidence_subsets: list[list[str]] = [[] for _ in range(num_generators)]
-    for i, item in enumerate(all_evidence):
-        evidence_subsets[i % num_generators].append(item)
-
-    def _run_one_generator(evidence_subset: list[str]) -> str:
-        sections: list[str] = [
-            "## strategy.md (READ-ONLY)\n" + (strategy.strip() or "(empty)"),
-            "## rules.md (EDIT TARGET)\n"
-            + (rules.strip() if rules and rules.strip() else "(empty)"),
-        ]
-        section_index = _extract_section_index(rules)
-        if section_index:
-            sections.append("## rules.md section index\n" + section_index)
-        if success_insights:
-            sections.append(
-                "## Success Insights (from pure-pass tasks — what's working)\n"
-                + success_insights
-            )
-        if evidence_subset:
-            sections.append(
-                "## Failure Diagnoses & Contrastive Signals\n"
-                + "\n\n".join(evidence_subset)
-            )
-        if failure_pats:
-            sections.append(
-                "## Recent unresolved failure patterns\n"
-                + "\n".join(f"- {p}" for p in failure_pats)
-            )
-        if rejected:
-            sections.append(
-                "## Previously rejected edits (do NOT re-propose)\n"
-                + _render_rejected_edits(rejected)
-            )
-        sections.append(
-            "## Your task\n"
-            "Synthesize the evidence above. Produce a JSON object with an 'edits' "
-            "list. Output ONLY the JSON object."
-        )
-        user = "\n\n".join(sections)
-        try:
-            text, _usage = client.complete_optimizer(
-                _SYSTEM_EDIT_GENERATOR_A, user, max_tokens=8192
-            )
-        except Exception:
-            text = ""
-        return text
-
-    raw_patch_list: list[RawPatch] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        gen_futures = [
-            pool.submit(_run_one_generator, subset) for subset in evidence_subsets
-        ]
-        for fut in as_completed(gen_futures):
-            text = fut.result()
-            raw_edits = _parse_edit_list(text)
-            edits: list[Edit] = []
-            for d in raw_edits:
-                edit = _edit_from_dict(d, "synthesized")
-                if edit is not None:
-                    edits.append(edit)
-            log_event("reflect_plan_a_edits", n_edits=len(edits), source="synthesized")
-            raw_patch_list.append(
-                RawPatch(
-                    patch=Patch(edits=edits),
-                    source_type="synthesized",
-                    batch_size=len(results),
-                )
+        futs = [
+            pool.submit(
+                _run_minibatch_proposer, client, strategy, rules, roll, sysp, src,
+                cfg=cfg, contrastive_group=cg, rejected=rejected, failure_pats=failure_pats,
             )
+            for (sysp, roll, src, cg) in units
+        ]
+        for fut in as_completed(futs):
+            rp = fut.result()
+            raw_patches.append(rp)
+            log_event("reflect_plan_a_edits", n_edits=len(rp.patch.edits), source=rp.source_type)
 
-    return raw_patch_list
+    return raw_patches
 
 
 def _run_analyst_structured(
