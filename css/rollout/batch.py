@@ -43,9 +43,76 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from css.model.client import LLMClient
 
 
+_fd_limit_raised = False
+
+
+def _ensure_fd_limit() -> None:
+    """Raise the process soft open-file limit toward the hard cap (idempotent).
+
+    A high-concurrency rollout runs ``max_workers`` agents at once, and each one
+    holds an LLM socket + spreadsheet file handles + bash subprocess pipes. The
+    default soft ``RLIMIT_NOFILE`` (commonly 1024) is exhausted well before a few
+    hundred concurrent agents, and the failure surfaces as ``OSError(EMFILE)``
+    *inside* ``env.run_one`` — frequently at ``glob``/``os.makedirs``/``shutil``,
+    i.e. BEFORE the task's prediction dir is created — so the task silently
+    produces no artifacts ("task dir not created"). Raising the soft limit to the
+    hard limit (typically very large) removes that ceiling.
+
+    POSIX-only and best-effort: a no-op where ``resource`` / ``RLIMIT_NOFILE`` is
+    unavailable or the platform rejects the raise.
+    """
+    global _fd_limit_raised
+    if _fd_limit_raised:
+        return
+    _fd_limit_raised = True
+    try:
+        import resource
+    except Exception:  # noqa: BLE001 - non-POSIX (e.g. Windows): nothing to do
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except Exception:  # noqa: BLE001
+        return
+    if soft >= hard:
+        return
+    # Prefer the hard cap; fall back to high-but-bounded values if the platform
+    # refuses (macOS caps RLIMIT_NOFILE below the reported hard limit).
+    for target in (hard, 1_048_576, 262_144, 65_536, 16_384):
+        if target <= soft:
+            break
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            print(f"  [rollout] raised RLIMIT_NOFILE soft limit {soft} -> {target}")
+            return
+        except (ValueError, OSError):
+            continue
+
+
 def _item_id(item: dict) -> str:
     """Best-effort stable task id for an env item dict."""
     return str(item.get("task_id", item.get("id", "")))
+
+
+def _hash_skill(skill_text: str) -> str:
+    """Skill-text hash used as the rollout-cache validity key (see env.load_cached_result)."""
+    import hashlib
+    return hashlib.sha256((skill_text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _load_cached(env, item: dict, rollout_index: int, out_dir: str, skill_hash: str):
+    """Try to load a previously-computed rollout for resume (env-provided, optional).
+
+    Returns a cached ``TaskResult`` when the env supports ``load_cached_result``
+    and a matching, same-skill result exists on disk; otherwise ``None`` (run the
+    rollout). Any error degrades to ``None`` so the cache is never a failure source.
+    """
+    loader = getattr(env, "load_cached_result", None)
+    if loader is None:
+        return None
+    try:
+        return loader(item, out_dir, rollout_index=rollout_index, skill_hash=skill_hash)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _failed_result(
@@ -106,6 +173,7 @@ def batch_rollout(
 
     Returns exactly ``k_rollouts * len(items)`` TaskResults.
     """
+    _ensure_fd_limit()
     os.makedirs(out_dir, exist_ok=True)
 
     if k_rollouts <= 0 or not items:
@@ -118,8 +186,15 @@ def batch_rollout(
     total = len(units)
 
     started_at: dict[int, float] = {}
+    skill_hash = _hash_skill(skill_text)
+    n_cache_hits = [0]  # boxed for closure mutation
 
     def _run_unit(unit_id: int, item: dict, rollout_index: int) -> "TaskResult":
+        # Resume fast-path: reuse a previously-computed same-skill rollout.
+        cached = _load_cached(env, item, rollout_index, out_dir, skill_hash)
+        if cached is not None:
+            n_cache_hits[0] += 1
+            return cached
         started_at[unit_id] = time.time()
         return env.run_one(
             item,
@@ -145,14 +220,19 @@ def batch_rollout(
             fut_meta[uid] = (item, rollout_index)
 
         pending_futs = set(futs)
+        batch_deadline = t0 + task_timeout * 3
         while pending_futs:
             done, _ = wait(pending_futs, timeout=5, return_when=FIRST_COMPLETED)
             now = time.time()
+            past_batch_deadline = now >= batch_deadline
             timed_out = [
                 fut
                 for fut in pending_futs - done
-                if futs[fut] in started_at
-                and now - started_at[futs[fut]] >= task_timeout
+                if past_batch_deadline
+                or (
+                    futs[fut] in started_at
+                    and now - started_at[futs[fut]] >= task_timeout
+                )
             ]
             for fut in done:
                 pending_futs.remove(fut)
@@ -182,26 +262,32 @@ def batch_rollout(
                 fut.cancel()
                 uid = futs[fut]
                 item, rollout_index = fut_meta[uid]
+                reason = "batch-deadline" if past_batch_deadline else f"task-timeout-{task_timeout}s"
                 results.append(
                     _failed_result(
                         item,
                         rollout_index,
-                        f"task-timeout-{task_timeout}s",
+                        reason,
                         epoch=epoch,
                         node_id=node_id,
                     )
                 )
     finally:
-        ex.shutdown(wait=False, cancel_futures=True)
+        import sys
+        if sys.version_info >= (3, 9):
+            ex.shutdown(wait=False, cancel_futures=True)
+        else:
+            ex.shutdown(wait=False)
 
     # Invariant: every submitted unit produced exactly one result.
     assert len(results) == total, (
         f"batch_rollout count mismatch: got {len(results)}, expected {total}"
     )
     n_pass = sum(r.hard for r in results)
+    cache_note = f" cached={n_cache_hits[0]}" if n_cache_hits[0] else ""
     print(
         f"  [batch_rollout] {total} units ({len(items)} tasks x k={k_rollouts}) "
-        f"pass={n_pass}/{total} in {time.time() - t0:.0f}s"
+        f"pass={n_pass}/{total}{cache_note} in {time.time() - t0:.0f}s"
     )
     return results
 

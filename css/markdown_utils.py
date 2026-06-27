@@ -20,13 +20,27 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# Matches a level-3 ATX heading line: "### ...". We intentionally anchor on
-# exactly three hashes followed by a space so that "##"/"####" are not treated
-# as subsection boundaries.
-_SUBSECTION_RE = re.compile(r"^###[ \t]+(.*)$", re.MULTILINE)
+# Matches a level-3 ATX heading line: "### ...".
+_H3_RE = re.compile(r"^###[ \t]+(.*)$", re.MULTILINE)
 
 # Matches the first level-2 heading used as the strategy name: "## Name".
 _H2_RE = re.compile(r"^##[ \t]+(.*)$", re.MULTILINE)
+
+
+def _detect_subsection_re(text: str) -> re.Pattern:
+    """Auto-detect the heading level used for strategy subsections.
+
+    If the document has ``###`` headings (outside fenced code), use those.
+    Otherwise fall back to ``##`` headings.  This handles both the D6 flat
+    ``##`` format and the nested ``###`` format without hardcoding either.
+    """
+    spans = _fenced_spans(text)
+    if any(
+        not _in_spans(m.start(), spans)
+        for m in _H3_RE.finditer(text)
+    ):
+        return _H3_RE
+    return _H2_RE
 
 # Opening of a fenced code block: a run of >= 3 backticks or >= 3 tildes,
 # optionally indented, optionally followed by an info string. ``###`` lines
@@ -98,13 +112,16 @@ class Subsection:
 
 
 def parse_subsections(text: str) -> list[Subsection]:
-    """Parse the ``###`` subsections of a strategy document.
+    """Parse the subsections of a strategy document.
 
-    Returns them in document order. Text before the first ``###`` is not
-    returned here (use :func:`split_strategy` for the preamble).
+    Auto-detects whether the document uses ``###`` or ``##`` headings for its
+    subsections and parses accordingly. Returns them in document order. Text
+    before the first subsection heading is not returned here (use
+    :func:`split_strategy` for the preamble).
     """
     spans = _fenced_spans(text)
-    matches = [m for m in _SUBSECTION_RE.finditer(text) if not _in_spans(m.start(), spans)]
+    sub_re = _detect_subsection_re(text)
+    matches = [m for m in sub_re.finditer(text) if not _in_spans(m.start(), spans)]
     subsections: list[Subsection] = []
     for i, m in enumerate(matches):
         body_start = m.end()
@@ -123,17 +140,21 @@ def split_strategy(text: str) -> tuple[str, str, list[Subsection]]:
 
     ``name``        — text of the first ``## `` heading (the strategy name), or
                       "" if absent.
-    ``preamble``    — everything before the first ``### `` subsection.
-    ``subsections`` — the ``###`` subsections in order.
+    ``preamble``    — everything before the first subsection heading.
+    ``subsections`` — the subsections in order (auto-detected ``##`` or ``###``).
     """
     spans = _fenced_spans(text)
-    name_match = next(
-        (m for m in _H2_RE.finditer(text) if not _in_spans(m.start(), spans)), None
-    )
-    name = name_match.group(1).strip() if name_match else ""
+    sub_re = _detect_subsection_re(text)
+    name = ""
+    # Only extract a ## name if subsections use ### (otherwise ## IS subsections)
+    if sub_re is _H3_RE:
+        name_match = next(
+            (m for m in _H2_RE.finditer(text) if not _in_spans(m.start(), spans)), None
+        )
+        name = name_match.group(1).strip() if name_match else ""
 
     first_sub = next(
-        (m for m in _SUBSECTION_RE.finditer(text) if not _in_spans(m.start(), spans)), None
+        (m for m in sub_re.finditer(text) if not _in_spans(m.start(), spans)), None
     )
     preamble = text[: first_sub.start()] if first_sub else text
     subsections = parse_subsections(text)
@@ -251,9 +272,9 @@ def check_refine_diff(
         )
         return False, f"structure_changed:{detail}:escalate_to_proposal"
     if diff.n_changed == 0:
-        return False, "no_subsection_changed"
+        return False, "no_subsection_changed:escalate_to_proposal"
     if not diff.unchanged_match:
-        return False, "unmodified_subsections_differ"
+        return False, "unmodified_subsections_differ:escalate_to_proposal"
     if diff.n_changed > max_changed:
         return False, f"too_many_changed:{diff.n_changed}>{max_changed}:escalate_to_proposal"
     return True, f"ok:{diff.n_changed}_changed"

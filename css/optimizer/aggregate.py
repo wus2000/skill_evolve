@@ -23,11 +23,21 @@ failure-driven edits take priority (see ``merge_patches`` failure-first ordering
 """
 from __future__ import annotations
 
+import json
 import re
+from typing import TYPE_CHECKING
 
 from css.data.edit import Edit, Patch, RawPatch
 
-__all__ = ["aggregate_patches", "select_top_edits"]
+if TYPE_CHECKING:
+    from css.model.client import LLMClient
+
+__all__ = [
+    "aggregate_patches",
+    "jaccard_dedup_edits",
+    "llm_semantic_dedup",
+    "select_top_edits",
+]
 
 
 # ── Normalization ─────────────────────────────────────────────────────────────
@@ -51,6 +61,22 @@ def _normalize(text: str) -> str:
 def _edit_key(edit: Edit) -> tuple[str, str, str]:
     """Semantic identity key for de-duplication / support counting."""
     return (edit.op, _normalize(edit.target), _normalize(edit.content))
+
+
+def _tokenize(text: str) -> set[str]:
+    """Split text into a set of lowercase words for Jaccard comparison."""
+    if not text:
+        return set()
+    return set(_WS_RE.split(text.strip().lower())) - {""}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    """Jaccard similarity between two word sets."""
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -107,13 +133,12 @@ def aggregate_patches(raw_patches: list[RawPatch]) -> Patch:
             # Provenance: prefer the edit's own source_type, else the raw
             # patch's source_type.
             edit_source = edit.source_type or rp_source
-            if edit_source == "failure":
+            if edit_source in ("failure", "contrastive", "synthesized"):
                 has_failure[key] = True
             elif edit_source == "success":
                 has_success[key] = True
             else:
-                # Unknown source: fall back to the raw patch's classification.
-                if rp_source == "failure":
+                if rp_source in ("failure", "contrastive", "synthesized"):
                     has_failure[key] = True
                 else:
                     has_success[key] = True
@@ -135,6 +160,170 @@ def aggregate_patches(raw_patches: list[RawPatch]) -> Patch:
             f"into {len(edits)} distinct edits"
         ),
     )
+
+
+def jaccard_dedup_edits(
+    edits: list[Edit],
+    existing_rules: str = "",
+    *,
+    threshold: float = 0.5,
+) -> list[Edit]:
+    """Drop edits that Jaccard-overlap with existing rules or with each other.
+
+    Phase 1: Remove edits whose content is >= ``threshold`` similar to any
+    paragraph in the current ``rules.md`` text (prevents re-adding what's
+    already there).
+
+    Phase 2: Among survivors, when two edits are >= ``threshold`` similar,
+    keep the one with higher support_count (failure-first tiebreak).
+
+    Delete edits are always kept (their content field is irrelevant).
+    """
+    existing_sets: list[set[str]] = []
+    if existing_rules and existing_rules.strip():
+        for para in re.split(r"\n\s*\n|\n(?=- )", existing_rules):
+            tokens = _tokenize(para)
+            if len(tokens) >= 3:
+                existing_sets.append(tokens)
+
+    surviving: list[Edit] = []
+    for edit in edits:
+        if edit.op in ("delete", "delete_section"):
+            surviving.append(edit)
+            continue
+        tokens = _tokenize(edit.content)
+        if len(tokens) < 3:
+            surviving.append(edit)
+            continue
+        if any(_jaccard(tokens, ex) >= threshold for ex in existing_sets):
+            continue
+        surviving.append(edit)
+
+    if len(surviving) <= 1:
+        return surviving
+
+    token_sets = [_tokenize(e.content) for e in surviving]
+    keep = [True] * len(surviving)
+    for i in range(len(surviving)):
+        if not keep[i]:
+            continue
+        for j in range(i + 1, len(surviving)):
+            if not keep[j]:
+                continue
+            if len(token_sets[i]) < 3 or len(token_sets[j]) < 3:
+                continue
+            if _jaccard(token_sets[i], token_sets[j]) < threshold:
+                continue
+            si = surviving[i].support_count or 0
+            sj = surviving[j].support_count or 0
+            fi = 0 if surviving[i].source_type == "failure" else 1
+            fj = 0 if surviving[j].source_type == "failure" else 1
+            if (-si, fi) <= (-sj, fj):
+                keep[j] = False
+            else:
+                keep[i] = False
+                break
+
+    return [e for e, k in zip(surviving, keep) if k]
+
+
+# ── LLM-based semantic dedup ─────────────────────────────────────────────────
+
+_DEDUP_SYSTEM = """\
+You are a deduplication filter. You are given a numbered list of proposed edits \
+to a rules document. Edits may operate at line-level (append, insert_after, \
+replace, delete) or section-level (add_section, rewrite_section, delete_section). \
+Identify SEMANTICALLY DUPLICATE edits — edits that express the same guidance \
+even if worded differently, including across different op types (e.g. an \
+`add_section` and an `append` with the same content are duplicates).
+
+For each group of duplicates, keep the ONE best version (most precise, most \
+actionable) and drop the rest. Edits that address genuinely different topics \
+or add genuinely different guidance are NOT duplicates — keep all of them.
+
+Output ONLY a JSON object:
+  {"keep": [1, 3, 5]}
+where the values are the 1-based indices of edits to KEEP. No prose, no fences."""
+
+
+def llm_semantic_dedup(
+    client: "LLMClient",
+    edits: list[Edit],
+) -> list[Edit]:
+    """One LLM call to identify and remove semantically duplicate edits.
+
+    Presents all edit contents to the optimizer model and asks it to pick the
+    non-redundant subset. On any LLM or parsing failure, returns the original
+    list unchanged (safe degradation).
+
+    When duplicates are merged, the surviving edit inherits the sum of
+    ``support_count`` from all edits in its duplicate group: each dropped edit
+    contributes its support to the nearest kept edit by index (the LLM keeps the
+    "best" of each group), so consensus is preserved rather than discarded.
+    """
+    if len(edits) <= 1:
+        return list(edits)
+
+    lines: list[str] = []
+    for i, e in enumerate(edits, 1):
+        preview = (e.content or "").strip().replace("\n", " ")
+        if len(preview) > 300:
+            preview = preview[:300] + "..."
+        lines.append(f"{i}. [{e.op}] {preview}")
+
+    user = "Proposed edits to deduplicate:\n" + "\n".join(lines)
+
+    try:
+        text, _usage = client.complete_optimizer(_DEDUP_SYSTEM, user, max_tokens=1024)
+    except Exception:
+        return list(edits)
+
+    keep_indices = _parse_keep_indices(text, len(edits))
+    if not keep_indices:
+        return list(edits)
+
+    # Merge support_counts from dropped edits into their nearest kept edit.
+    sorted_kept = sorted(keep_indices)
+    for i in range(len(edits)):
+        if i in keep_indices:
+            continue
+        closest = min(sorted_kept, key=lambda k: abs(k - i))
+        edits[closest].support_count = (
+            (edits[closest].support_count or 0) + (edits[i].support_count or 0)
+        )
+
+    return [edits[i] for i in sorted_kept]
+
+
+def _parse_keep_indices(text: str, n_edits: int) -> set[int] | None:
+    """Extract 0-based keep indices from the LLM dedup response."""
+    if not text:
+        return None
+    for pattern in [
+        re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL),
+        re.compile(r"\{.*\}", re.DOTALL),
+    ]:
+        m = pattern.search(text)
+        if not m:
+            continue
+        try:
+            obj = json.loads(m.group(1) if pattern.groups else m.group(0))
+        except (json.JSONDecodeError, ValueError, IndexError):
+            continue
+        if isinstance(obj, dict):
+            raw = obj.get("keep", [])
+            if isinstance(raw, list):
+                indices: set[int] = set()
+                for v in raw:
+                    try:
+                        idx = int(v) - 1
+                        if 0 <= idx < n_edits:
+                            indices.add(idx)
+                    except (TypeError, ValueError):
+                        pass
+                if indices:
+                    return indices
+    return None
 
 
 def select_top_edits(patch: Patch, max_edits: int) -> Patch:

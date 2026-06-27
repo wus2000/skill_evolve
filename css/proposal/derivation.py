@@ -17,11 +17,11 @@ Three public operations (the Layer 5a/5b contract):
     change is the logical consequence of the root cause's assumption-level
     finding.
   * :func:`check_negative_archive` (Layer 5b gate, "reminder not prohibition")
-    — embeds the candidate strategy, recalls the top-K most-similar ABANDONED
-    strategies from the tree-global negative archive (cosine over the injected
-    embedder), and — if the top hit is too close — forces the LLM to articulate
-    HOW the new direction differs. A high similarity does NOT veto; an inability
-    to articulate a difference does.
+    — recalls the top-K most-similar ABANDONED strategies from the tree-global
+    negative archive (Jaccard word-overlap on strategy text), and — if the top
+    hit is too close — forces the LLM to articulate HOW the new direction
+    differs. A high similarity does NOT veto; an inability to articulate a
+    difference does.
   * :func:`retrospective_validate` (Layer 5b cheap pre-rollout check) — asks the
     LLM for (1) positive evidence in success trajectories, (2) counterfactuals on
     persistent failures, and (3) a coverage estimate in [0, 1], then applies the
@@ -38,11 +38,9 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from css.analysis.embedding import cosine_similarity
 from css.proposal.root_cause import RootCause
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
-    from css.analysis.embedding import Embedder
     from css.config import CSSConfig
     from css.data.negative_archive import NegativeArchive
     from css.data.pattern import PatternRecord
@@ -56,8 +54,8 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 class StrategyProposal:
     """A derived new strategy body + the rationale that makes it a consequence.
 
-    ``strategy_text`` is a full strategy.md body organized as ``###`` subsections
-    (the same shape the tree node stores). ``rationale`` explains *why* this is
+    ``strategy_text`` is a full strategy.md body: a ``## Strategy Name`` header with
+    an overview paragraph, followed by a ``### Details`` section with detailed expansion. ``rationale`` explains *why* this is
     the logical consequence of ``root_cause`` and which counterpart success
     behaviors it systematizes. ``targeted_pattern_ids`` are the L1 failure
     patterns the change is meant to suppress — carried through to the Layer 5c
@@ -298,16 +296,45 @@ Work through these steps internally, then emit the result:
      can follow deterministically (a trigger -> action the agent can actually \
      execute mid-task), not a vague exhortation.
   4. Write the FULL new strategy document body as the result of applying that \
-     mechanism, organized as Markdown ``###`` subsections. Preserve the parts of \
-     the old strategy that are not implicated; change only what the diagnosis \
-     requires. The document must be self-contained and usable as-is.
+     mechanism. Preserve the cognitive dimensions of the old strategy that are not \
+     implicated; change only what the diagnosis requires. The document must be \
+     self-contained and usable as-is.
+
+CRITICAL — what a strategy document IS (and is NOT). This is an L1 COGNITIVE \
+STRATEGY: it describes HOW the agent THINKS, not a checklist of L0 tactical rules. \
+Get the ALTITUDE right or the output is worthless.
+
+Structure the strategy document as TWO sections:
+
+  ## <Strategy Name>
+  <A concise paragraph describing the strategy's overall approach — the core
+  mental model, the key insight, and what makes this way of thinking effective.
+  This overview should let a reader grasp the strategy in 30 seconds.>
+
+  ### Details
+  <Detailed expansion of the strategy: the cognitive mechanisms, thinking
+  processes, mental moves, when-to-switch triggers, and how the strategy adapts
+  to different task situations. This section can be as long as needed to fully
+  articulate the strategy — use multiple paragraphs, sub-sections with ####,
+  bullet lists, or any markdown structure that communicates clearly. The goal
+  is to be thorough enough that an agent reading only this document knows
+  exactly HOW to think through any task it encounters.>
+
+Hard constraints on the document:
+  - The overview paragraph describes the ESSENCE of the strategy at a glance.
+  - The ### Details section provides the COMPLETE specification the agent needs.
+  - Every instruction must describe a METHOD (how to think), never a GOAL (what to
+    achieve) and never a prohibition. Prohibitions belong in rules.md.
+  - The document must be self-contained: an agent that reads only this document
+    (plus rules.md) should be able to execute tasks effectively.
 
 Output ONLY a JSON object:
   {
-    "strategy_text": "<full new strategy.md body, ### subsections, markdown>",
+    "strategy_text": "<full new strategy.md body: ## Strategy Name header with \
+overview paragraph + ### Details section with detailed expansion, markdown>",
     "rationale": "<why this is the LOGICAL CONSEQUENCE of the root cause: name \
 the broken assumption, the direction it forces, and which success-counterpart \
-behaviors you systematized into which subsection>",
+behaviors you systematized into which cognitive dimension>",
     "targeted_pattern_ids": ["<id>", ...]
   }
 No prose, no markdown fences around the JSON — just the JSON object."""
@@ -348,7 +375,7 @@ def derive_strategy(
     strategy as the logical consequence of ``root_cause`` (start from the broken
     assumption) while explicitly SYSTEMATIZING the behaviors shown in the paired
     ``counterpart_patterns`` (the success side). The result is a full new
-    strategy.md body organized as ``###`` subsections plus a rationale tying the
+    strategy.md body organized as flat ``##`` sections plus a rationale tying the
     change back to the diagnosis.
 
     ``current_strategy`` (the optimizing node's strategy text) is passed in
@@ -367,7 +394,9 @@ def derive_strategy(
     )
 
     try:
-        text, _usage = client.complete_optimizer(_DERIVE_SYSTEM, user, max_tokens=8192)
+        from css.tracing import stage_context
+        with stage_context(client, "strategy_derivation"):
+            text, _usage = client.complete_optimizer(_DERIVE_SYSTEM, user, max_tokens=8192)
     except Exception:
         text = ""
 
@@ -387,6 +416,15 @@ def derive_strategy(
     ]
     if not proposal.targeted_pattern_ids:
         proposal.targeted_pattern_ids = list(root_cause.pattern_ids)
+
+    from css.tracing import log_event
+    _rat = (proposal.rationale or "").strip().replace("\n", " ")
+    log_event("strategy_derived",
+              strategy_text_len=len(proposal.strategy_text or ""),
+              rationale_summary=_rat[:400],
+              targeted_pattern_ids=list(proposal.targeted_pattern_ids),
+              n_counterparts=len(counterpart_patterns))
+
     return proposal
 
 
@@ -442,25 +480,22 @@ def _fmt_archived_hit(entry, score: float) -> str:
 
 def check_negative_archive(
     client: "LLMClient",
-    embedder: "Embedder",
     strategy_text: str,
     archive: "NegativeArchive",
     *,
     top_k: int = 5,
-    sim_threshold: float = 0.8,
+    sim_threshold: float = 0.35,
 ) -> tuple[bool, str]:
     """Layer 5b negative-archive gate (design D12; "reminder not prohibition").
 
-    Embeds ``strategy_text`` via the injected ``embedder``, recalls the top-``k``
-    most-similar abandoned strategies from ``archive`` using
-    :func:`css.analysis.embedding.cosine_similarity`, and inspects the single
-    closest hit. If that hit's similarity is below ``sim_threshold`` (or the
-    archive is empty / has no embedded entries), the candidate is novel enough —
-    return ``(True, ...)``. Otherwise the candidate is close to a disproven
+    Recalls the top-``k`` most-similar abandoned strategies from ``archive``
+    using Jaccard word-overlap on strategy text, and inspects the closest hit.
+    If that hit's similarity is below ``sim_threshold``, the candidate is novel
+    — return ``(True, ...)``. Otherwise the candidate is close to a disproven
     direction, so the LLM is asked to ARTICULATE the difference; the candidate
     proceeds ONLY if the LLM gives a clear difference, else it is blocked.
 
-    Returns ``(proceed, reason)``. Never raises: an embedding or LLM failure
+    Returns ``(proceed, reason)``. Never raises: a recall or LLM failure
     degrades to ``(True, ...)`` so the gate never silently kills an otherwise
     valid proposal on infrastructure noise (the downstream 5c rollout is the
     authoritative check); the reason records the degradation.
@@ -470,24 +505,14 @@ def check_negative_archive(
     if archive is None or len(archive) == 0:
         return True, "negative archive empty — no prior direction to compare against"
 
-    # Embed the candidate and recall the closest abandoned strategies.
     try:
-        vec = embedder.embed([strategy_text])
-        query = [float(x) for x in (vec[0].tolist() if hasattr(vec[0], "tolist") else vec[0])]
-    except Exception as exc:  # noqa: BLE001
-        return True, f"could not embed candidate ({exc!r}); deferring to 5c rollout"
-
-    try:
-        hits = archive.recall(query, top_k, cosine_similarity)
+        hits = archive.recall_by_text(strategy_text, top_k)
     except Exception as exc:  # noqa: BLE001
         return True, f"archive recall failed ({exc!r}); deferring to 5c rollout"
 
     if not hits:
-        return True, "no embedded entries in negative archive to compare against"
+        return True, "no entries in negative archive to compare against"
 
-    # Consider ALL hits at or above threshold (design D12: recall top-K -> LLM
-    # judgment), not just the single nearest, so a candidate close to several
-    # abandoned directions is judged against all of them.
     near = [(e, s) for (e, s) in hits if s >= sim_threshold]
     if not near:
         top_entry, top_score = hits[0]
@@ -505,7 +530,9 @@ def check_negative_archive(
         abandoned_block=abandoned_block,
     )
     try:
-        text, _usage = client.complete_optimizer(_NEG_ARCHIVE_SYSTEM, user)
+        from css.tracing import stage_context
+        with stage_context(client, "negative_archive_check"):
+            text, _usage = client.complete_optimizer(_NEG_ARCHIVE_SYSTEM, user)
     except Exception as exc:  # noqa: BLE001
         return True, (
             f"similar to abandoned {top_entry.entry_id} ({top_score:.3f}) but "
@@ -542,19 +569,22 @@ Produce three things:
   1. positive_evidence: concrete signs in the SUCCESS trajectories that the new \
      strategy's mechanism is already (perhaps accidentally) what made them \
      succeed — i.e. the change would reinforce a real winning behavior, not \
-     fight it.
+     fight it. Reference specific trajectory moments.
   2. counterfactuals: for the PERSISTENT-FAIL tasks, a per-task judgement of \
      whether the new strategy's mechanism would PLAUSIBLY have changed the \
-     agent's trajectory toward success (counterfactual reasoning grounded in what \
-     the failing trajectory actually did wrong).
+     agent's trajectory toward success. Ground each judgement in what the failing \
+     trajectory actually did wrong — reference the specific failure point and \
+     explain how the new strategy would have redirected the agent's thinking at \
+     that point.
   3. coverage: your single best estimate, a number in [0, 1], of the FRACTION of \
      the persistent-fail tasks the change would plausibly flip to success. Be \
      calibrated and conservative — this gates whether we spend rollout budget.
 
 Output ONLY a JSON object:
   {
-    "positive_evidence": ["<evidence string>", ...],
-    "counterfactuals": ["<per-task counterfactual judgement>", ...],
+    "positive_evidence": ["<specific evidence grounded in a trajectory moment>", ...],
+    "counterfactuals": ["<per-task analysis: what went wrong, and how the new \
+strategy would have changed the agent's approach at that specific point>", ...],
     "coverage": <float in [0,1]>
   }
 No prose, no fences — just the JSON object."""
@@ -630,7 +660,9 @@ def retrospective_validate(
     )
 
     try:
-        text, _usage = client.complete_optimizer(_RETRO_SYSTEM, user, max_tokens=4096)
+        from css.tracing import stage_context
+        with stage_context(client, "retrospective_validate"):
+            text, _usage = client.complete_optimizer(_RETRO_SYSTEM, user, max_tokens=4096)
     except Exception:
         return ValidationResult(coverage=0.0, verdict="reconsider")
 

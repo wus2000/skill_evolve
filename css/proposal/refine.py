@@ -162,13 +162,14 @@ text that permitted it, and the hidden assumption that text bakes in). Your job 
 is a REFINE: a controlled, LOCAL edit — NOT a rewrite.
 
 A REFINE is bound by hard rules:
-  1. LOCALITY. Rewrite ONLY the 1-2 ``###`` subsections of the strategy that the \
+  1. LOCALITY. Rewrite ONLY the 1-2 subsections of the strategy that the \
      root cause's STRATEGY level (level 3) and ASSUMPTION level (level 4) directly \
      implicate. Every OTHER subsection — its heading and its body — must be \
      reproduced BYTE-FOR-BYTE, unchanged. Do not add, remove, reorder, or rename \
-     subsections. Do not touch the ``##`` name or any preamble. If a correct fix \
-     would require touching more than 2 subsections or changing the document's \
-     shape, say so in "escalate" and STOP — that is a PROPOSAL, not a REFINE.
+     subsections. Do not touch any preamble text before the first section heading. \
+     If a correct fix would require touching more than 2 subsections or changing \
+     the document's shape, say so in "escalate" and STOP — that is a PROPOSAL, \
+     not a REFINE.
   2. DERIVE, DON'T INVENT. The edit must be the logical consequence of the \
      diagnosed assumption: break that assumption and write the thinking the \
      assumption was suppressing. Keep the surrounding strategy's voice and format.
@@ -205,7 +206,7 @@ DIAGNOSED ROOT CAUSE (Layers 1-4 — already established; do not re-diagnose):
   leverage: {leverage}
   why L0 rules could not fix it: {l0_explanation}
 
-PARENT STRATEGY DOCUMENT (edit ONLY 1-2 ### subsections; reproduce the rest verbatim):
+PARENT STRATEGY DOCUMENT (edit ONLY 1-2 subsections; reproduce the rest verbatim):
 -------------------------------------------------------------
 {parent_strategy}
 -------------------------------------------------------------

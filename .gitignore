@@ -16,3 +16,7 @@ analysis_reports/
 *.log
 *.jsonl
 .env
+
+# experiment artifacts (large, not source)
+runs/
+OUTPUT_PATH

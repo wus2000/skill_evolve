@@ -24,7 +24,7 @@ from css.data.edit import Edit
 # Gate outcome vocabulary (mirrors SkillOpt evaluation/gate.py GateAction).
 StepAction = str  # "accept_new_best" | "accept" | "reject"
 
-ACCEPT_ACTIONS: frozenset[str] = frozenset({"accept", "accept_new_best"})
+ACCEPT_ACTIONS: frozenset[str] = frozenset({"accept", "accept_new_best", "epoch_reset"})
 
 
 @dataclass
@@ -122,6 +122,24 @@ class StepBuffer:
         if n_threshold < 1:
             return False
         return self.consecutive_rejects() >= n_threshold
+
+    def reset_saturation(self) -> None:
+        """Break the consecutive-reject streak so exploitation can resume.
+
+        Inserts a synthetic ``accept`` sentinel so ``consecutive_rejects``
+        resets to 0 while preserving all prior history for prompt context.
+        Called at the start of each new epoch/round to prevent cross-epoch
+        saturation deadlock.
+        """
+        if not self.entries or self.consecutive_rejects() == 0:
+            return
+        self.entries.append(StepBufferEntry(
+            step=-1,
+            action="epoch_reset",
+            score_before=self.entries[-1].score_after,
+            score_after=self.entries[-1].score_after,
+            epoch=self.entries[-1].epoch,
+        ))
 
     def recent(self, window: int) -> list[StepBufferEntry]:
         return self.entries[-window:] if window > 0 else list(self.entries)

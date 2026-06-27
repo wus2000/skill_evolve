@@ -1,105 +1,54 @@
-"""Phase 5 orchestrator — wire PROPOSAL and REFINE end-to-end (design §4.2 / §4.3, D4 / D10).
+"""L1 Strategy Cycle — hypothesis-test-verify loop (v2 design).
 
-This module is the ENTRY POINT of an L1 (cognitive-strategy) operation. Phase 4
-produces L1 signals (persistent, remedy-resistant failure patterns); this module
-turns one such signal set into either a new PROPOSAL tree node (a structural
-strategy rewrite) or a new REFINE tree node (a local 1-2 subsection edit), or — on
-failure — a negative-archive entry recording the disproven direction so the search
-never blindly re-explores it.
+This module implements the five-step L1 cycle that replaces the old single-shot
+PROPOSAL/REFINE pipeline.  When L0 saturates, this cycle runs:
 
-Both operations SHARE Layer 4 (root-cause attribution) and the Layer 5b/5c
-validation spine; they DIVERGE only at Layer 5a (full derive vs. local refine) and
-at knowledge inheritance (semantic keep/drop vs. full-inherit + conflict cleanup).
+  Step 1  Multi-dimensional analysis (1a/1b/1c parallel → 1d synthesis)
+  Step 2  Strategy proposal + behavioral predictions (single LLM call)
+  Step 3  Focused testing (rollout with new strategy, empty rules)
+  Step 4  Two-layer verification (per-trajectory Judge → aggregate diagnosis)
+  Step 5  Iteration control (succeed → MCTS node, or loop back with feedback)
 
-The pipeline (design §4.3):
+Only strategies that pass verification create MCTS child nodes.  Failed
+directions are archived in the negative archive.
 
-  Layer 4  attribute_root_cause  -> ordered RootCauses (high-leverage first).
-                                    No cause -> early return (no_root_cause).
-  Layer 5a (PROPOSAL) derive_strategy from the top RootCause + the paired SUCCESS
-           counterpart patterns (systematize what already worked); then the
-           negative-archive gate (reminder-not-prohibition).
-  Layer 5a (REFINE)   derive_refine -> a gated local edit; on gate failure we
-           return a reason carrying ``escalate_to_proposal`` so the caller can
-           switch operation.
-  Layer 5b retrospective_validate  -> cheap pre-rollout coverage gate. A
-           ``"reconsider"`` verdict kills the proposal cheaply (low_coverage).
-  Layer 5c rollout_validate_fn (INJECTED callback) -> (occ_before, occ_after) for
-           the TARGET L1 pattern on the persistent-fail subset. The authoritative
-           metric is the TARGET pattern's occurrence-rate DROP, not total pass
-           rate. occ_after strictly below occ_before -> PASS.
-           PASS -> a new TreeNode (PROPOSAL / REFINE).
-           FAIL -> a NegativeArchiveEntry (origin proposal_/refine_failed_rollout).
+All intermediate products are persisted to disk under
+``{out_dir}/{node_id}/l1_cycle/round_{N}/step{1-4}/``.
 
-The 5c rollout is an INJECTED callback so this module is testable without the
-Phase-2 rollout / Phase-4 analysis stack (real wiring lands in Phase 6). Heavy
-Phase-5 submodules are imported LAZILY inside the functions, so importing this
-module is cheap and free of model/embedding side effects.
-
-``rollout_validate_fn`` signature:
-    (strategy_text: str, rules_text: str, targeted_pattern_ids: list[str])
-        -> tuple[float, float]   # (occurrence_before, occurrence_after)
-
-Robustness contract (mirrors the rest of Phase 5): malformed LLM output never
-crashes; every failure mode returns a :class:`ProposalOutcome` with
-``success=False`` and a documented ``reason``.
+Heavy imports are lazy so this module imports cheaply.
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-if TYPE_CHECKING:  # pragma: no cover - type-only imports
-    from css.analysis.embedding import Embedder
+if TYPE_CHECKING:
     from css.config import CSSConfig
     from css.data.negative_archive import NegativeArchive, NegativeArchiveEntry
     from css.data.pattern import PatternLibrary, PatternRecord
     from css.data.rollout import TaskResult, TaskRolloutGroup
     from css.data.tree import TreeNode
     from css.model.client import LLMClient
-    from css.proposal.derivation import StrategyProposal, ValidationResult
-    from css.proposal.root_cause import RootCause
+
+_log = logging.getLogger(__name__)
 
 
-# 5c PASS criterion (documented threshold). The design's core 5c metric is that
-# the TARGET L1 pattern's occurrence rate "significantly DECREASES". The injected
-# rollout callback returns the measured (occurrence_before, occurrence_after); we
-# require occ_after STRICTLY below occ_before. "Strictly" is the minimal,
-# unambiguous reading of "decrease"; we expose the comparison as a single helper
-# so the Phase-6 wiring (which owns statistical significance over real rollouts)
-# can tighten it (e.g. a min-effect margin) in exactly one place without changing
-# the orchestration logic here.
-def _rollout_passed(occ_before: float, occ_after: float) -> bool:
-    """True iff the target pattern's occurrence rate strictly decreased."""
-    return occ_after < occ_before
-
-
-# Type alias for the injected Layer-5c rollout validation callback.
-RolloutValidateFn = Callable[[str, str, "list[str]"], "tuple[float, float]"]
-
+# ── Public result type ──────────────────────────────────────────────────────
 
 @dataclass
 class ProposalOutcome:
-    """Result of one PROPOSAL or REFINE attempt (frozen public API).
-
-    ``success`` reflects the Layer-5c rollout verdict (PASS). ``operation`` is the
-    operation that ran (``"PROPOSAL"`` or ``"REFINE"``). On PASS, ``new_node`` is
-    the freshly built child :class:`~css.data.tree.TreeNode`; on a rollout FAIL,
-    ``archived`` is the :class:`~css.data.negative_archive.NegativeArchiveEntry`
-    just written. ``validation`` carries the Layer-5b result when it was computed.
-    ``occurrence_before`` / ``occurrence_after`` carry the 5c measurements (``-1.0``
-    when 5c was not reached). ``reason`` documents WHY a non-success outcome
-    happened (and, for REFINE gate failures, carries ``escalate_to_proposal`` so
-    the caller can switch operation).
-    """
+    """Result of one L1 strategy cycle attempt."""
 
     success: bool
     operation: str  # "PROPOSAL" | "REFINE"
     new_node: "TreeNode | None" = None
     archived: "NegativeArchiveEntry | None" = None
-    validation: "ValidationResult | None" = None
-    occurrence_before: float = -1.0
-    occurrence_after: float = -1.0
     reason: str = ""
+    n_iterations: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -111,484 +60,978 @@ class ProposalOutcome:
                 if self.archived is not None
                 else None
             ),
-            "validation": self.validation.to_dict() if self.validation is not None else None,
-            "occurrence_before": self.occurrence_before,
-            "occurrence_after": self.occurrence_after,
             "reason": self.reason,
+            "n_iterations": self.n_iterations,
         }
 
 
-# ── Shared helpers ───────────────────────────────────────────────────────────
+# ── Iteration context (feedback between rounds) ────────────────────────────
 
-def _attribute(
+@dataclass
+class _PreviousAttempt:
+    round: int
+    strategy_summary: str
+    diagnosis: str  # adherence_failure | hypothesis_failure | partial_success
+    adherence_results: list[dict]
+    improvement_results: list[dict]
+    judge_diagnosis: str
+    judge_suggestion: str
+
+
+@dataclass
+class _IterationContext:
+    iteration_round: int = 1
+    previous_attempts: list[_PreviousAttempt] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "iteration_round": self.iteration_round,
+            "previous_attempts": [
+                {
+                    "round": a.round,
+                    "strategy_summary": a.strategy_summary,
+                    "diagnosis": a.diagnosis,
+                    "adherence_results": a.adherence_results,
+                    "improvement_results": a.improvement_results,
+                    "judge_diagnosis": a.judge_diagnosis,
+                    "judge_suggestion": a.judge_suggestion,
+                }
+                for a in self.previous_attempts
+            ],
+        }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Step 1: Multi-dimensional analysis
+# ══════════════════════════════════════════════════════════════════════════════
+
+_STEP1A_SYSTEM = """\
+You are a strategic analyst examining why L0 tactical optimization has hit a \
+ceiling. The L0 optimizer has tried many rule edits but can no longer improve. \
+Your job is to identify what characteristics of the CURRENT STRATEGY are \
+creating a ceiling that tactical rules cannot break through.
+
+You receive:
+- The current strategy.md (the cognitive framework the agent follows)
+- The current rules.md (the best tactical rules L0 produced)
+- Score trajectory (accept/reject history of recent L0 steps)
+- Recently rejected edits (rule changes that failed the acceptance gate)
+
+Analyze: What aspect of the current strategic framework prevents further L0 \
+progress? Is there a fundamental assumption in the strategy that limits the \
+agent's effectiveness? Are there task categories where the strategy's mental \
+model is structurally inadequate?
+
+Output a JSON object:
+{
+  "ceiling_analysis": "<thorough analysis of why L0 optimization stalled — \
+what strategic-level limitation prevents better rules from working>",
+  "strategic_assumptions": ["<list of implicit assumptions in the current \
+strategy that might be limiting>"],
+  "bottleneck_areas": ["<task types or problem categories where the ceiling \
+is most apparent>"]
+}
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+_STEP1B_SYSTEM = """\
+You are a trajectory analyst performing deep behavioral analysis on agent \
+failure trajectories. You are examining WHY the agent fails at specific tasks, \
+looking for patterns in the agent's THINKING PROCESS — not surface errors.
+
+You receive 3-5 representative failure trajectories with full execution traces.
+
+For each trajectory, identify:
+1. The critical decision point where the agent's approach diverged from what \
+would succeed
+2. What mental model or reasoning pattern led to the wrong decision
+3. Whether the failure stems from the agent's STRATEGY (how it thinks) vs \
+its RULES (what it does)
+
+Look for SYSTEMATIC patterns across trajectories — shared cognitive blind \
+spots, common wrong assumptions, or recurring failure mechanisms.
+
+Output a JSON object:
+{
+  "trajectory_analyses": [
+    {
+      "task_id": "<id>",
+      "critical_decision_point": "<where the approach went wrong>",
+      "reasoning_failure": "<what cognitive pattern led to failure>",
+      "strategic_vs_tactical": "strategic | tactical | both",
+      "evidence": "<specific quotes/actions from the trajectory>"
+    }
+  ],
+  "systematic_patterns": [
+    {
+      "pattern": "<description of the shared cognitive pattern>",
+      "affected_tasks": ["<task_ids>"],
+      "root_mechanism": "<why this pattern keeps occurring>"
+    }
+  ]
+}
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+_STEP1C_SYSTEM = """\
+You are reviewing the L0 contrastive analysis to understand its limitations. \
+L0 found divergences between successful and failing rollouts of the same task, \
+but the rule edits derived from these divergences failed to improve performance.
+
+You receive:
+- L0 contrastive analyst diagnoses
+- Rules that were tried but rejected based on these diagnoses
+- Mixed-result task groups (some rollouts passed, some failed)
+
+Analyze: Why couldn't the divergences identified by L0 be fixed with rules? \
+Are the divergences symptoms of a deeper strategic issue? Does the difference \
+between success and failure require a change in HOW the agent thinks, not \
+just WHAT rules it follows?
+
+Output a JSON object:
+{
+  "limitation_analysis": "<why L0 contrastive findings couldn't be fixed \
+with rules>",
+  "deeper_issues": [
+    {
+      "l0_finding": "<what L0's contrastive analysis found>",
+      "why_rules_failed": "<why rule-level fixes didn't work>",
+      "strategic_implication": "<what this suggests about needed strategy change>"
+    }
+  ],
+  "strategy_change_indicators": ["<signals that a strategic shift is needed>"]
+}
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+_STEP1D_SYSTEM = """\
+You are synthesizing three independent analyses into a strategic hypothesis \
+for improving an AI agent's cognitive strategy:
+
+1. L0 CEILING ANALYSIS: why tactical optimization stalled
+2. TRAJECTORY ANALYSIS: deep behavioral patterns from failure traces
+3. CONTRASTIVE LIMITATION ANALYSIS: why L0-identified divergences couldn't be \
+fixed with rules
+
+Your task is to produce a STRATEGIC-LEVEL synthesis — not a list of tactical \
+fixes, but insights about what fundamental change in the agent's thinking \
+approach is needed.
+
+Output a JSON object:
+{
+  "core_assumptions_and_limitations": "<the key strategic assumptions that \
+are limiting agent performance — state these as high-level judgments about \
+the strategy, not as a list of bugs>",
+  "recommended_directions": [
+    {
+      "direction": "<name of the strategic change>",
+      "rationale": "<why this direction addresses the identified limitations>",
+      "expected_impact": "<what types of tasks would benefit and how>",
+      "risk": "<what could go wrong or what effective behaviors might be lost>"
+    }
+  ],
+  "constraints": "<what is working well in the current strategy that must be \
+preserved in any new approach>"
+}
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Step 2: Strategy proposal + behavioral predictions
+# ══════════════════════════════════════════════════════════════════════════════
+
+_STEP2_SYSTEM = """\
+You are an L1 strategy designer for an AI agent optimization system. Based on \
+multi-dimensional analysis of the agent's performance, you design a new \
+cognitive strategy — the document that tells the agent HOW TO THINK when \
+approaching tasks.
+
+You are designing both the strategy AND the criteria by which it will be \
+verified. This is critical: you know what behavior you expect from this \
+strategy, so you must articulate that expectation clearly enough for an \
+independent judge to evaluate it from trajectory evidence.
+
+STRATEGY FORMAT — two sections, nothing else:
+
+  ## <Strategy Name>
+  <A concise paragraph: the core mental model, key insight, and what makes \
+this way of thinking effective. A reader should grasp the strategy in 30 \
+seconds.>
+
+  ### Details
+  <Detailed expansion: cognitive mechanisms, thinking processes, mental moves, \
+when-to-switch triggers, adaptation to different situations. As long as \
+needed — use multiple paragraphs, sub-sections (####), bullet lists. The \
+agent reading only this document should know exactly HOW to think through \
+any task.>
+
+ALTITUDE — a strategy describes HOW to think, not WHAT to do:
+  - GOOD: "Form a structural hypothesis about the data before acting"
+  - BAD: "Always check range boundaries" (that's a rule, not a strategy)
+
+Output a JSON object:
+{
+  "strategy_text": "<full strategy.md body: ## Name + overview + ### Details + \
+detail>",
+  "design_reasoning": "<why this strategy addresses the diagnosed limitations>",
+  "adherence_criteria": [
+    {
+      "id": "AC-1",
+      "expected_behavior_pattern": "<observable behavior in trajectories when \
+the agent follows this strategy>",
+      "current_behavior_contrast": "<what the agent does now in the same \
+situation, as a comparison baseline>"
+    }
+  ],
+  "improvement_expectations": [
+    {
+      "id": "IE-1",
+      "target_problem": "<the specific failure mode this strategy addresses>",
+      "improvement_mechanism": "<how the strategy changes agent behavior to \
+fix this>",
+      "trajectory_evidence": "<what an observer should see in the trajectory \
+text if the improvement is working>"
+    }
+  ]
+}
+
+QUALITY REQUIREMENTS for adherence_criteria and improvement_expectations:
+- Must be BEHAVIORAL-PARADIGM level, not L0 rule level
+- Must reference things observable in trajectory message sequences ([role] + \
+content blocks)
+- adherence_criteria: 2-3 items, each with a current_behavior_contrast baseline
+- improvement_expectations: 2-3 items, each with concrete trajectory_evidence
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Step 4: Two-layer verification
+# ══════════════════════════════════════════════════════════════════════════════
+
+_STEP4_PER_TRAJ_SYSTEM = """\
+You are judging whether an agent followed a proposed cognitive strategy and \
+whether the strategy produced improvements. You receive ONE agent execution \
+trajectory along with the strategy's adherence criteria and improvement \
+expectations.
+
+Your task:
+1. For each adherence criterion: extract BEHAVIORAL EVIDENCE from the \
+trajectory showing whether the agent's thinking aligns with the expected \
+pattern. Compare against the current_behavior_contrast baseline.
+2. For each improvement expectation: extract evidence of whether the \
+trajectory_evidence described in the expectation is actually observable.
+
+Ground every judgment in SPECIFIC evidence from the trajectory. If evidence is \
+ambiguous, say so — do not guess.
+
+Output a JSON object:
+{
+  "task_id": "<from input>",
+  "outcome": "<pass or fail>",
+  "criteria_assessments": [
+    {
+      "criterion_id": "AC-1",
+      "behavioral_evidence": "<what the agent actually did in this trajectory \
+relevant to this criterion>",
+      "verdict": "adhered | not_adhered | partial",
+      "analysis": "<why you made this judgment>"
+    }
+  ],
+  "expectation_assessments": [
+    {
+      "expectation_id": "IE-1",
+      "behavioral_evidence": "<evidence of improvement or lack thereof>",
+      "verdict": "improved | not_improved | inconclusive",
+      "analysis": "<why you made this judgment>"
+    }
+  ]
+}
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+_STEP4_AGGREGATE_SYSTEM = """\
+You are aggregating per-trajectory verification results into an overall \
+diagnosis of whether a proposed strategy is effective.
+
+You receive:
+- The strategy proposal (strategy text + adherence criteria + improvement \
+expectations)
+- Per-trajectory judge verdicts from multiple test trajectories
+
+Your task: synthesize the per-trajectory evidence into cross-trajectory \
+patterns and make an overall judgment.
+
+Output a JSON object:
+{
+  "adherence_verdicts": [
+    {
+      "criterion_id": "AC-1",
+      "verdict": "adhered | not_adhered | partial",
+      "evidence": "<cross-trajectory pattern summary>",
+      "analysis": "<overall judgment reasoning>"
+    }
+  ],
+  "improvement_verdicts": [
+    {
+      "expectation_id": "IE-1",
+      "verdict": "improved | not_improved | inconclusive",
+      "evidence": "<cross-trajectory improvement pattern>",
+      "analysis": "<overall judgment reasoning>"
+    }
+  ],
+  "overall_diagnosis": {
+    "strategy_effective": true or false,
+    "primary_issue": "none | adherence_failure | hypothesis_failure | \
+partial_success",
+    "diagnosis_detail": "<what specifically is the problem, if any>",
+    "iteration_suggestion": "<what the next iteration should try differently>"
+  }
+}
+
+DECISION CRITERIA:
+- strategy_effective=true: majority of adherence criteria are adhered AND \
+majority of improvement expectations show improvement
+- adherence_failure: the agent is NOT following the strategy (the strategy \
+text needs rephrasing for the agent to understand)
+- hypothesis_failure: the agent follows the strategy but it doesn't help \
+(the strategic direction is wrong, need to go back to analysis)
+- partial_success: some aspects work, some don't (refine the strategy in the \
+working direction)
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Core L1 cycle implementation
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_l1_cycle(
     node: "TreeNode",
-    l1_signals: "list[PatternRecord]",
     library: "PatternLibrary",
+    archive: "NegativeArchive",
+    env,
+    target_client: "LLMClient",
     optimizer_client: "LLMClient",
     *,
     cfg: "CSSConfig",
-) -> "list[RootCause]":
-    """Layer 4 shared by PROPOSAL and REFINE.
+    operation: str,
+    new_node_id: str,
+    epoch: int,
+    train_groups: "list[TaskRolloutGroup]",
+    out_dir: str,
+) -> "ProposalOutcome":
+    """Run the full L1 hypothesis-test-verify cycle.
 
-    The node's current strategy is passed to the attribution prompt's level-3
-    ("which strategy text permitted it?") via an EXPLICIT ``current_strategy``
-    argument — not stashed on shared ``cfg`` — so concurrent Phase-6 nodes
-    (``concurrency_limit`` per round, one shared ``cfg``) cannot clobber each
-    other's strategy text. The remedy history is the union of the L0 rules already
-    tried (``node.rules`` lines) — the evidence the LLM must explain away when
-    arguing this is a genuine L1 (thinking-level) cause.
+    This is the v2 replacement for the old ``run_proposal``/``run_refine``.
+    The cycle iterates up to ``cfg.max_l1_iterations`` times through:
+      Step 1 → Step 2 → Step 3 → Step 4 → Step 5 (decision)
+
+    On success, returns an outcome with ``new_node`` set.  On exhausting all
+    iterations, archives the last failed direction and returns failure.
     """
-    from css.proposal.root_cause import attribute_root_cause
+    cycle_dir = os.path.join(out_dir, node.node_id, "l1_cycle")
+    os.makedirs(cycle_dir, exist_ok=True)
 
-    remedy_history = _remedy_history(node)
-    return attribute_root_cause(
-        optimizer_client,
-        l1_signals,
-        library,
-        remedy_history=remedy_history,
-        cfg=cfg,
-        current_strategy=node.strategy or "",
+    max_iters = cfg.max_l1_iterations
+    iteration_ctx = _IterationContext(iteration_round=1)
+    max_workers = getattr(cfg, "max_api_workers", 32)
+
+    # The Step-1 failure-trajectory analysis (1b) consumes the node's failed
+    # rollouts; the diagnostic/regression subsets are derived inside Step 3.
+    fail_results = [r for g in train_groups for r in g.rollouts if not getattr(r, "passed", False)]
+
+    last_strategy = ""
+
+    for iteration in range(1, max_iters + 1):
+        round_dir = os.path.join(cycle_dir, f"round_{iteration:04d}")
+        os.makedirs(round_dir, exist_ok=True)
+        _log.info("L1 cycle iteration %d/%d for node %s", iteration, max_iters, node.node_id)
+
+        restart_from = "step1"
+        if iteration > 1:
+            last_attempt = iteration_ctx.previous_attempts[-1] if iteration_ctx.previous_attempts else None
+            if last_attempt and last_attempt.diagnosis == "hypothesis_failure":
+                restart_from = "step1"
+            else:
+                restart_from = "step2"
+
+        # ── Step 1: Multi-dimensional analysis ──────────────────────────
+        if restart_from == "step1":
+            hypothesis = _run_step1(
+                optimizer_client, node, train_groups, fail_results, cfg=cfg,
+                max_workers=max_workers, round_dir=round_dir,
+            )
+        # else: reuse last hypothesis (unchanged since we're only revising strategy)
+
+        # ── Step 2: Strategy proposal + predictions ─────────────────────
+        step2_result = _run_step2(
+            optimizer_client, node, hypothesis, iteration_ctx, cfg=cfg,
+            round_dir=round_dir,
+        )
+        # A Step-2 failure (no parseable proposal or empty strategy) still records
+        # an attempt so the restart logic sees a non-empty history and the next
+        # Step 2 receives feedback that its prior output was unusable — otherwise
+        # the loop silently freezes the stale hypothesis and reproduces the failure.
+        def _record_step2_failure(detail: str) -> None:
+            iteration_ctx.previous_attempts.append(_PreviousAttempt(
+                round=iteration,
+                strategy_summary="(Step 2 produced no usable strategy proposal)",
+                diagnosis="step2_failure",
+                adherence_results=[],
+                improvement_results=[],
+                judge_diagnosis=detail,
+                judge_suggestion=(
+                    "Emit a single valid JSON object with all required fields "
+                    "(strategy_text, adherence_criteria, improvement_expectations); "
+                    "no prose, no markdown fences."
+                ),
+            ))
+            iteration_ctx.iteration_round = iteration + 1
+
+        if not step2_result:
+            _save_json(os.path.join(round_dir, "step2", "error.json"),
+                       {"error": "Step 2 produced no usable output"})
+            _record_step2_failure("Step 2 output was missing or unparseable JSON.")
+            continue
+
+        # ``or ""`` guards against ``strategy_text: null`` (key present, value None).
+        strategy_text = step2_result.get("strategy_text") or ""
+        if not strategy_text.strip():
+            _record_step2_failure("Step 2 proposal had an empty strategy_text.")
+            continue
+
+        last_strategy = strategy_text
+
+        # ── Step 3: Focused testing ─────────────────────────────────────
+        test_results = _run_step3(
+            env, target_client, strategy_text, train_groups,
+            cfg=cfg, round_dir=round_dir, epoch=epoch, node_id=node.node_id,
+        )
+
+        # ── Step 4: Two-layer verification ──────────────────────────────
+        diagnosis = _run_step4(
+            optimizer_client, step2_result, test_results,
+            cfg=cfg, max_workers=max_workers, round_dir=round_dir,
+        )
+
+        # ── Step 5: Iteration control ──────────────────────────────────
+        # ``or {}`` guards both a missing key and ``overall_diagnosis: null``.
+        overall = diagnosis.get("overall_diagnosis") or {}
+        if not isinstance(overall, dict):
+            overall = {}
+        strategy_effective = _coerce_bool(overall.get("strategy_effective", False))
+        primary_issue = overall.get("primary_issue", "none")
+
+        _save_json(os.path.join(round_dir, "step5_decision.json"), {
+            "strategy_effective": strategy_effective,
+            "primary_issue": primary_issue,
+            "iteration": iteration,
+        })
+
+        if strategy_effective:
+            rules = "" if operation == "PROPOSAL" else _inherit_rules_for_refine(
+                optimizer_client, strategy_text, node.rules, cfg=cfg
+            )
+            new_node = _build_node(
+                node,
+                new_node_id=new_node_id,
+                branch_type=operation,
+                strategy=strategy_text,
+                rules=rules,
+                refine_count=(node.refine_count + 1 if operation == "REFINE"
+                              else node.refine_count),
+                epoch=epoch,
+            )
+            _save_json(os.path.join(cycle_dir, "final_outcome.json"), {
+                "success": True,
+                "operation": operation,
+                "n_iterations": iteration,
+                "new_node_id": new_node.node_id,
+            })
+            return ProposalOutcome(
+                success=True,
+                operation=operation,
+                new_node=new_node,
+                reason=f"strategy_verified: iteration {iteration}",
+                n_iterations=iteration,
+            )
+
+        # Build iteration feedback for the next round.
+        attempt = _PreviousAttempt(
+            round=iteration,
+            strategy_summary=strategy_text[:500],
+            diagnosis=primary_issue,
+            adherence_results=diagnosis.get("adherence_verdicts", []),
+            improvement_results=diagnosis.get("improvement_verdicts", []),
+            judge_diagnosis=overall.get("diagnosis_detail", ""),
+            judge_suggestion=overall.get("iteration_suggestion", ""),
+        )
+        iteration_ctx.previous_attempts.append(attempt)
+        iteration_ctx.iteration_round = iteration + 1
+
+        _save_json(os.path.join(round_dir, "iteration_context.json"),
+                   iteration_ctx.to_dict())
+
+        _log.info("L1 iteration %d: %s — %s", iteration, primary_issue,
+                  overall.get("diagnosis_detail", "")[:200])
+
+    # All iterations exhausted — archive the last failed direction.
+    archived = _archive_failed_cycle(
+        archive,
+        strategy_snapshot=last_strategy,
+        origin=f"{operation.lower()}_l1_exhausted",
+        diagnosis_summary=(
+            iteration_ctx.previous_attempts[-1].judge_diagnosis
+            if iteration_ctx.previous_attempts else "no diagnosis"
+        ),
+        epoch=epoch,
+        source_node_id=node.node_id,
+        n_iterations=max_iters,
+    )
+    _save_json(os.path.join(cycle_dir, "final_outcome.json"), {
+        "success": False,
+        "operation": operation,
+        "n_iterations": max_iters,
+        "reason": "max_iterations_exhausted",
+    })
+    return ProposalOutcome(
+        success=False,
+        operation=operation,
+        archived=archived,
+        reason=f"max_iterations_exhausted: {max_iters} rounds without verification pass",
+        n_iterations=max_iters,
     )
 
 
-def _remedy_history(node: "TreeNode") -> "list[str]":
-    """The L0 rules already tried at this node (one per non-empty line).
+# ══════════════════════════════════════════════════════════════════════════════
+# Step implementations
+# ══════════════════════════════════════════════════════════════════════════════
 
-    These are the surface remedies the root-cause analyst must explain could NOT
-    durably fix the pattern (the justification for an L1 change). Best-effort: the
-    node's ``rules`` text split into lines.
-    """
-    rules = (node.rules or "").strip()
-    if not rules:
-        return []
-    return [ln.strip() for ln in rules.splitlines() if ln.strip()]
+def _run_step1(
+    client: "LLMClient",
+    node: "TreeNode",
+    train_groups: "list[TaskRolloutGroup]",
+    fail_results: "list[TaskResult]",
+    *,
+    cfg: "CSSConfig",
+    max_workers: int,
+    round_dir: str,
+) -> dict:
+    """Step 1: 1a/1b/1c parallel → 1d synthesis."""
+    from css.trajectory import format_trajectory
+
+    step_dir = os.path.join(round_dir, "step1")
+    os.makedirs(step_dir, exist_ok=True)
+
+    tool_trunc = cfg.tool_trunc
+    results_1abc: dict[str, Any] = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {}
+
+        # 1a: L0 ceiling analysis
+        futures["1a"] = pool.submit(
+            _step1a, client, node, cfg=cfg, tool_trunc=tool_trunc
+        )
+
+        # 1b: Failure trajectory deep analysis
+        rep_trajs = _select_representative_failures(fail_results, node.pattern_records, k=5)
+        futures["1b"] = pool.submit(
+            _step1b, client, rep_trajs, tool_trunc=tool_trunc
+        )
+
+        # 1c: L0 contrastive limitation review
+        mixed_groups = [g for g in train_groups if g.contrastive_pairs()]
+        futures["1c"] = pool.submit(
+            _step1c, client, node, mixed_groups, tool_trunc=tool_trunc
+        )
+
+        for key, fut in futures.items():
+            try:
+                results_1abc[key] = fut.result()
+            except Exception as exc:
+                _log.warning("Step 1%s failed: %s", key, exc)
+                results_1abc[key] = {"error": str(exc)}
+
+    for key, data in results_1abc.items():
+        _save_json(os.path.join(step_dir, f"1{key}_analysis.json"), data)
+
+    # 1d: Hypothesis synthesis
+    hypothesis = _step1d(client, results_1abc)
+    _save_json(os.path.join(step_dir, "1d_hypothesis.json"), hypothesis)
+    return hypothesis
 
 
-def _counterpart_success_patterns(
-    targeted_pattern_ids: "list[str]",
-    library: "PatternLibrary",
-) -> "list[PatternRecord]":
-    """Resolve the paired SUCCESS counterparts for the targeted failure patterns.
+def _step1a(client: "LLMClient", node: "TreeNode", *, cfg: "CSSConfig",
+            tool_trunc: int) -> dict:
+    """1a — L0 ceiling analysis."""
+    step_buffer = node.step_buffer
+    rejected = step_buffer.recent_rejected_edits(cfg.W) if step_buffer else []
+    score_history = []
+    for entry in (step_buffer.entries[-cfg.W:] if step_buffer else []):
+        score_history.append({
+            "step": entry.step,
+            "action": entry.action,
+            "score_before": entry.score_before,
+            "score_after": entry.score_after,
+        })
 
-    For each targeted (failure) pattern, follow ``PatternRecord.counterpart_id``
-    into ``library`` and keep the resolved record only when it is a SUCCESS pattern
-    (``polarity == "success"``). De-duplicates while preserving order. These are
-    the behaviors Layer 5a SYSTEMATIZES — the cases where the agent already thought
-    the right way and succeeded.
-    """
-    out: list["PatternRecord"] = []
-    seen: set[str] = set()
-    for pid in targeted_pattern_ids:
-        failure = library.get(pid)
-        if failure is None or not failure.counterpart_id:
+    user_parts = [
+        "## Current strategy.md\n" + (node.strategy or "(empty)").strip(),
+        "## Current rules.md\n" + (node.rules or "(empty)").strip(),
+        "## Score trajectory (recent L0 steps)\n" + json.dumps(score_history, indent=2),
+    ]
+    if rejected:
+        rej_text = "\n".join(
+            f"- [{e.op}] {(e.content or '')[:200]}" for e in rejected[:10]
+        )
+        user_parts.append("## Recently rejected edits\n" + rej_text)
+
+    user = "\n\n".join(user_parts)
+    text = _safe_optimizer_call(client, _STEP1A_SYSTEM, user, max_tokens=4096)
+    return _parse_json_safe(text, {"ceiling_analysis": text})
+
+
+def _step1b(client: "LLMClient", trajectories: "list[TaskResult]", *,
+            tool_trunc: int) -> dict:
+    """1b — failure trajectory deep analysis."""
+    from css.trajectory import format_trajectory
+
+    traj_parts = []
+    for r in trajectories[:5]:
+        header = f"### Task {r.task_id} (outcome: {'PASS' if r.passed else 'FAIL'})"
+        desc = getattr(r, "task_description", "") or ""
+        traj_text = format_trajectory(r.messages, tool_trunc=tool_trunc)
+        traj_parts.append(f"{header}\n{desc}\n\n{traj_text}")
+
+    user = "## Failure trajectories for analysis\n\n" + "\n\n---\n\n".join(traj_parts)
+    text = _safe_optimizer_call(client, _STEP1B_SYSTEM, user, max_tokens=8192)
+    return _parse_json_safe(text, {"raw_analysis": text})
+
+
+def _step1c(client: "LLMClient", node: "TreeNode",
+            mixed_groups: "list[TaskRolloutGroup]", *, tool_trunc: int) -> dict:
+    """1c — L0 contrastive analysis limitation review."""
+    from css.trajectory import format_trajectory
+
+    user_parts = []
+    step_buffer = node.step_buffer
+    rejected = step_buffer.recent_rejected_edits(10) if step_buffer else []
+    if rejected:
+        rej_text = "\n".join(
+            f"- [{e.op}] reason: {e.reason or 'N/A'} | content: {(e.content or '')[:150]}"
+            for e in rejected[:8]
+        )
+        user_parts.append("## Rules tried but rejected\n" + rej_text)
+
+    for g in mixed_groups[:3]:
+        pairs = g.contrastive_pairs()
+        if not pairs:
             continue
-        counterpart = library.get(failure.counterpart_id)
-        if counterpart is None:
-            continue
-        if getattr(counterpart, "polarity", None) != "success":
-            continue
-        if counterpart.pattern_id in seen:
-            continue
-        seen.add(counterpart.pattern_id)
-        out.append(counterpart)
-    return out
+        for succ, fail in pairs[:1]:
+            user_parts.append(
+                f"### Mixed task {g.task_id}\n"
+                f"**Success rollout:**\n{format_trajectory(succ.messages, tool_trunc=tool_trunc)[:3000]}\n\n"
+                f"**Failure rollout:**\n{format_trajectory(fail.messages, tool_trunc=tool_trunc)[:3000]}"
+            )
+
+    if not user_parts:
+        return {"limitation_analysis": "No mixed-result tasks available for contrastive review."}
+
+    user = "\n\n".join(user_parts)
+    text = _safe_optimizer_call(client, _STEP1C_SYSTEM, user, max_tokens=4096)
+    return _parse_json_safe(text, {"raw_analysis": text})
 
 
-def _root_cause_summary(rc: "RootCause") -> str:
-    """A compact one-line root-cause summary for negative-archive provenance."""
-    pids = ", ".join(rc.pattern_ids) or "(unspecified)"
-    strat = (rc.strategy or "").strip()
-    assm = (rc.assumption or "").strip()
-    return f"patterns[{pids}] strategy: {strat} | assumption: {assm}".strip()
+def _step1d(client: "LLMClient", analyses: dict) -> dict:
+    """1d — hypothesis synthesis from 1a/1b/1c."""
+    user_parts = []
+    if "1a" in analyses:
+        user_parts.append("## 1. L0 Ceiling Analysis\n" + json.dumps(analyses["1a"], indent=2, ensure_ascii=False))
+    if "1b" in analyses:
+        user_parts.append("## 2. Trajectory Analysis\n" + json.dumps(analyses["1b"], indent=2, ensure_ascii=False))
+    if "1c" in analyses:
+        user_parts.append("## 3. Contrastive Limitation Analysis\n" + json.dumps(analyses["1c"], indent=2, ensure_ascii=False))
+
+    user = "\n\n".join(user_parts)
+    text = _safe_optimizer_call(client, _STEP1D_SYSTEM, user, max_tokens=4096)
+    return _parse_json_safe(text, {"raw_synthesis": text})
 
 
-def _embed_strategy(embedder: "Embedder", strategy_text: str) -> "list[float] | None":
-    """Embed a strategy snapshot for the negative archive (best-effort).
+def _run_step2(
+    client: "LLMClient",
+    node: "TreeNode",
+    hypothesis: dict,
+    iteration_ctx: _IterationContext,
+    *,
+    cfg: "CSSConfig",
+    round_dir: str,
+) -> dict | None:
+    """Step 2: Strategy proposal + behavioral predictions."""
+    step_dir = os.path.join(round_dir, "step2")
+    os.makedirs(step_dir, exist_ok=True)
 
-    Returns a plain list of floats (the contract's
-    ``[float(x) for x in embedder.embed([text])[0]]``) so the entry is JSON-round-
-    trippable and ``NegativeArchive.recall`` can score it later. Degrades to
-    ``None`` on any embedding failure rather than blocking the archive write.
-    """
-    try:
-        vec = embedder.embed([strategy_text])
-        row = vec[0]
-        return [float(x) for x in row]
-    except Exception:
+    user_parts = [
+        "## Step 1d Hypothesis\n" + json.dumps(hypothesis, indent=2, ensure_ascii=False),
+        "## Current strategy.md (reference)\n" + (node.strategy or "(empty)").strip(),
+        "## Current rules.md (reference)\n" + (node.rules or "(empty)").strip()[:2000],
+    ]
+
+    if iteration_ctx.previous_attempts:
+        user_parts.append(
+            "## Iteration Context (CRITICAL — previous attempts and their diagnoses)\n"
+            + json.dumps(iteration_ctx.to_dict(), indent=2, ensure_ascii=False)
+        )
+
+    user = "\n\n".join(user_parts)
+    text = _safe_optimizer_call(client, _STEP2_SYSTEM, user, max_tokens=8192)
+    result = _parse_json_safe(text, None)
+    if result is None:
+        _save_json(os.path.join(step_dir, "raw_response.txt"), {"raw": text})
         return None
+    _save_json(os.path.join(step_dir, "strategy_proposal.json"), result)
+    return result
 
 
-def _archive_failed_rollout(
-    archive: "NegativeArchive",
-    embedder: "Embedder",
-    *,
-    strategy_snapshot: str,
-    origin: str,
-    root_cause: "RootCause",
-    occ_before: float,
-    occ_after: float,
-    epoch: int,
-    source_node_id: str,
-    rollout_error: str = "",
-) -> "NegativeArchiveEntry":
-    """Write a disproven direction to the negative archive and return the entry.
-
-    Embeds ``strategy_snapshot`` at write time (so a later Layer-5b recall can find
-    it) and records the root-cause summary + the failure evidence. When
-    ``rollout_error`` is set, the evidence records the INFRASTRUCTURE failure
-    distinctly from a measured no-decrease (which would otherwise look identical).
-    """
-    from css.data.negative_archive import NegativeArchiveEntry
-
-    if rollout_error:
-        failure_evidence = (
-            f"5c rollout could not be measured ({rollout_error}); "
-            f"archived as unvalidated to avoid re-trying a broken direction"
-        )
-    else:
-        failure_evidence = (
-            f"target pattern occurrence rate {occ_before} -> {occ_after} "
-            f"(no significant decrease) on persistent-fail rollout"
-        )
-    entry = NegativeArchiveEntry(
-        entry_id=archive.new_entry_id(),
-        strategy_snapshot=strategy_snapshot,
-        origin=origin,
-        root_cause=_root_cause_summary(root_cause),
-        failure_evidence=failure_evidence,
-        created_epoch=epoch,
-        created_step=-1,
-        source_node_id=source_node_id,
-        embedding=_embed_strategy(embedder, strategy_snapshot),
-    )
-    archive.add(entry)
-    return entry
-
-
-# ── PROPOSAL ─────────────────────────────────────────────────────────────────
-
-def run_proposal(
-    node: "TreeNode",
-    l1_signals: "list[PatternRecord]",
-    library: "PatternLibrary",
-    archive: "NegativeArchive",
-    embedder: "Embedder",
-    optimizer_client: "LLMClient",
+def _run_step3(
+    env,
+    target_client: "LLMClient",
+    strategy_text: str,
+    train_groups: "list[TaskRolloutGroup]",
     *,
     cfg: "CSSConfig",
-    new_node_id: str,
+    round_dir: str,
     epoch: int,
-    success_results: "list[TaskResult]",
-    persistent_fail_groups: "list[TaskRolloutGroup]",
-    rollout_validate_fn: RolloutValidateFn,
-) -> "ProposalOutcome":
-    """Run a full PROPOSAL: Layer 4 -> 5a derive -> neg-archive gate -> 5b -> 5c.
+    node_id: str,
+) -> "list[TaskResult]":
+    """Step 3: Focused testing — rollout new strategy with empty rules."""
+    from css.rollout.batch import batch_rollout
+    from css.skill_document import SkillDocument
 
-    Steps (design §4.3 / D4):
-      1. Layer 4 (:func:`_attribute`). No root cause -> ``no_root_cause``.
-      2. Take the TOP (highest-leverage) RootCause; gather its paired SUCCESS
-         counterpart patterns (via ``counterpart_id``) and Layer-5a
-         :func:`derive_strategy` to SYSTEMATIZE them into a new strategy body.
-         An empty derived strategy -> ``empty_strategy``.
-      3. Negative-archive gate (:func:`check_negative_archive`): if the candidate
-         is the SAME disproven direction (no articulable difference), archive it
-         and return ``neg_archive_block``.
-      4. Layer 5b (:func:`retrospective_validate`): a ``"reconsider"`` verdict ->
-         ``low_coverage`` (cheap early-kill, no rollout spent).
-      5. Layer 5c (``rollout_validate_fn`` on the inherited rules): PASS
-         (occ_after < occ_before) -> build a new PROPOSAL :class:`TreeNode` whose
-         rules are the SEMANTIC keep/drop inheritance of the parent rules. FAIL ->
-         archive (origin ``proposal_failed_rollout``).
+    step_dir = os.path.join(round_dir, "step3", "rollout")
+    os.makedirs(step_dir, exist_ok=True)
 
-    Never raises. The same inherited rules are computed once and threaded into both
-    the 5c rollout and the accepted node so what we validated is what we keep.
-    """
-    from css.proposal.derivation import check_negative_archive, derive_strategy, retrospective_validate
-    from css.proposal.inheritance import proposal_inherit_rules
+    candidate_doc = SkillDocument(skill_dir="", strategy=strategy_text, rules="")
+    skill_text = candidate_doc.combined_skill_text()
 
-    # Layer 4 — root-cause attribution (shared).
-    root_causes = _attribute(node, l1_signals, library, optimizer_client, cfg=cfg)
-    if not root_causes:
-        return ProposalOutcome(
-            success=False,
-            operation="PROPOSAL",
-            reason="no_root_cause: Layer 4 produced no evidence-complete diagnosis",
-        )
+    diagnostic_items = _select_diagnostic_tasks(env, train_groups, cfg)
 
-    top = root_causes[0]
-
-    # Layer 5a — derive (NOT generate) from the top root cause + success counterparts.
-    counterparts = _counterpart_success_patterns(top.pattern_ids, library)
-    proposal = derive_strategy(
-        optimizer_client, top, counterparts, cfg=cfg, current_strategy=node.strategy or ""
-    )
-    if not (proposal.strategy_text or "").strip():
-        return ProposalOutcome(
-            success=False,
-            operation="PROPOSAL",
-            reason="empty_strategy: Layer 5a derivation produced no strategy text",
-        )
-
-    # Layer 5b gate (1/2) — negative-archive "reminder not prohibition".
-    proceed, neg_reason = check_negative_archive(
-        optimizer_client,
-        embedder,
-        proposal.strategy_text,
-        archive,
-        top_k=cfg.neg_archive_top_k,
-    )
-    if not proceed:
-        # The candidate repeats a disproven direction: record it so the search is
-        # reminded next time too, and stop here.
-        archived = _archive_failed_rollout(
-            archive,
-            embedder,
-            strategy_snapshot=proposal.strategy_text,
-            origin="proposal_failed_rollout",
-            root_cause=top,
-            occ_before=-1.0,
-            occ_after=-1.0,
-            epoch=epoch,
-            source_node_id=node.node_id,
-        )
-        return ProposalOutcome(
-            success=False,
-            operation="PROPOSAL",
-            archived=archived,
-            reason=f"neg_archive_block: {neg_reason}",
-        )
-
-    # Layer 5b gate (2/2) — cheap retrospective coverage check.
-    validation = retrospective_validate(
-        optimizer_client,
-        proposal,
-        success_results,
-        persistent_fail_groups,
-        cfg=cfg,
-    )
-    if validation.verdict == "reconsider":
-        return ProposalOutcome(
-            success=False,
-            operation="PROPOSAL",
-            validation=validation,
-            reason=f"low_coverage: coverage {validation.coverage:.3f} < "
-            f"coverage_high {cfg.coverage_high:.2f}; reconsider root cause",
-        )
-
-    # Knowledge inheritance — SEMANTIC keep/drop of the parent rules under the new
-    # strategy. Compute ONCE so the 5c rollout validates the exact rules we keep.
-    inherited_rules = proposal_inherit_rules(
-        optimizer_client, proposal.strategy_text, node.rules, cfg=cfg
-    )
-
-    # Layer 5c — injected rollout validation on the persistent-fail subset.
-    occ_before, occ_after, rollout_error = _safe_rollout(
-        rollout_validate_fn,
-        proposal.strategy_text,
-        inherited_rules,
-        proposal.targeted_pattern_ids,
-    )
-
-    if not rollout_error and _rollout_passed(occ_before, occ_after):
-        new_node = _build_node(
-            node,
-            new_node_id=new_node_id,
-            branch_type="PROPOSAL",
-            strategy=proposal.strategy_text,
-            rules=inherited_rules,
-            refine_count=node.refine_count,
-            epoch=epoch,
-        )
-        return ProposalOutcome(
-            success=True,
-            operation="PROPOSAL",
-            new_node=new_node,
-            validation=validation,
-            occurrence_before=occ_before,
-            occurrence_after=occ_after,
-            reason=f"rollout_pass: target occurrence {occ_before} -> {occ_after}",
-        )
-
-    # Rollout FAIL -> negative archive (disproven by real rollout).
-    archived = _archive_failed_rollout(
-        archive,
-        embedder,
-        strategy_snapshot=proposal.strategy_text,
-        origin="proposal_failed_rollout",
-        root_cause=top,
-        occ_before=occ_before,
-        occ_after=occ_after,
+    results = batch_rollout(
+        env,
+        diagnostic_items,
+        skill_text,
+        target_client,
+        k_rollouts=1,
+        out_dir=step_dir,
+        max_workers=cfg.max_api_workers,
+        task_timeout=cfg.task_timeout_s,
         epoch=epoch,
-        source_node_id=node.node_id,
-        rollout_error=rollout_error,
+        node_id=node_id,
     )
-    return ProposalOutcome(
-        success=False,
-        operation="PROPOSAL",
-        archived=archived,
-        validation=validation,
-        occurrence_before=occ_before,
-        occurrence_after=occ_after,
-        reason=(
-            f"rollout_error: {rollout_error}" if rollout_error
-            else f"rollout_fail: target occurrence {occ_before} -> {occ_after} "
-            f"(no significant decrease)"
-        ),
-    )
+    _log.info("Step 3: tested %d tasks, %d passed",
+              len(results), sum(1 for r in results if r.passed))
+    return results
 
 
-# ── REFINE ───────────────────────────────────────────────────────────────────
-
-def run_refine(
-    node: "TreeNode",
-    l1_signals: "list[PatternRecord]",
-    library: "PatternLibrary",
-    archive: "NegativeArchive",
-    embedder: "Embedder",
-    optimizer_client: "LLMClient",
+def _run_step4(
+    client: "LLMClient",
+    proposal: dict,
+    test_results: "list[TaskResult]",
     *,
     cfg: "CSSConfig",
-    new_node_id: str,
-    epoch: int,
-    success_results: "list[TaskResult]",
-    persistent_fail_groups: "list[TaskRolloutGroup]",
-    rollout_validate_fn: RolloutValidateFn,
-) -> "ProposalOutcome":
-    """Run a full REFINE: Layer 4 (shared) -> 5a local edit -> 5b -> 5c.
+    max_workers: int,
+    round_dir: str,
+) -> dict:
+    """Step 4: two-layer verification."""
+    from css.trajectory import format_trajectory
 
-    REFINE shares Layer 4 with PROPOSAL but diverges at 5a to a LOCAL change:
-      1. Layer 4 (:func:`_attribute`). No root cause -> ``no_root_cause``.
-      2. Layer 5a (:func:`derive_refine`) rewrites only 1-2 ``###`` subsections of
-         the parent strategy (gated deterministically by
-         :func:`css.markdown_utils.check_refine_diff`). If the gate fails, the
-         reason carries ``escalate_to_proposal`` and we return immediately so the
-         caller can switch to :func:`run_proposal` — REFINE never silently widens.
-      3. Layer 5b (:func:`retrospective_validate`, reused via a thin
-         :class:`StrategyProposal` wrapper around ``refine.strategy_text``):
-         ``"reconsider"`` -> ``low_coverage``.
-      4. Knowledge inheritance — FULL inherit + conflict cleanup
-         (:func:`refine_apply_cleanup`, modify/delete-only): the validated rules
-         are the parent rules with the conflicting-rule cleanup applied.
-      5. Layer 5c (``rollout_validate_fn``): PASS -> a new REFINE
-         :class:`TreeNode` with ``refine_count = parent.refine_count + 1``. FAIL ->
-         archive (origin ``refine_failed_rollout``).
+    step_dir = os.path.join(round_dir, "step4")
+    per_traj_dir = os.path.join(step_dir, "per_trajectory")
+    os.makedirs(per_traj_dir, exist_ok=True)
 
-    Never raises.
+    adherence_criteria = proposal.get("adherence_criteria", [])
+    improvement_expectations = proposal.get("improvement_expectations", [])
+    criteria_text = json.dumps(adherence_criteria, indent=2, ensure_ascii=False)
+    expectations_text = json.dumps(improvement_expectations, indent=2, ensure_ascii=False)
+
+    # Layer 1: per-trajectory Judge (parallel)
+    per_traj_verdicts = []
+
+    def _judge_one(result: "TaskResult") -> dict:
+        traj_text = format_trajectory(result.messages, tool_trunc=cfg.tool_trunc)
+        user = (
+            f"## Strategy adherence criteria\n{criteria_text}\n\n"
+            f"## Improvement expectations\n{expectations_text}\n\n"
+            f"## Trajectory (task {result.task_id}, outcome: "
+            f"{'PASS' if result.passed else 'FAIL'})\n\n{traj_text}"
+        )
+        text = _safe_optimizer_call(
+            client, _STEP4_PER_TRAJ_SYSTEM, user, max_tokens=4096
+        )
+        verdict = _parse_json_safe(text, {"task_id": result.task_id, "raw": text})
+        verdict["task_id"] = str(result.task_id)
+        verdict["outcome"] = "pass" if result.passed else "fail"
+        return verdict
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_judge_one, r): r for r in test_results}
+        for fut in as_completed(futures):
+            try:
+                verdict = fut.result()
+                per_traj_verdicts.append(verdict)
+                _save_json(
+                    os.path.join(per_traj_dir, f"task_{verdict.get('task_id', 'unknown')}.json"),
+                    verdict
+                )
+            except Exception as exc:
+                _log.warning("Per-trajectory judge failed: %s", exc)
+
+    # Layer 2: aggregate diagnosis
+    aggregate_user_parts = [
+        "## Strategy proposal\n" + json.dumps({
+            "strategy_text": (proposal.get("strategy_text") or "")[:2000],
+            "adherence_criteria": adherence_criteria,
+            "improvement_expectations": improvement_expectations,
+        }, indent=2, ensure_ascii=False),
+        "## Per-trajectory verdicts\n" + json.dumps(per_traj_verdicts, indent=2, ensure_ascii=False),
+    ]
+    aggregate_user = "\n\n".join(aggregate_user_parts)
+    agg_text = _safe_optimizer_call(
+        client, _STEP4_AGGREGATE_SYSTEM, aggregate_user, max_tokens=4096
+    )
+    diagnosis = _parse_json_safe(agg_text, {
+        "overall_diagnosis": {
+            "strategy_effective": False,
+            "primary_issue": "hypothesis_failure",
+            "diagnosis_detail": "Failed to parse aggregate verdict",
+            "iteration_suggestion": "Retry with different approach",
+        }
+    })
+    _save_json(os.path.join(step_dir, "aggregated_verdict.json"), diagnosis)
+    return diagnosis
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Helper functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _select_representative_failures(
+    fail_results: "list[TaskResult]",
+    pattern_library: "PatternLibrary",
+    k: int = 5,
+) -> "list[TaskResult]":
+    """Select k representative failure trajectories by pattern coverage."""
+    if len(fail_results) <= k:
+        return list(fail_results)
+
+    failure_patterns = list(pattern_library.by_polarity("failure"))
+    top_patterns = sorted(failure_patterns, key=lambda p: p.support_count, reverse=True)[:k * 2]
+
+    task_pattern_coverage: dict[str, set[str]] = {}
+    for pat in top_patterns:
+        for obs in pat.observations:
+            tid = str(obs.task_id)
+            if tid not in task_pattern_coverage:
+                task_pattern_coverage[tid] = set()
+            task_pattern_coverage[tid].add(pat.pattern_id)
+
+    result_by_task: dict[str, "TaskResult"] = {}
+    for r in fail_results:
+        tid = str(r.task_id)
+        if tid not in result_by_task:
+            result_by_task[tid] = r
+
+    scored = sorted(
+        result_by_task.items(),
+        key=lambda item: len(task_pattern_coverage.get(item[0], set())),
+        reverse=True,
+    )
+    return [r for _, r in scored[:k]]
+
+
+def _select_diagnostic_tasks(
+    env,
+    train_groups: "list[TaskRolloutGroup]",
+    cfg: "CSSConfig",
+) -> list[dict]:
+    """Select tasks for Step 3 focused testing."""
+    persistent_fail = [g for g in train_groups if g.is_persistent_fail()]
+    # ``all([])`` is True, so guard against zero-rollout groups (all rollouts
+    # errored/timed out) being mis-selected as fully-passing regression tasks.
+    passing = [
+        g for g in train_groups
+        if g.rollouts and all(r.passed for r in g.rollouts)
+    ]
+
+    n_diag = cfg.l1_diagnostic_tasks
+    n_regress = cfg.l1_regression_tasks
+
+    train_index = _train_item_index(env)
+
+    items = []
+    seen = set()
+
+    for g in persistent_fail[:n_diag]:
+        tid = str(g.task_id)
+        if tid in train_index and tid not in seen:
+            items.append(train_index[tid])
+            seen.add(tid)
+        if len(items) >= n_diag:
+            break
+
+    for g in passing[:n_regress]:
+        tid = str(g.task_id)
+        if tid in train_index and tid not in seen:
+            items.append(train_index[tid])
+            seen.add(tid)
+        if len(items) >= n_diag + n_regress:
+            break
+
+    return items
+
+
+def _train_item_index(env) -> dict:
+    """Map task_id -> env train item dict."""
+    index = {}
+    try:
+        for item in env.train_items():
+            if isinstance(item, dict):
+                tid = str(item.get("task_id", item.get("id", "")))
+                if tid:
+                    index[tid] = item
+    except Exception:
+        pass
+    return index
+
+
+def _inherit_rules_for_refine(
+    client: "LLMClient",
+    new_strategy: str,
+    old_rules: str,
+    *,
+    cfg: "CSSConfig",
+) -> str:
+    """For REFINE: semantically inherit non-conflicting rules.
+
+    On any failure of the semantic-inheritance LLM call, degrade to KEEPING the
+    parent rules verbatim rather than dropping them — a REFINE node must never be
+    strictly worse than its parent on tactical guidance because of a transient
+    optimizer error.
     """
-    from css.proposal.derivation import StrategyProposal, retrospective_validate
-    from css.proposal.inheritance import refine_apply_cleanup
-    from css.proposal.refine import derive_refine
+    if not old_rules or not old_rules.strip():
+        return ""
+    try:
+        from css.proposal.inheritance import proposal_inherit_rules
+        return proposal_inherit_rules(client, new_strategy, old_rules, cfg=cfg)
+    except Exception:
+        return old_rules
 
-    # Layer 4 — shared root-cause attribution.
-    root_causes = _attribute(node, l1_signals, library, optimizer_client, cfg=cfg)
-    if not root_causes:
-        return ProposalOutcome(
-            success=False,
-            operation="REFINE",
-            reason="no_root_cause: Layer 4 produced no evidence-complete diagnosis",
-        )
-
-    top = root_causes[0]
-
-    # Layer 5a — derive a LOCAL refine; the gate may reject -> escalate to PROPOSAL.
-    refine, gate_reason = derive_refine(
-        optimizer_client, top, node.strategy, node.rules, cfg=cfg, max_changed=2
-    )
-    if refine is None:
-        # The local edit is not admissible (over-broad, structural, escalated, or
-        # unparseable). The caller escalates to PROPOSAL on this reason.
-        return ProposalOutcome(
-            success=False,
-            operation="REFINE",
-            reason=gate_reason or "refine_gate_failed:escalate_to_proposal",
-        )
-
-    # Layer 5b — reuse retrospective_validate via a StrategyProposal wrapper.
-    targeted = list(top.pattern_ids)
-    proposal_view = StrategyProposal(
-        strategy_text=refine.strategy_text,
-        rationale="REFINE local edit of subsections: " + ", ".join(refine.changed_subsections),
-        root_cause=top,
-        targeted_pattern_ids=targeted,
-    )
-    validation = retrospective_validate(
-        optimizer_client,
-        proposal_view,
-        success_results,
-        persistent_fail_groups,
-        cfg=cfg,
-    )
-    if validation.verdict == "reconsider":
-        return ProposalOutcome(
-            success=False,
-            operation="REFINE",
-            validation=validation,
-            reason=f"low_coverage: coverage {validation.coverage:.3f} < "
-            f"coverage_high {cfg.coverage_high:.2f}; reconsider root cause",
-        )
-
-    # Knowledge inheritance — FULL inherit + conflict cleanup (modify/delete only).
-    # refine_apply_cleanup asserts is_cleanup_only internally; the cleanup Patch is
-    # sanitized addition-free by derive_refine, so this cannot raise here.
-    cleaned_rules, _reports = refine_apply_cleanup(node.rules, refine.rules_cleanup)
-
-    # Layer 5c — injected rollout validation on the validated (cleaned) rules.
-    occ_before, occ_after, rollout_error = _safe_rollout(
-        rollout_validate_fn,
-        refine.strategy_text,
-        cleaned_rules,
-        targeted,
-    )
-
-    if not rollout_error and _rollout_passed(occ_before, occ_after):
-        new_node = _build_node(
-            node,
-            new_node_id=new_node_id,
-            branch_type="REFINE",
-            strategy=refine.strategy_text,
-            rules=cleaned_rules,
-            refine_count=node.refine_count + 1,
-            epoch=epoch,
-        )
-        return ProposalOutcome(
-            success=True,
-            operation="REFINE",
-            new_node=new_node,
-            validation=validation,
-            occurrence_before=occ_before,
-            occurrence_after=occ_after,
-            reason=f"rollout_pass: target occurrence {occ_before} -> {occ_after}",
-        )
-
-    # Rollout FAIL -> negative archive (origin refine_failed_rollout).
-    archived = _archive_failed_rollout(
-        archive,
-        embedder,
-        strategy_snapshot=refine.strategy_text,
-        origin="refine_failed_rollout",
-        root_cause=top,
-        occ_before=occ_before,
-        occ_after=occ_after,
-        epoch=epoch,
-        source_node_id=node.node_id,
-        rollout_error=rollout_error,
-    )
-    return ProposalOutcome(
-        success=False,
-        operation="REFINE",
-        archived=archived,
-        validation=validation,
-        occurrence_before=occ_before,
-        occurrence_after=occ_after,
-        reason=(
-            f"rollout_error: {rollout_error}" if rollout_error
-            else f"rollout_fail: target occurrence {occ_before} -> {occ_after} "
-            f"(no significant decrease)"
-        ),
-    )
-
-
-# ── Build / safety helpers ────────────────────────────────────────────────────
 
 def _build_node(
     parent: "TreeNode",
@@ -600,19 +1043,12 @@ def _build_node(
     refine_count: int,
     epoch: int,
 ) -> "TreeNode":
-    """Construct the accepted child node (PROPOSAL or REFINE).
-
-    The new node is a fresh strategy under investigation: it carries the derived
-    ``strategy`` (L1) and the inherited/cleaned ``rules`` (L0), is parented to the
-    source node, and starts its own optimization state (empty step buffer / pattern
-    library, created at ``epoch``). REFINE threads ``refine_count`` forward for the
-    K-escalation budget; PROPOSAL leaves it at the parent's value.
-    """
+    """Construct the accepted child node."""
     from css.data.tree import TreeNode
 
     return TreeNode(
         node_id=new_node_id,
-        branch_type=branch_type,  # type: ignore[arg-type]
+        branch_type=branch_type,
         parent_id=parent.node_id,
         strategy=strategy,
         rules=rules,
@@ -621,23 +1057,166 @@ def _build_node(
     )
 
 
-def _safe_rollout(
-    rollout_validate_fn: RolloutValidateFn,
-    strategy_text: str,
-    rules_text: str,
-    targeted_pattern_ids: "list[str]",
-) -> "tuple[float, float, str]":
-    """Invoke the injected 5c callback, degrading to a non-pass on failure.
+def _archive_failed_cycle(
+    archive: "NegativeArchive",
+    *,
+    strategy_snapshot: str,
+    origin: str,
+    diagnosis_summary: str,
+    epoch: int,
+    source_node_id: str,
+    n_iterations: int,
+) -> "NegativeArchiveEntry":
+    """Write a failed L1 cycle direction to the negative archive."""
+    from css.data.negative_archive import NegativeArchiveEntry
 
-    Returns ``(occ_before, occ_after, error)``. On success ``error`` is ``""``. If
-    the callback raises or returns a malformed value we return ``(0.0, 0.0, msg)``
-    — a non-pass (so the candidate is not committed) but with a non-empty ``error``
-    so the caller can record an INFRASTRUCTURE failure in the archive distinctly
-    from a legitimate measured no-decrease (which would also be 0.0 -> 0.0).
+    entry = NegativeArchiveEntry(
+        entry_id=archive.new_entry_id(),
+        strategy_snapshot=strategy_snapshot,
+        origin=origin,
+        root_cause=f"L1 cycle exhausted after {n_iterations} iterations",
+        failure_evidence=f"diagnosis: {diagnosis_summary}",
+        created_epoch=epoch,
+        created_step=-1,
+        source_node_id=source_node_id,
+    )
+    archive.add(entry)
+    return entry
+
+
+def _save_json(path: str, data: Any) -> None:
+    """Persist a JSON-serializable object to disk."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        _log.warning("Failed to save %s: %s", path, exc)
+
+
+def _safe_optimizer_call(
+    client: "LLMClient", system: str, user: str, *, max_tokens: int
+) -> str:
+    """Call the optimizer model, degrading to ``""`` on any error.
+
+    Mirrors the degradation contract honoured elsewhere in the pipeline: a
+    transient optimizer API failure (rate limit, timeout, network) inside one L1
+    step must not crash the whole CSS run. The empty string flows into
+    :func:`_parse_json_safe`, which returns the caller's fallback.
     """
     try:
-        result = rollout_validate_fn(strategy_text, rules_text, list(targeted_pattern_ids))
-        occ_before, occ_after = result
-        return float(occ_before), float(occ_after), ""
-    except Exception as exc:  # noqa: BLE001
-        return 0.0, 0.0, f"rollout callback error: {type(exc).__name__}: {exc}"
+        text, _usage = client.complete_optimizer(system, user, max_tokens=max_tokens)
+        return text or ""
+    except Exception as exc:  # noqa: BLE001 — degrade, never crash the run
+        _log.warning("optimizer call failed (%s); degrading to empty output", exc)
+        return ""
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Coerce an LLM-supplied truthiness value to a real bool.
+
+    LLMs frequently emit the STRING ``"false"`` (which is truthy in Python) where
+    a JSON boolean was requested. Treat the common textual forms explicitly so a
+    rejected verdict is never read as acceptance.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
+
+
+def _parse_json_safe(text: str, fallback: Any) -> Any:
+    """Extract a JSON OBJECT from LLM output, with fallback on parse failure.
+
+    Returns ``fallback`` whenever the text cannot be parsed OR the parsed value is
+    not a dict (e.g. the model emitted a bare JSON array): every caller expects an
+    object and would ``AttributeError`` on a list/scalar.
+    """
+    import re
+    if not text:
+        return fallback
+    for pattern in [
+        re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL),
+        re.compile(r"\{.*\}", re.DOTALL),
+    ]:
+        m = pattern.search(text)
+        if m:
+            try:
+                candidate = m.group(1) if "```" in pattern.pattern else m.group(0)
+                parsed = json.loads(candidate)
+            except (json.JSONDecodeError, IndexError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    return fallback
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Backward-compatible wrappers (called from orchestrator._branch_pass)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Keep the old type alias for backward compatibility with orchestrator.
+RolloutValidateFn = Callable[[str, str, "list[str]"], "tuple[float, float]"]
+
+
+def run_proposal(
+    node: "TreeNode",
+    l1_signals: list,
+    library: "PatternLibrary",
+    archive: "NegativeArchive",
+    optimizer_client: "LLMClient",
+    *,
+    cfg: "CSSConfig",
+    new_node_id: str,
+    epoch: int,
+    success_results: "list[TaskResult]" = None,
+    persistent_fail_groups: "list[TaskRolloutGroup]" = None,
+    rollout_validate_fn: RolloutValidateFn = None,
+    env=None,
+    target_client: "LLMClient" = None,
+    train_groups: "list[TaskRolloutGroup]" = None,
+    out_dir: str = "",
+) -> "ProposalOutcome":
+    """Backward-compatible wrapper — delegates to run_l1_cycle."""
+    if env is not None and target_client is not None and train_groups is not None:
+        return run_l1_cycle(
+            node, library, archive, env, target_client, optimizer_client,
+            cfg=cfg, operation="PROPOSAL", new_node_id=new_node_id,
+            epoch=epoch, train_groups=train_groups, out_dir=out_dir,
+        )
+    return ProposalOutcome(
+        success=False, operation="PROPOSAL",
+        reason="missing_env: run_proposal requires env, target_client, train_groups for v2 L1 cycle",
+    )
+
+
+def run_refine(
+    node: "TreeNode",
+    l1_signals: list,
+    library: "PatternLibrary",
+    archive: "NegativeArchive",
+    optimizer_client: "LLMClient",
+    *,
+    cfg: "CSSConfig",
+    new_node_id: str,
+    epoch: int,
+    success_results: "list[TaskResult]" = None,
+    persistent_fail_groups: "list[TaskRolloutGroup]" = None,
+    rollout_validate_fn: RolloutValidateFn = None,
+    env=None,
+    target_client: "LLMClient" = None,
+    train_groups: "list[TaskRolloutGroup]" = None,
+    out_dir: str = "",
+) -> "ProposalOutcome":
+    """Backward-compatible wrapper — delegates to run_l1_cycle."""
+    if env is not None and target_client is not None and train_groups is not None:
+        return run_l1_cycle(
+            node, library, archive, env, target_client, optimizer_client,
+            cfg=cfg, operation="REFINE", new_node_id=new_node_id,
+            epoch=epoch, train_groups=train_groups, out_dir=out_dir,
+        )
+    return ProposalOutcome(
+        success=False, operation="REFINE",
+        reason="missing_env: run_refine requires env, target_client, train_groups for v2 L1 cycle",
+    )

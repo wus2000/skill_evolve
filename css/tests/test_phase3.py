@@ -496,19 +496,19 @@ def test_failure_patterns_use_edit_reasons_not_bookkeeping():
 
 def test_run_exploitation_epoch_saturates_on_consecutive_rejects():
     cfg = CSSConfig(N=5, max_l0_steps_per_epoch=20, k_rollouts=1, max_api_workers=2,
-                    minibatch_size=4)
+                    minibatch_size=4, batch_size=4)
+    train_items = [{"id": f"t{i}"} for i in range(20)]
     val_items = [{"id": "v1"}]
     # Every candidate scores 0.0 < current 1.0 -> always reject.
-    env = FakeTaskEnv({"val": val_items}, scorer=lambda item, ri: 0)
+    env = FakeTaskEnv({"train": train_items, "val": val_items}, scorer=lambda item, ri: 0)
     node = TreeNode(node_id="n1", strategy="S", rules="initial")
     before = node.rules
-    epoch_results = [_result("t1", 0, 0)]
     target = StubLLMClient()
     optimizer = _opt_client_append("NEVER-ACCEPTED")
 
     with tempfile.TemporaryDirectory() as td:
         summary = run_exploitation_epoch(
-            node, env, val_items, epoch_results, target, optimizer, cfg, td,
+            node, env, train_items, val_items, target, optimizer, cfg, td,
             epoch=0, current_score=1.0,
         )
     assert isinstance(summary, ExploitationSummary)
@@ -522,7 +522,8 @@ def test_run_exploitation_epoch_saturates_on_consecutive_rejects():
 
 def test_run_exploitation_epoch_improving_not_saturated():
     cfg = CSSConfig(N=5, max_l0_steps_per_epoch=3, k_rollouts=1, max_api_workers=2,
-                    minibatch_size=4)
+                    minibatch_size=4, batch_size=4)
+    train_items = [{"id": f"t{i}"} for i in range(12)]
     # task_hard is binary per task, so to get a strictly increasing candidate
     # score across steps we use 4 selection tasks and let one MORE of them pass
     # on each step (step 0: 1/4=0.25, step 1: 2/4=0.5, step 2: 3/4=0.75). Each
@@ -532,7 +533,11 @@ def test_run_exploitation_epoch_improving_not_saturated():
     rollouts_per_step = len(val_items) * cfg.k_rollouts
 
     def increasing_scorer(item, ri):
-        idx = int(item["id"][1:])
+        idx_str = item["id"]
+        if idx_str.startswith("v"):
+            idx = int(idx_str[1:])
+        else:
+            return 1
         # Pass the first ``n_pass`` tasks this step.
         hard = 1 if idx < state["n_pass"] else 0
         state["rollouts"] += 1
@@ -540,15 +545,14 @@ def test_run_exploitation_epoch_improving_not_saturated():
             state["n_pass"] += 1  # let one more task pass next step
         return hard
 
-    env = FakeTaskEnv({"val": val_items}, scorer=increasing_scorer)
+    env = FakeTaskEnv({"train": train_items, "val": val_items}, scorer=increasing_scorer)
     node = TreeNode(node_id="n1", strategy="S", rules="initial")
-    epoch_results = [_result("t1", 0, 0)]
     target = StubLLMClient()
     optimizer = _opt_client_append("GOOD-RULE")
 
     with tempfile.TemporaryDirectory() as td:
         summary = run_exploitation_epoch(
-            node, env, val_items, epoch_results, target, optimizer, cfg, td,
+            node, env, train_items, val_items, target, optimizer, cfg, td,
             epoch=0, current_score=0.0,
         )
     # Hits the per-epoch cap, not saturation; accepts every step.

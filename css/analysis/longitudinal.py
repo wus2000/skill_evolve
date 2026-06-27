@@ -20,14 +20,13 @@ This module is deliberately thin and deterministic. It does three things:
   * :func:`merge_duplicate_patterns` — a periodic global de-duplication pass.
     Independent epochs can mint two ``PatternRecord``\s for the same underlying
     cognitive pattern (Layer 2 runs incrementally); this finds near-duplicate
-    same-polarity patterns by embedding similarity, optionally confirms each
-    candidate with the optimizer LLM, and folds the duplicate's observations and
-    occurrence history into a single survivor.
+    same-polarity patterns by label-based Jaccard similarity, optionally confirms
+    each candidate with the optimizer LLM, and folds the duplicate's observations
+    and occurrence history into a single survivor.
 
 Design references: ``design_final_en.md`` §4.3 Layer 3 and
-``training_mechanism_v6.md`` D4. Heavy / network-touching imports (sentence
-transformers via the embedder) are the caller's concern; this module performs no
-heavy imports of its own.
+``training_mechanism_v6.md`` D4. This module performs no heavy / network-touching
+imports of its own.
 """
 from __future__ import annotations
 
@@ -43,7 +42,6 @@ from css.data.pattern import (
 )
 
 if TYPE_CHECKING:
-    from css.analysis.embedding import Embedder
     from css.config import CSSConfig
     from css.model.client import LLMClient
 
@@ -231,24 +229,23 @@ def _merge_occurrence_history(
 
 def merge_duplicate_patterns(
     client: "LLMClient",
-    embedder: "Embedder",
     library: "PatternLibrary",
     *,
     sim_threshold: float = 0.85,
 ) -> int:
     """Periodically merge independently-created duplicate patterns.
 
-    Active patterns are embedded from their name/description text; every
-    same-polarity pair whose cosine similarity is ``>= sim_threshold`` is a merge
-    candidate. Each candidate is optionally confirmed with the optimizer LLM; on
-    confirmation the lexicographically-smaller ``pattern_id`` is kept as the
-    survivor and the other's observations and occurrence history are folded in,
-    the duplicate's ``status`` is set to ``"merged"``, and its observations'
-    ``pattern_id`` is repointed at the survivor.
+    Every same-polarity pair whose label-based Jaccard similarity is
+    ``>= sim_threshold`` is a merge candidate. Each candidate is optionally
+    confirmed with the optimizer LLM; on confirmation the lexicographically-
+    smaller ``pattern_id`` is kept as the survivor and the other's observations
+    and occurrence history are folded in, the duplicate's ``status`` is set to
+    ``"merged"``, and its observations' ``pattern_id`` is repointed at the
+    survivor.
 
     Returns the number of merges performed. Deterministic given a deterministic
-    embedder and client: candidates are processed in a stable id-sorted order,
-    and an already-merged pattern is skipped so each duplicate is folded once.
+    client: candidates are processed in a stable id-sorted order, and an
+    already-merged pattern is skipped so each duplicate is folded once.
     """
     active = library.active()
     if len(active) < 2:
@@ -257,8 +254,10 @@ def merge_duplicate_patterns(
     # Stable order so the survivor choice and processing are deterministic.
     active.sort(key=lambda p: p.pattern_id)
 
-    texts = [_pattern_text(p) for p in active]
-    vectors = embedder.embed(texts)  # (N, dim), L2-normalized
+    # Use label-based Jaccard similarity instead of embedding cosine.
+    # This avoids the same-domain embedding collapse that plagues observation
+    # clustering, and pattern-level labels are even more descriptive.
+    from css.analysis.label_grouping import find_merge_candidates
 
     merged_into: dict[str, str] = {}  # duplicate_id -> survivor_id (transitive)
 
@@ -269,37 +268,44 @@ def merge_duplicate_patterns(
             pid = merged_into[pid]
         return pid
 
-    n = len(active)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    candidates = find_merge_candidates(active, threshold=sim_threshold)
+
+    # Parallel LLM confirmation for all candidate pairs.
+    confirm_results: dict[tuple[int, int], bool] = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(candidates))) as pool:
+        futures = {
+            pool.submit(_confirm_merge_llm, client, active[i], active[j]): (i, j)
+            for i, j in candidates
+        }
+        for fut in as_completed(futures):
+            pair = futures[fut]
+            try:
+                confirm_results[pair] = fut.result()
+            except Exception:
+                confirm_results[pair] = False
+
+    # Sequential merge using pre-computed confirmations.
     n_merges = 0
-    for i in range(n):
-        a = active[i]
-        if a.status != "active":
+    for i, j in candidates:
+        a, b = active[i], active[j]
+        if a.status != "active" or b.status != "active":
             continue
-        for j in range(i + 1, n):
-            b = active[j]
-            if b.status != "active":
-                continue
-            if a.polarity != b.polarity:
-                continue
-            sim = float(vectors[i] @ vectors[j])
-            if sim < sim_threshold:
-                continue
-            # Survivor = smaller id (a, since list is id-sorted ascending).
-            survivor_id = resolve(a.pattern_id)
-            survivor = library.get(survivor_id) or a
-            if survivor.status != "active" or survivor.pattern_id == b.pattern_id:
-                continue
-            if not _confirm_merge_llm(client, survivor, b):
-                continue
-            # Fold duplicate b into survivor.
-            for obs in b.observations:
-                obs.pattern_id = survivor.pattern_id
-            survivor.observations.extend(b.observations)
-            _merge_occurrence_history(survivor, b)
-            survivor.remedy_resistance = max(
-                survivor.remedy_resistance, b.remedy_resistance
-            )
-            b.status = "merged"
-            merged_into[b.pattern_id] = survivor.pattern_id
-            n_merges += 1
+        survivor_id = resolve(a.pattern_id)
+        survivor = library.get(survivor_id) or a
+        if survivor.status != "active" or survivor.pattern_id == b.pattern_id:
+            continue
+        if not confirm_results.get((i, j), False):
+            continue
+        for obs in b.observations:
+            obs.pattern_id = survivor.pattern_id
+        survivor.observations.extend(b.observations)
+        _merge_occurrence_history(survivor, b)
+        survivor.remedy_resistance = max(
+            survivor.remedy_resistance, b.remedy_resistance
+        )
+        b.status = "merged"
+        merged_into[b.pattern_id] = survivor.pattern_id
+        n_merges += 1
     return n_merges

@@ -75,6 +75,8 @@ class Qwen3Embedder:
     importing this module — performs no network access and no model download.
     """
 
+    _MAX_CHARS = 4096
+
     def __init__(self, model_name: str = "Qwen3-Embedding-0.6B", dim: int = 1024) -> None:
         self.model_name = model_name
         self._dim = dim
@@ -95,10 +97,12 @@ class Qwen3Embedder:
         if len(texts) == 0:
             return np.zeros((0, self._dim), dtype=np.float32)
         self._ensure_model()
+        truncated = [t[:self._MAX_CHARS] for t in texts]
         vectors = self._model.encode(
-            list(texts),
+            truncated,
             convert_to_numpy=True,
             normalize_embeddings=True,
+            batch_size=32,
         )
         vectors = np.asarray(vectors, dtype=np.float32)
         # Re-normalize defensively in case the backend skipped it for any text.

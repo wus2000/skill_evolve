@@ -159,11 +159,14 @@ Each level must be a strictly deeper "why" than the one above it:
 
 EVIDENCE IS MANDATORY AT EVERY LEVEL. A level with no citable evidence is a \
 guess and will be discarded. Cite:
-  - behavioral & process: a short quote or close paraphrase from the trajectories \
-    / the agent's THOUGHT text.
-  - strategy: the specific strategy paragraph or subsection text you are blaming.
+  - behavioral & process: relevant quotes or close paraphrases from the \
+    trajectories / the agent's THOUGHT text — include enough context to show the \
+    pattern clearly.
+  - strategy: the specific strategy paragraph or subsection text you are blaming. \
+    If the strategy document is empty or minimal, explain what ABSENCE of guidance \
+    permitted the failure (the strategy's gap is itself a cause).
   - assumption: the statement of the assumption (grounded in the strategy text \
-    above).
+    above, or in the strategy's implicit stance through omission).
 Put these citations in the "evidence" object keyed by level name.
 
 L0 EXPLANATION (mandatory): in "l0_explanation", explain — referencing the L0 \
@@ -180,16 +183,21 @@ cause is genuinely the same — do not force unrelated patterns together.
 Output ONLY a JSON list, each element:
   {
     "pattern_ids": ["<id>", ...],
-    "behavioral": "<level 1>",
-    "process": "<level 2>",
-    "strategy": "<level 3, naming the strategy text>",
-    "assumption": "<level 4>",
+    "behavioral": "<level 1 — describe the concrete, observable agent behaviors \
+across the trajectories in detail>",
+    "process": "<level 2 — trace the agent's internal reasoning that produced \
+this behavior, referencing its actual thought process>",
+    "strategy": "<level 3 — identify the specific strategy text (or absence of \
+guidance) that caused or permitted this reasoning process>",
+    "assumption": "<level 4 — articulate the hidden assumption and what breaking \
+it would unlock>",
     "leverage": "<why high-leverage; '' if it explains a single pattern>",
-    "l0_explanation": "<why the L0 remedies could not fix this>",
+    "l0_explanation": "<why the L0 remedies could not fix this — reference the \
+specific remedies tried>",
     "evidence": {
-      "behavioral": "<trajectory/THOUGHT quote>",
-      "process": "<THOUGHT quote>",
-      "strategy": "<the strategy paragraph/subsection text>",
+      "behavioral": "<trajectory quotes showing the behavior>",
+      "process": "<quotes from the agent's reasoning>",
+      "strategy": "<the strategy text being blamed, or description of the gap>",
       "assumption": "<the assumption statement>"
     }
   }
@@ -391,13 +399,18 @@ def attribute_root_cause(
     )
 
     try:
-        text, _usage = client.complete_optimizer(_ROOT_CAUSE_SYSTEM, user)
+        from css.tracing import stage_context
+        with stage_context(client, "root_cause_attribution"):
+            text, _usage = client.complete_optimizer(_ROOT_CAUSE_SYSTEM, user)
     except Exception:
         return []
 
     valid_ids = {p.pattern_id for p in l1_signals}
+    n_parsed = 0
+    n_dropped = 0
     causes: list[RootCause] = []
     for raw in _parse_rc_list(text):
+        n_parsed += 1
         try:
             rc = RootCause.from_dict(raw)
         except Exception:
@@ -410,9 +423,31 @@ def attribute_root_cause(
         # CODE GATE: a level with no content or no evidence is not a diagnosis;
         # drop it (a flagged-but-dropped RootCause has no observable caller).
         if rc.missing_levels():
+            n_dropped += 1
             continue
         causes.append(rc)
 
     # High-leverage first.
     causes.sort(key=lambda rc: _leverage_sort_key(rc, library))
+
+    from css.tracing import log_event
+
+    def _clip(s: str, n: int = 400) -> str:
+        s = (s or "").strip().replace("\n", " ")
+        return s if len(s) <= n else s[:n] + "…"
+
+    log_event("root_cause_attribution",
+              n_l1_signals=len(l1_signals),
+              n_parsed=n_parsed,
+              n_dropped_by_gate=n_dropped,
+              n_causes=len(causes),
+              causes=[{
+                  "pattern_ids": rc.pattern_ids,
+                  "behavioral": _clip(rc.behavioral),
+                  "process": _clip(rc.process),
+                  "strategy": _clip(rc.strategy),
+                  "assumption": _clip(rc.assumption),
+                  "leverage": _clip(rc.leverage, 200),
+              } for rc in causes])
+
     return causes

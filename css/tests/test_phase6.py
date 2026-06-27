@@ -25,7 +25,6 @@ import os
 import tempfile
 
 from css.config import CSSConfig
-from css.analysis.embedding import StubEmbedder
 from css.data.pattern import Observation, OccurrencePoint, PatternLibrary, PatternRecord
 from css.data.rollout import TaskResult, TaskRolloutGroup
 from css.data.step_buffer import StepBufferEntry
@@ -372,10 +371,11 @@ def test_decide_branch_saturated_with_signals_refine_then_proposal():
     assert decide_branch(nd2, ["sig"], cfg=cfg) == "PROPOSAL"
 
 
-def test_decide_branch_saturated_no_signals_none():
+def test_decide_branch_saturated_no_signals_enters_l1():
+    """v2: L0 saturation directly triggers L1 cycle — no more NONE."""
     cfg = CSSConfig(N=3)
     nd = _saturated_node(0, cfg=cfg)
-    assert decide_branch(nd, [], cfg=cfg) == "NONE"
+    assert decide_branch(nd, [], cfg=cfg) == "REFINE"
 
 
 # ── 4. branching.make_rollout_validate_fn (wiring on the happy path) ────────────
@@ -386,7 +386,6 @@ def test_make_rollout_validate_fn_returns_float_pair():
     items = [_item("t0"), _item("t1")]
     env = FakeTaskEnv({"train": items, "val": [], "test": []}, scorer=_fail_scorer)
     client = _stub_client()
-    emb = StubEmbedder(dim=16)
 
     # A library with one targeted failure pattern carrying a latest occurrence.
     lib = PatternLibrary()
@@ -419,7 +418,7 @@ def test_make_rollout_validate_fn_returns_float_pair():
 
     with tempfile.TemporaryDirectory() as out_dir:
         fn = make_rollout_validate_fn(
-            env, client, emb, client, node, lib, pf_groups,
+            env, client, client, node, lib, pf_groups,
             cfg=cfg, out_dir=out_dir, epoch=1,
         )
         occ_before, occ_after = fn("## S\n### X\nbetter body", "", ["p0000"])
@@ -437,7 +436,6 @@ def test_make_rollout_validate_fn_occ_before_shares_pf_denominator():
     cfg = CSSConfig(k_rollouts=1, max_api_workers=1)
     env = FakeTaskEnv({"train": [], "val": [], "test": []}, scorer=_fail_scorer)  # resolves no items
     client = _stub_client()
-    emb = StubEmbedder(dim=16)
 
     lib = PatternLibrary()
     lib.add(
@@ -462,7 +460,7 @@ def test_make_rollout_validate_fn_occ_before_shares_pf_denominator():
 
     with tempfile.TemporaryDirectory() as out_dir:
         fn = make_rollout_validate_fn(
-            env, client, emb, client, node, lib, pf_groups,
+            env, client, client, node, lib, pf_groups,
             cfg=cfg, out_dir=out_dir, epoch=1,
         )
         # env resolves no items -> early return (occ_before, occ_before): lets us
@@ -489,9 +487,8 @@ def test_cold_start_seeds_single_root():
     cfg = CSSConfig(k_rollouts=1, max_api_workers=1, eps_dbscan=0.05, min_samples=2)
     env = _cold_env()
     client = _stub_client()
-    emb = StubEmbedder(dim=16)
     with tempfile.TemporaryDirectory() as out_dir:
-        res = cold_start(env, client, client, emb, cfg=cfg, out_dir=out_dir)
+        res = cold_start(env, client, client, cfg=cfg, out_dir=out_dir)
     assert isinstance(res, ColdStartResult)
     tree = res.tree
     roots = [n for n in tree.nodes.values() if n.branch_type == "ROOT"]
@@ -515,15 +512,14 @@ def test_run_round_advances_root():
     )
     env = _cold_env()
     client = _stub_client()
-    emb = StubEmbedder(dim=16)
     with tempfile.TemporaryDirectory() as out_dir:
-        cs = cold_start(env, client, client, emb, cfg=cfg, out_dir=out_dir)
+        cs = cold_start(env, client, client, cfg=cfg, out_dir=out_dir)
         tree, archive = cs.tree, cs.archive
         root_id = tree.root_id
         before_curve = len(tree.get(root_id).learning_curve)
 
         rnd = run_round(
-            tree, archive, env, client, client, emb,
+            tree, archive, env, client, client,
             cfg=cfg, out_dir=out_dir, round_index=0,
         )
     assert isinstance(rnd, RoundResult)
@@ -541,14 +537,13 @@ def test_run_round_deterministic():
         eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3,
     )
     client = _stub_client()
-    emb = StubEmbedder(dim=16)
 
     def _one():
         env = _cold_env()
         with tempfile.TemporaryDirectory() as out_dir:
-            cs = cold_start(env, client, client, emb, cfg=cfg, out_dir=out_dir)
+            cs = cold_start(env, client, client, cfg=cfg, out_dir=out_dir)
             rnd = run_round(
-                cs.tree, cs.archive, env, client, client, emb,
+                cs.tree, cs.archive, env, client, client,
                 cfg=cfg, out_dir=out_dir, round_index=0,
             )
             return rnd.selected_node_ids, rnd.branches, rnd.pruned
@@ -566,10 +561,9 @@ def test_run_css_end_to_end_and_artifacts():
     )
     env = _cold_env()
     client = _stub_client()
-    emb = StubEmbedder(dim=16)
     with tempfile.TemporaryDirectory() as out_dir:
         run = run_css(
-            env, client, client, emb,
+            env, client, client,
             cfg=cfg, out_dir=out_dir, max_rounds=2,
         )
         assert isinstance(run, RunResult)
@@ -585,6 +579,59 @@ def test_run_css_end_to_end_and_artifacts():
             assert os.path.exists(paths[key])
             with open(paths[key], encoding="utf-8") as fh:
                 json.load(fh)  # must parse
+
+
+def test_run_css_writes_checkpoints_and_resumes():
+    """A fresh run writes stage checkpoints; a resume run loads + continues them."""
+    from css.checkpoint import latest_checkpoint, load_checkpoint
+
+    cfg = CSSConfig(
+        k_rollouts=1, max_api_workers=1, concurrency_limit=2,
+        eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3, K=3,
+    )
+    env = _cold_env()
+    client = _stub_client()
+    with tempfile.TemporaryDirectory() as out_dir:
+        # Fresh run.
+        run1 = run_css(env, client, client, cfg=cfg, out_dir=out_dir, max_rounds=1)
+
+        # A checkpoint exists and round-trips; at minimum cold start was saved.
+        ckpt_path = latest_checkpoint(out_dir)
+        assert ckpt_path is not None and os.path.exists(ckpt_path)
+        ck = load_checkpoint(ckpt_path)
+        assert ck.next_round >= 1
+        assert len(ck.tree.nodes) >= 1
+        assert ck.config_fingerprint  # fingerprint stamped
+        n_nodes_ckpt = len(ck.tree.nodes)
+
+        # Resume run on the SAME out_dir: loads the checkpoint, skips cold start,
+        # and continues from the next round without crashing.
+        run2 = run_css(env, client, client, cfg=cfg, out_dir=out_dir,
+                       max_rounds=2, resume=True)
+        assert isinstance(run2, RunResult)
+        assert len(run2.tree.nodes) >= n_nodes_ckpt
+
+
+def test_run_css_resume_refuses_config_mismatch():
+    """Resuming onto an incompatible config is refused (fingerprint guard)."""
+    import pytest
+
+    cfg = CSSConfig(
+        k_rollouts=1, max_api_workers=1, concurrency_limit=2,
+        eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3, K=3,
+    )
+    env = _cold_env()
+    client = _stub_client()
+    with tempfile.TemporaryDirectory() as out_dir:
+        run_css(env, client, client, cfg=cfg, out_dir=out_dir, max_rounds=1)
+        # A compute-affecting change (k_rollouts) must block resume.
+        cfg2 = CSSConfig(
+            k_rollouts=2, max_api_workers=1, concurrency_limit=2,
+            eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3, K=3,
+        )
+        with pytest.raises(ValueError, match="fingerprint mismatch"):
+            run_css(env, client, client, cfg=cfg2, out_dir=out_dir,
+                    max_rounds=2, resume=True)
 
 
 # ── 8. logging_viz.tree_snapshot / format_tree ──────────────────────────────────
@@ -619,6 +666,7 @@ def test_import_smoke_no_heavy_backends():
     import importlib
     import sys
 
+    faiss_before = "faiss" in sys.modules
     for mod in (
         "css.tree.select",
         "css.tree.prune",
@@ -628,8 +676,9 @@ def test_import_smoke_no_heavy_backends():
         "css.logging_viz",
     ):
         importlib.import_module(mod)
-    # Importing Phase 6 must not pull faiss at import time.
-    assert "faiss" not in sys.modules
+    # Importing Phase 6 must not NEWLY pull faiss at import time.
+    if not faiss_before:
+        assert "faiss" not in sys.modules
     # Keep referenced symbols live.
     assert all(
         fn is not None

@@ -63,7 +63,7 @@ def truncate_tool_results(messages: list[dict], tool_trunc: int) -> list[dict]:
     return out
 
 
-def format_trajectory(messages: list[dict], *, tool_trunc: int = 8000) -> str:
+def format_trajectory(messages: list[dict], *, tool_trunc: int = 4000) -> str:
     """Render messages as a readable transcript for analysis prompts.
 
     Applies :func:`truncate_tool_results` first, then emits ``"[role]\\ncontent"``

@@ -1,1 +1,1 @@
-"""SpreadsheetBench TaskEnv adapter (lazy SkillOpt imports)."""
+"""SpreadsheetBench TaskEnv adapter (self-contained, lazy openpyxl imports)."""

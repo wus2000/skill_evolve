@@ -32,7 +32,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
-    from css.analysis.embedding import Embedder
     from css.config import CSSConfig
     from css.data.pattern import PatternLibrary
     from css.data.rollout import TaskRolloutGroup
@@ -45,23 +44,19 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 def decide_branch(node: "TreeNode", l1_signals: list, *, cfg: "CSSConfig") -> str:
     """Decide the operation to spawn from ``node`` at the round SYNC point.
 
-    Pure and deterministic given the inputs:
+    v2 logic: L0 saturation directly triggers the L1 hypothesis-test-verify
+    cycle. The old l1_signals statistical gate is bypassed — Step 1 multi-
+    dimensional analysis replaces it.
 
-      * not L0-saturated (``not node.is_saturated(cfg.N)``) -> ``"EXPLOITATION"``
-        (keep optimizing rules; nothing to branch on yet).
-      * saturated AND ``l1_signals`` present -> ``"REFINE"`` while the node still
-        has REFINE budget (``node.refine_count < cfg.K``), else ``"PROPOSAL"``
-        (the local-edit budget is spent; escalate to a full strategy rewrite).
-      * saturated AND no ``l1_signals`` -> ``"NONE"`` (saturated with no remedy-
-        resistant pattern: this node is done).
+      * not L0-saturated -> ``"EXPLOITATION"``
+      * saturated, REFINE budget remaining -> ``"REFINE"``
+      * saturated, REFINE budget spent     -> ``"PROPOSAL"``
     """
     if not node.is_saturated(cfg.N):
         return "EXPLOITATION"
-    if l1_signals:
-        if node.refine_count < cfg.K:
-            return "REFINE"
-        return "PROPOSAL"
-    return "NONE"
+    if node.refine_count < cfg.K:
+        return "REFINE"
+    return "PROPOSAL"
 
 
 # ── Layer-5c rollout-validation closure (design §7 / D14, constraint 5c) ─────
@@ -69,7 +64,6 @@ def decide_branch(node: "TreeNode", l1_signals: list, *, cfg: "CSSConfig") -> st
 def make_rollout_validate_fn(
     env,
     target_client,
-    embedder,
     optimizer_client,
     node: "TreeNode",
     library,
@@ -94,7 +88,7 @@ def make_rollout_validate_fn(
       * ``occ_after`` — re-roll the persistent-fail tasks with the CANDIDATE skill
         (strategy + rules rendered through a transient SkillDocument, Phase 2
         :func:`batch_rollout`), re-annotate with Phase 4 Layer 1, match the new
-        observations against ``library`` (:func:`incremental_match`), and report the
+        observations against ``library`` (:func:`match_by_label`), and report the
         FRACTION of the SAME subset whose new observations still hit a targeted
         pattern — the candidate's residual occurrence of the behavior it must fix.
 
@@ -114,7 +108,6 @@ def make_rollout_validate_fn(
     ) -> tuple:
         # Lazy heavy imports (Phase 2 rollout, Phase 4 Layer 1 / matching, Phase 1
         # skill rendering) so importing this module stays cheap.
-        from css.analysis.cluster import incremental_match
         from css.analysis.layer1 import run_layer1
         from css.data.rollout import group_rollouts
         from css.rollout.batch import batch_rollout
@@ -186,10 +179,11 @@ def make_rollout_validate_fn(
             cfg=cfg,
         )
 
-        # Phase 4 matching — attach the new observations to existing library
-        # patterns by centroid retrieval. Matched observations carry the matched
+        # Phase 4 matching — attach new observations to existing library
+        # patterns by label similarity. Matched observations carry the matched
         # pattern_id; we tally which TASKS still hit a TARGETED pattern.
-        matched, _unmatched = incremental_match(embedder, library, observations)
+        from css.analysis.label_grouping import match_by_label
+        matched, _unmatched = match_by_label(optimizer_client, library, observations)
 
         tasks_hitting_target: set = set()
         for obs in matched:

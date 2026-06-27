@@ -48,45 +48,62 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 # ── Prompt: single-trajectory open-ended cognitive annotation ────────────────
 
 _SINGLE_SYSTEM = """\
-You are a cognitive analyst studying HOW an AI agent thinks while it solves a \
-task. You are given one full trajectory (the agent's own conversation: its \
-reasoning, tool calls, and the results it saw). Your job is NOT to summarize \
-what the agent did, nor to grade the answer. Your job is to characterize the \
-agent's *thinking* — the cognitive habits, strategies, and decision tendencies \
-that the trajectory reveals.
+You are analyzing an agent's execution trajectory to extract behavioral \
+observations — recurring patterns in how the agent thinks, decides, acts, \
+and adapts during task execution.
 
-Focus on the agent's MIND, not its actions. For example you might notice how it \
-plans before acting, whether and how it verifies its own work, how it handles \
-assumptions and ambiguity, how it reacts to errors or unexpected tool output, \
-whether it commits early to one interpretation, how it decomposes the problem, \
-how it manages attention across a long context, or how it decides it is done. \
-These are ONLY examples to prime you — do NOT treat them as a checklist or a \
-fixed vocabulary.
+Your observations feed a downstream clustering system that groups similar \
+patterns across many trajectories. Therefore:
 
-CRITICAL — open-ended naming: for each observation you must invent your OWN \
-short, precise label for the cognitive aspect you saw (the "cognitive_aspect" \
-field). Name the specific thinking habit in your own words; do NOT pick from a \
-predefined list, and do NOT default to generic buckets like "planning" or \
-"verification" when a sharper, more specific name fits what actually happened.
+- Each observation should capture ONE distinct behavioral pattern (not a \
+compound of multiple patterns).
+- The "cognitive_aspect" field must describe the pattern in a way that would \
+match similar observations from OTHER trajectories of the same type — use \
+generalizable language, not task-specific details. This field is the clustering \
+key: two observations of the same underlying pattern from different \
+trajectories should have similar "cognitive_aspect" descriptions.
+- Assess whether the pattern HELPED or HINDERED task completion ("polarity").
 
-Every observation MUST cite concrete evidence: a short quote or close paraphrase \
-of the exact trajectory moment that shows the cognitive aspect. Vague claims \
-with no traceable evidence are useless — omit them.
+WHAT TO OBSERVE — analyze the trajectory at multiple levels:
+- How the agent decomposed and planned the task
+- How it chose tools, methods, and implementation approaches
+- How it handled errors, unexpected outputs, or ambiguity
+- How it verified its work and decided when to stop
+- Any habits, shortcuts, or blind spots in its reasoning
 
-Mark each observation's significance:
-  - "critical": this thinking habit plausibly determined the outcome (it is the \
-    kind of thing worth changing the agent's strategy over).
-  - "notable": a real, citable cognitive tendency, but secondary to the outcome.
+DIG INTO THE TRAJECTORY. Do not give abstract labels — trace what actually \
+happened. Reference the agent's specific words, code, or decisions. Your \
+analysis must be grounded in concrete trajectory content: if you cannot point \
+to a specific moment in the trajectory, you do not have an observation.
 
-Report only genuine, well-supported observations (typically 2–6). Quality over \
-quantity; do not pad.
+For each observation:
+- "what": a thorough analysis grounded in this specific trajectory — reference \
+specific moments (the agent's actual words, code, tool outputs, errors), \
+explain WHY the agent behaved this way, and trace cause and effect to the \
+outcome.
+- "cognitive_aspect": a generalizable label you invent — name the precise \
+behavioral tendency in your own words. Make it descriptive enough to \
+distinguish this pattern from superficially similar ones, but generalizable \
+enough that the same pattern from a different trajectory would get a similar \
+name.
+- "evidence": specific quotes, actions, and outcomes from the trajectory.
+- "consequence": what outcome this pattern led to and why.
+- "polarity": "positive" if this pattern helped task completion, "negative" \
+if it hindered it.
+- "significance": "critical" if this pattern plausibly determined the outcome, \
+"notable" if secondary.
+
+Your output is the ONLY record of this trajectory analysis. Be thorough — a \
+pattern you miss cannot be recovered by downstream systems. Report every \
+distinct behavioral pattern you observe (typically 3–8 per trajectory).
 
 Output ONLY a JSON list, each element:
   {
-    "what": "<what the agent thought/did, described at the cognitive level>",
-    "cognitive_aspect": "<your own concise label for the thinking habit>",
-    "evidence": "<short quote or close paraphrase from the trajectory>",
-    "consequence": "<the outcome this thinking led to in this trajectory>",
+    "what": "<thorough analysis grounded in specific trajectory content>",
+    "cognitive_aspect": "<generalizable descriptive label for the pattern>",
+    "evidence": "<specific quotes or actions from the trajectory>",
+    "consequence": "<what outcome this led to, with causal explanation>",
+    "polarity": "positive" | "negative",
     "significance": "critical" | "notable"
   }
 No prose, no markdown fences, no commentary — just the JSON list."""
@@ -101,8 +118,10 @@ Trajectory (the agent's full conversation):
 {trajectory}
 -------------------------------------------
 
-Analyze HOW this agent thinks. Name your own cognitive aspects and cite \
-evidence. Respond with ONLY the JSON list described in the instructions."""
+Analyze HOW this agent thinks. Dig into the trajectory's specific content — \
+trace the agent's actual reasoning, decisions, and their consequences. Ground \
+every observation in concrete trajectory moments. Respond with ONLY the JSON \
+list described in the instructions."""
 
 
 # ── Prompt: same-task contrastive (success vs failure) analysis ──────────────
@@ -112,17 +131,24 @@ You are a cognitive analyst comparing two trajectories of the SAME task under \
 the SAME skill document: one rollout SUCCEEDED and one FAILED. Because the task, \
 instructions, and skill are identical, any difference in outcome must come from \
 a difference in how the two runs *thought* or *decided*. Your job is to isolate \
-that single decisive cognitive difference.
+the decisive cognitive difference.
 
-Do not list every surface difference. Find the ONE divergence that mattered: the \
+Do not list every surface difference. Find the divergence that mattered: the \
 moment where the two runs' reasoning or strategy first parted ways in a manner \
 that explains the opposite outcomes.
 
+DIG INTO BOTH TRAJECTORIES. Reference specific code, decisions, or reasoning \
+from each run. Show exactly what the success run did differently at the critical \
+moment, and trace how that difference propagated to the opposite outcomes.
+
 Output ONLY a single JSON object:
   {
-    "divergence_point": "<where/when the two runs first meaningfully diverged>",
-    "cognitive_difference": "<the difference in thinking/strategy that explains \
-the success vs the failure>",
+    "divergence_point": "<the specific trajectory moment where the two runs \
+first meaningfully diverged — reference the actual code, decision, or reasoning \
+from both runs>",
+    "cognitive_difference": "<a detailed analysis of the difference in \
+thinking/strategy that explains the success vs the failure — trace the causal \
+chain from the divergence point to each outcome>",
     "is_systematic": true | false
   }
 Set "is_systematic" to true only if this difference looks like a recurring, \
@@ -132,8 +158,10 @@ one-off slip or luck). No prose, no markdown fences — just the JSON object."""
 _CONTRASTIVE_USER_TMPL = """\
 {pair}
 
-Identify the single decisive cognitive difference between the SUCCESS and the \
-FAILURE. Respond with ONLY the JSON object described in the instructions."""
+Identify the decisive cognitive difference between the SUCCESS and the FAILURE. \
+Dig into the specific trajectory content — trace what each run actually did at \
+the critical moment. Respond with ONLY the JSON object described in the \
+instructions."""
 
 
 # ── Robust JSON extraction (mirrors css/optimizer/reflect.py conventions) ────
@@ -162,9 +190,10 @@ def _json_candidates(text: str) -> list[str]:
 def _parse_obs_list(text: str) -> list[dict]:
     """Extract a JSON list of observation dicts from noisy LLM output.
 
-    Tolerates a bare array, a fenced array, a single bare object, or an object
-    wrapping the list under ``observations`` / ``items``. Returns ``[]`` when
-    nothing parseable is found rather than raising.
+    Tolerates a bare array, a fenced array, a single bare object, an object
+    wrapping the list under ``observations`` / ``items``, or NDJSON
+    (newline-delimited JSON objects). Returns ``[]`` when nothing parseable
+    is found rather than raising.
     """
     for cand in _json_candidates(text):
         if not cand:
@@ -176,7 +205,41 @@ def _parse_obs_list(text: str) -> list[dict]:
         coerced = _coerce_obs_list(obj)
         if coerced is not None:
             return coerced
+
+    # Fallback: NDJSON — multiple JSON objects concatenated with whitespace.
+    # Many LLMs (e.g. Qwen3) return {...}\n{...}\n{...} instead of [{...}, ...].
+    objs = _parse_ndjson_objects(text)
+    if objs:
+        return objs
     return []
+
+
+def _parse_ndjson_objects(text: str) -> list[dict]:
+    """Parse newline-delimited JSON objects from text.
+
+    Uses ``json.JSONDecoder.raw_decode`` to consume concatenated objects
+    separated by whitespace or commas. Returns only dicts that look like
+    observation records (contain ``what`` or ``cognitive_aspect``).
+    """
+    if not text or not text.strip():
+        return []
+    decoder = json.JSONDecoder()
+    results: list[dict] = []
+    pos = 0
+    length = len(text)
+    while pos < length:
+        while pos < length and text[pos] in " \t\n\r,":
+            pos += 1
+        if pos >= length:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+            pos = end
+            if isinstance(obj, dict) and ("what" in obj or "cognitive_aspect" in obj):
+                results.append(obj)
+        except json.JSONDecodeError:
+            pos += 1
+    return results
 
 
 def _coerce_obs_list(obj: Any) -> list[dict] | None:
@@ -258,19 +321,29 @@ def annotate_trajectory(
         trajectory=trajectory,
     )
 
+    from css.tracing import stage_context
     try:
-        text, _usage = client.complete_optimizer(_SINGLE_SYSTEM, user)
+        with stage_context(client, "layer1_annotate"):
+            text, _usage = client.complete_optimizer(
+                _SINGLE_SYSTEM, user, max_tokens=8192,
+            )
     except Exception:
         return []
 
-    polarity = "success" if result.passed else "failure"
+    outcome_polarity = "success" if result.passed else "failure"
     observations: list[Observation] = []
     for i, raw in enumerate(_parse_obs_list(text)):
         what = str(raw.get("what", "")).strip()
         aspect = str(raw.get("cognitive_aspect", "")).strip()
-        # Skip empty / contentless entries — they carry no signal downstream.
         if not what and not aspect:
             continue
+        llm_polarity = str(raw.get("polarity", "")).strip().lower()
+        if llm_polarity == "positive":
+            polarity = "success"
+        elif llm_polarity == "negative":
+            polarity = "failure"
+        else:
+            polarity = outcome_polarity
         observations.append(
             Observation(
                 obs_id=f"{result.task_id}:r{result.rollout_index}:{i}",
@@ -304,8 +377,10 @@ def annotate_contrastive_pair(
     pair = format_contrastive_pair(success, failure, tool_trunc=cfg.tool_trunc)
     user = _CONTRASTIVE_USER_TMPL.format(pair=pair)
 
+    from css.tracing import stage_context
     try:
-        text, _usage = client.complete_optimizer(_CONTRASTIVE_SYSTEM, user)
+        with stage_context(client, "layer1_contrastive"):
+            text, _usage = client.complete_optimizer(_CONTRASTIVE_SYSTEM, user)
     except Exception:
         return None
 
@@ -351,19 +426,39 @@ def run_layer1(
     Returns ``(observations, divergences)``. Malformed LLM output for any single
     rollout or pair is skipped, never fatal.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    max_workers = getattr(cfg, "max_api_workers", 32)
+
+    all_rollouts = [(group, rollout) for group in groups for rollout in group.rollouts]
+    all_pairs = [
+        (success, failure)
+        for group in groups
+        for success, failure in group.contrastive_pairs()
+    ]
+
     observations: list[Observation] = []
     divergences: list[ContrastiveDivergence] = []
 
-    for group in groups:
-        for rollout in group.rollouts:
-            obs = annotate_trajectory(client, rollout, cfg=cfg)
+    def _annotate_one(rollout):
+        return annotate_trajectory(client, rollout, cfg=cfg)
+
+    def _annotate_pair(pair):
+        return annotate_contrastive_pair(client, pair[0], pair[1], cfg=cfg)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        obs_futures = {pool.submit(_annotate_one, r): r for _, r in all_rollouts}
+        pair_futures = {pool.submit(_annotate_pair, p): p for p in all_pairs}
+
+        for fut in as_completed(obs_futures):
+            obs = fut.result()
             for o in obs:
                 o.node_id = node_id
                 o.epoch = epoch
             observations.extend(obs)
 
-        for success, failure in group.contrastive_pairs():
-            div = annotate_contrastive_pair(client, success, failure, cfg=cfg)
+        for fut in as_completed(pair_futures):
+            div = fut.result()
             if div is not None:
                 divergences.append(div)
 

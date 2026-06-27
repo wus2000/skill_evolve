@@ -57,14 +57,18 @@ _REFINE_SYSTEM = (
     "but pre-grouped because they appear to describe the SAME underlying "
     "cognitive behavior. Your job is to unify them into ONE pattern.\n\n"
     "Do NOT invent a behavior that is not supported by the observations. Name the "
-    "pattern by the cognitive behavior it captures (e.g. how the agent frames a "
-    "problem, verifies assumptions, recovers from error, manages attention) — "
-    "not by the surface task. Decide its polarity from the observations' "
-    "consequences: 'failure' if the behavior tends to cause poor outcomes, "
-    "'success' if it tends to cause good outcomes, else 'neutral'.\n\n"
+    "pattern by the cognitive behavior it captures — not by the surface task. "
+    "The description should capture the RECURRING mechanism: what the agent's "
+    "mind does, under what conditions, and what it leads to — grounded in the "
+    "concrete behaviors described in the observations. Decide its polarity from "
+    "the observations' consequences: 'failure' if the behavior tends to cause "
+    "poor outcomes, 'success' if it tends to cause good outcomes, else "
+    "'neutral'.\n\n"
     "Respond with ONE JSON object and nothing else:\n"
-    '{"name": "<short pattern name>", "description": "<1-2 sentence description '
-    'of the recurring cognitive behavior>", "cognitive_aspect": "<the named '
+    '{"name": "<specific, descriptive pattern name>", "description": "<a rich '
+    "description of the recurring cognitive behavior: what the agent's mind does, "
+    "under what conditions, what triggers it, and what consequences it produces — "
+    'grounded in the observations>", "cognitive_aspect": "<the named '
     'cognitive aspect>", "polarity": "failure|success|neutral"}'
 )
 
@@ -171,12 +175,23 @@ def embed_observations(
     plain ``list[float]`` for JSON round-trip) and the full ``(N, dim)`` matrix
     is returned. An empty input yields a ``(0, dim)`` matrix.
     """
+    from css.tracing import log_event
+
     if len(observations) == 0:
         return np.zeros((0, embedder.dim), dtype=np.float32)
     texts = [_obs_text(o) for o in observations]
     vectors = np.asarray(embedder.embed(texts), dtype=np.float32)
     for obs, vec in zip(observations, vectors):
         obs.embedding = [float(x) for x in vec]
+
+    norms = np.linalg.norm(vectors, axis=1)
+    log_event("embedding",
+              n_observations=len(observations),
+              dim=int(vectors.shape[1]),
+              norm_stats={"mean": round(float(norms.mean()), 4),
+                          "min": round(float(norms.min()), 4),
+                          "max": round(float(norms.max()), 4)},
+              sample_texts=texts[:5])
     return vectors
 
 
@@ -188,6 +203,8 @@ def _adaptive_eps(vectors: "np.ndarray", min_samples: int) -> float:
     point of maximum gap in the sorted curve. The eps is set just past that
     knee. Falls back to a sane constant when there are too few points.
     """
+    from css.tracing import log_event
+
     n = vectors.shape[0]
     if n <= min_samples:
         return 0.5
@@ -208,6 +225,24 @@ def _adaptive_eps(vectors: "np.ndarray", min_samples: int) -> float:
     eps = float((k_dist[knee] + k_dist[knee + 1]) / 2.0)
     if eps <= 0.0:
         eps = float(k_dist[knee]) or 0.5
+
+    # Sample k-distance curve for diagnostics (every 10th point + endpoints)
+    step = max(1, len(k_dist) // 30)
+    sampled_indices = list(range(0, len(k_dist), step))
+    if sampled_indices[-1] != len(k_dist) - 1:
+        sampled_indices.append(len(k_dist) - 1)
+
+    log_event("adaptive_eps",
+              n_points=n, k=k, knee_index=knee,
+              eps_chosen=round(eps, 4),
+              k_dist_at_knee=round(float(k_dist[knee]), 4),
+              k_dist_after_knee=round(float(k_dist[knee + 1]), 4),
+              max_gap=round(float(gaps[knee]), 4),
+              k_dist_range={"min": round(float(k_dist[0]), 4),
+                            "max": round(float(k_dist[-1]), 4),
+                            "median": round(float(np.median(k_dist)), 4)},
+              k_dist_sample=[round(float(k_dist[i]), 4) for i in sampled_indices])
+
     return eps
 
 
@@ -220,6 +255,8 @@ def dbscan_cluster(
     adaptive eps is derived from a k-distance elbow (``k = min_samples``). A
     degenerate input (0 or 1 vectors) is handled without invoking sklearn.
     """
+    from css.tracing import log_event
+
     n = 0 if vectors is None else int(np.asarray(vectors).shape[0])
     if n == 0:
         return []
@@ -227,14 +264,37 @@ def dbscan_cluster(
         return [-1]
     vectors = np.asarray(vectors, dtype=np.float32)
     use_eps = eps
-    if use_eps is None or use_eps <= 0.0:
+    adaptive = use_eps is None or use_eps <= 0.0
+    if adaptive:
         use_eps = _adaptive_eps(vectors, min_samples)
 
     from sklearn.cluster import DBSCAN  # lazy: sklearn is heavy
 
     model = DBSCAN(eps=use_eps, min_samples=min_samples, metric="cosine")
     labels = model.fit_predict(vectors)
-    return [int(x) for x in labels]
+    labels_list = [int(x) for x in labels]
+
+    from collections import Counter
+    label_counts = Counter(labels_list)
+    n_clusters = sum(1 for k in label_counts if k >= 0)
+    n_noise = label_counts.get(-1, 0)
+    cluster_sizes = {k: v for k, v in sorted(label_counts.items()) if k >= 0}
+
+    sims = np.clip(vectors @ vectors.T, -1.0, 1.0)
+    np.fill_diagonal(sims, np.nan)
+    mean_sim = float(np.nanmean(sims))
+    min_sim = float(np.nanmin(sims))
+    max_sim = float(np.nanmax(sims))
+
+    log_event("dbscan",
+              n_points=n, eps=round(use_eps, 4), adaptive=adaptive,
+              min_samples=min_samples, n_clusters=n_clusters,
+              n_noise=n_noise, cluster_sizes=cluster_sizes,
+              sim_stats={"mean": round(mean_sim, 4),
+                         "min": round(min_sim, 4),
+                         "max": round(max_sim, 4)})
+
+    return labels_list
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -253,22 +313,69 @@ def _centroid(observations: list["Observation"]) -> list[float] | None:
     return [float(x) for x in mean]
 
 
+# Caps for the per-cluster refinement prompt (see _refine_one_cluster).
+_MAX_REFINE_MEMBERS = 60
+_MAX_FIELD_CHARS = 240
+
+
+def _truncate_field(s: str, n: int = _MAX_FIELD_CHARS) -> str:
+    s = (s or "").strip().replace("\n", " ")
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def _select_refine_members(members: list["Observation"]) -> list["Observation"]:
+    """Pick up to ``_MAX_REFINE_MEMBERS`` representative observations for the prompt.
+
+    Prefers ``significance == "critical"`` observations, then fills with the rest,
+    preserving input order for determinism. Returns ``members`` unchanged when it
+    is already within the cap.
+    """
+    if len(members) <= _MAX_REFINE_MEMBERS:
+        return members
+    crit: list["Observation"] = []
+    rest: list["Observation"] = []
+    for o in members:
+        if str(getattr(o, "significance", "")).strip().lower() == "critical":
+            crit.append(o)
+        else:
+            rest.append(o)
+    selected = crit[:_MAX_REFINE_MEMBERS]
+    if len(selected) < _MAX_REFINE_MEMBERS:
+        selected += rest[: _MAX_REFINE_MEMBERS - len(selected)]
+    return selected
+
+
 def _refine_one_cluster(
     client: "LLMClient", members: list["Observation"], temp_id: str
 ) -> "PatternRecord":
     """LLM-unify one cluster of observations into a single PatternRecord."""
+    # Bound the refinement prompt. A single DBSCAN cluster can hold hundreds or
+    # thousands of observations (esp. during coldstart analysis over the full
+    # train set); concatenating ALL of them blows the optimizer context window
+    # (observed: a 258k-token prompt -> HTTP 400 on a 262k-context model). We
+    # show only a representative, size-capped sample to the LLM (preferring
+    # critical-significance observations) and truncate each field. ALL members
+    # are still retained on the PatternRecord below, so occurrence tracking and
+    # the centroid are unaffected — only the naming/description prompt is sampled.
+    shown = _select_refine_members(members)
     lines = []
-    for i, o in enumerate(members):
+    for i, o in enumerate(shown):
         lines.append(
-            f"[{i}] aspect={o.cognitive_aspect!r} | what={o.what} | "
-            f"consequence={o.consequence} | polarity={o.polarity} | "
+            f"[{i}] aspect={o.cognitive_aspect!r} | what={_truncate_field(o.what)} | "
+            f"consequence={_truncate_field(o.consequence)} | polarity={o.polarity} | "
             f"significance={o.significance}"
         )
+    header = f"Observations in this group ({len(members)} total"
+    if len(shown) < len(members):
+        header += f"; showing {len(shown)} representative samples"
+    header += "):\n"
     user = (
-        "Observations in this group:\n" + "\n".join(lines) + "\n\n"
+        header + "\n".join(lines) + "\n\n"
         "Unify them into one cognitive pattern as the JSON object specified."
     )
-    text, _usage = client.complete_optimizer(_REFINE_SYSTEM, user)
+    from css.tracing import stage_context
+    with stage_context(client, "cluster_refine"):
+        text, _usage = client.complete_optimizer(_REFINE_SYSTEM, user)
     obj = _parse_json_object(text)
 
     # Deterministic fallbacks keep the pipeline robust under a terse stub.
@@ -285,6 +392,15 @@ def _refine_one_cluster(
         polarity = _normalize_polarity(obj.get("polarity"))
     else:
         polarity = _vote_polarity(members)
+
+    from css.tracing import log_event
+    log_event("cluster_refine",
+              temp_id=temp_id,
+              n_members=len(members),
+              n_shown=len(shown),
+              polarity=polarity,
+              name=name,
+              description=_truncate_field(description, 300))
 
     return PatternRecord(
         pattern_id=temp_id,
@@ -320,11 +436,56 @@ def refine_clusters(
             continue
         groups.setdefault(int(lab), []).append(obs)
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    items = [(lab, groups[lab]) for lab in sorted(groups)]
+
+    def _refine(item):
+        lab, members = item
+        return (lab, _refine_one_cluster(client, members, f"tmp{lab}"))
+
     records: list[PatternRecord] = []
-    for lab in sorted(groups):
-        members = groups[lab]
-        records.append(_refine_one_cluster(client, members, f"tmp{lab}"))
+    with ThreadPoolExecutor(max_workers=max(1, len(items))) as pool:
+        futures = {pool.submit(_refine, it): it[0] for it in items}
+        results_by_lab: dict[int, PatternRecord] = {}
+        for fut in as_completed(futures):
+            lab_key = futures[fut]
+            try:
+                lab, rec = fut.result()
+                results_by_lab[lab] = rec
+            except Exception:  # noqa: BLE001 — one bad cluster must not kill the epoch
+                # Deterministic fallback: build a PatternRecord from the cluster
+                # members without the LLM (mirrors _refine_one_cluster's fallbacks)
+                # so the cluster is still represented and occurrence tracking holds.
+                members = groups.get(lab_key, [])
+                if members:
+                    results_by_lab[lab_key] = _fallback_pattern_record(
+                        members, f"tmp{lab_key}"
+                    )
+    for lab in sorted(results_by_lab):
+        records.append(results_by_lab[lab])
     return records
+
+
+def _fallback_pattern_record(
+    members: list["Observation"], temp_id: str
+) -> "PatternRecord":
+    """Build a PatternRecord from cluster members without an LLM call.
+
+    Used when ``_refine_one_cluster`` raises (e.g. a transient optimizer error or
+    a still-oversized prompt) so a single bad cluster degrades to a deterministic
+    record instead of crashing the whole analysis epoch.
+    """
+    return PatternRecord(
+        pattern_id=temp_id,
+        name=(members[0].cognitive_aspect.strip() or "unnamed-pattern"),
+        description=members[0].what.strip(),
+        cognitive_aspect=members[0].cognitive_aspect.strip(),
+        polarity=_vote_polarity(members),  # type: ignore[arg-type]
+        observations=list(members),
+        centroid=_centroid(members),
+        status="active",
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -380,7 +541,9 @@ def pair_counterparts(
             "specified JSON object."
         )
         try:
-            text, _usage = client.complete_optimizer(_COUNTERPART_SYSTEM, user)
+            from css.tracing import stage_context
+            with stage_context(client, "counterpart_pair"):
+                text, _usage = client.complete_optimizer(_COUNTERPART_SYSTEM, user)
             obj = _parse_json_object(text)
         except Exception:
             obj = {}
@@ -402,8 +565,22 @@ def pair_counterparts(
                 f.counterpart_id = s.pattern_id
                 s.counterpart_id = f.pattern_id
 
-    # Fill any still-unpaired patterns deterministically by centroid cosine.
-    _cosine_counterparts(patterns)
+    # Fill any still-unpaired patterns deterministically by label similarity.
+    from css.analysis.label_grouping import label_counterparts
+    label_counterparts(patterns)
+
+    from css.tracing import log_event
+    pairs = [
+        {"failure_id": p.pattern_id, "success_id": p.counterpart_id,
+         "failure_name": p.name}
+        for p in patterns
+        if p.polarity == "failure" and p.counterpart_id
+    ]
+    log_event("counterpart_pair",
+              n_failures=len(failures),
+              n_successes=len(successes),
+              n_pairs=len(pairs),
+              pairs=pairs)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -487,54 +664,150 @@ def incremental_match(
 # ──────────────────────────────────────────────────────────────────────────
 def build_or_update_library(
     client: "LLMClient",
-    embedder: "Embedder",
     library: "PatternLibrary",
     observations: list["Observation"],
     *,
     cfg: "CSSConfig",
+    out_dir: str = "",
 ) -> "PatternLibrary":
-    """Full Layer 2: incremental match → cluster residue → refine → add → pair.
+    """Full Layer 2: match existing → group residue → refine → add → pair.
 
-    1. Embed the new observations and match them against existing pattern
-       centroids (:func:`incremental_match`); attach the matches.
-    2. DBSCAN-cluster the unmatched residue and LLM-refine each cluster into a
-       :class:`PatternRecord` (:func:`refine_clusters`).
-    3. Allocate a stable ``pattern_id`` for each new record via
-       :meth:`PatternLibrary.new_pattern_id`, stamp it onto every member
-       observation, set the centroid to the member-embedding mean, and add it.
-    4. Re-pair failure↔success counterparts across all active patterns
-       (:func:`pair_counterparts`).
+    Uses **label-based grouping** (Jaccard pre-group + LLM synonym detection
+    on cognitive_aspect labels) instead of embedding + DBSCAN. The embedding-
+    based approach fails for this data: all observations share the same domain
+    ("LLM agent cognitive behavior on spreadsheet tasks") so a general-purpose
+    embedding model cannot distinguish fine-grained semantic differences, and
+    any density-based clustering degenerates.
 
-    The library is mutated in place and also returned.
+    Pipeline:
+
+    1. Match new observations against existing patterns by cognitive_aspect
+       label similarity (:func:`match_by_label`); attach matches.
+    2. Group the unmatched residue by label canonicalization
+       (:func:`group_observations` — Jaccard + LLM synonym).
+    3. LLM-refine each group into a :class:`PatternRecord` (reuses
+       :func:`_refine_one_cluster`).
+    4. Allocate stable ``pattern_id``, stamp observations, add to library.
+    5. Re-pair failure↔success counterparts.
     """
+    from css.tracing import log_event
+    from css.analysis.label_grouping import (
+        group_observations,
+        match_by_label,
+        label_counterparts,
+    )
+
     if not observations:
         return library
 
-    # 1) embed everything once (caches onto observations), then match existing.
-    embed_observations(embedder, observations)
-    _matched, unmatched = incremental_match(
-        embedder, library, observations, sim_threshold=0.6
-    )
+    # 1) Match against existing patterns by label similarity.
+    _matched, unmatched = match_by_label(client, library, observations)
 
-    # 2) cluster + refine the unmatched residue.
+    log_event("layer2_match",
+              n_observations=len(observations),
+              n_matched=len(_matched),
+              n_unmatched=len(unmatched),
+              n_existing_patterns=len(library))
+
+    # Match results for the audit artifact: which observation attached to which
+    # existing pattern (match_by_label stamps obs.pattern_id on a hit).
+    match_results = [
+        {"obs_id": o.obs_id, "pattern_id": o.pattern_id,
+         "cognitive_aspect": o.cognitive_aspect}
+        for o in _matched
+    ]
+
+    # 2) Group unmatched observations by cognitive_aspect canonicalization.
+    new_count = 0
+    new_patterns_audit: list[dict] = []
     if unmatched:
-        residue_vecs = np.asarray(
-            [o.embedding for o in unmatched], dtype=np.float32
+        clusters, _noise = group_observations(
+            client, unmatched,
+            jaccard_threshold=0.55,
+            batch_size=getattr(cfg, "minibatch_size", 60),
+            min_group_size=cfg.min_samples,
+            out_dir=out_dir or None,
         )
-        labels = dbscan_cluster(
-            residue_vecs, eps=cfg.eps_dbscan, min_samples=cfg.min_samples
-        )
-        new_records = refine_clusters(client, unmatched, labels)
 
-        # 3) assign stable ids + stamp observations + finalize centroid.
+        # 3) LLM-refine each group into a PatternRecord.
+        new_records = []
+        for i, members in enumerate(clusters):
+            try:
+                rec = _refine_one_cluster(client, members, f"tmp{i}")
+                new_records.append(rec)
+            except Exception:  # noqa: BLE001
+                new_records.append(_fallback_pattern_record(members, f"tmp{i}"))
+
+        # 4) Assign stable ids + stamp observations + add to library.
         for rec in new_records:
             pid = library.new_pattern_id()
             rec.pattern_id = pid
             for obs in rec.observations:
                 obs.pattern_id = pid
-            rec.centroid = _centroid(rec.observations)
             library.add(rec)
+            new_patterns_audit.append({
+                "pattern_id": pid,
+                "name": rec.name,
+                "polarity": rec.polarity,
+                "member_obs_ids": [o.obs_id for o in rec.observations],
+            })
+        new_count = len(new_records)
 
-    # 4) re-pair counterparts across all active patterns.
-    pair_counterparts(client, library.active())
+    # 5) Re-pair counterparts: LLM first, then label-based fallback.
+    active = library.active()
+    pair_counterparts(client, active)
+    label_counterparts(active)
+
+    counterpart_pairs = [
+        {"failure_id": p.pattern_id, "success_id": p.counterpart_id}
+        for p in active
+        if p.polarity == "failure" and p.counterpart_id
+    ]
+
+    log_event("layer2_done",
+              n_new_patterns=new_count,
+              n_total_patterns=len(library),
+              patterns=[{"id": p.pattern_id, "name": p.name,
+                         "polarity": p.polarity,
+                         "n_obs": len(p.observations),
+                         "counterpart": p.counterpart_id}
+                        for p in library.active()])
+
+    if out_dir:
+        _save_layer2_artifact(
+            out_dir,
+            match_results=match_results,
+            new_patterns=new_patterns_audit,
+            counterpart_pairs=counterpart_pairs,
+            n_total_patterns=len(library),
+        )
+
     return library
+
+
+def _save_layer2_artifact(
+    out_dir: str,
+    *,
+    match_results: list[dict],
+    new_patterns: list[dict],
+    counterpart_pairs: list[dict],
+    n_total_patterns: int,
+) -> None:
+    """Write ``layer2_library.json`` — never raises (auditability is best-effort)."""
+    import os
+
+    try:
+        artifact = {
+            "match_results": match_results,
+            "n_matched": len(match_results),
+            "new_patterns": new_patterns,
+            "n_new_patterns": len(new_patterns),
+            "counterpart_pairings": counterpart_pairs,
+            "n_total_patterns": n_total_patterns,
+        }
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, "layer2_library.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(artifact, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass

@@ -3,26 +3,34 @@
 The negative archive is tree-global (design D12): it records strategies that
 were pruned or that failed PROPOSAL/REFINE rollout validation, so the search
 does not blindly re-explore them. It is read during Layer 5 (PROPOSAL/REFINE)
-via embedding recall + LLM judgment.
+via text-similarity recall + LLM judgment.
 
 Crucial semantics — *reminder, not prohibition*: a high similarity to an
 archived failure does NOT veto a new strategy. The LLM must be able to
 articulate how the new direction differs (different root cause, timing, or L0
 rule basis). If it cannot, the direction is blocked at Layer 5b.
 
-Phase 1 provides storage + a pluggable similarity-recall hook. The embedding
-backend is wired in Phase 4.6; until then ``recall`` accepts an injected
-similarity function so the structure stays testable.
+Recall uses Jaccard word-overlap on strategy text (not embeddings — general
+embedding models cannot discriminate fine-grained same-domain strategies;
+see analysis_reports for empirical evidence).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
+
+def _tokenize(text: str) -> set[str]:
+    """Split text into a lowercase word set for Jaccard comparison."""
+    return set(re.findall(r"[a-z]{3,}", (text or "").lower()))
+
 
 NegativeOrigin = Literal[
     "pruned_node",
     "proposal_failed_rollout",
     "refine_failed_rollout",
+    "proposal_l1_exhausted",
+    "refine_l1_exhausted",
 ]
 
 
@@ -88,18 +96,38 @@ class NegativeArchive:
     def add(self, entry: NegativeArchiveEntry) -> None:
         self.entries.append(entry)
 
+    def recall_by_text(
+        self,
+        query_text: str,
+        top_k: int,
+    ) -> list[tuple[NegativeArchiveEntry, float]]:
+        """Return the top-``k`` most similar archived entries by Jaccard text overlap.
+
+        Uses word-set Jaccard similarity on strategy_snapshot text. Replaces
+        the previous embedding-based recall — general embedding models cannot
+        discriminate same-domain strategies (empirically verified: strategy
+        texts have sim std=0.074, worse than observations).
+        """
+        q_tokens = _tokenize(query_text)
+        if not q_tokens:
+            return []
+        scored: list[tuple[NegativeArchiveEntry, float]] = []
+        for e in self.entries:
+            e_tokens = _tokenize(e.strategy_snapshot)
+            if not e_tokens:
+                continue
+            sim = len(q_tokens & e_tokens) / len(q_tokens | e_tokens)
+            scored.append((e, sim))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:top_k]
+
     def recall(
         self,
         query_embedding: list[float],
         top_k: int,
         similarity_fn: Callable[[list[float], list[float]], float],
     ) -> list[tuple[NegativeArchiveEntry, float]]:
-        """Return the top-``k`` most similar archived entries with scores.
-
-        ``similarity_fn`` is injected (e.g. cosine similarity over Qwen3
-        embeddings in Phase 4.6) so this structure has no embedding dependency.
-        Entries without an embedding are skipped.
-        """
+        """Legacy embedding-based recall (kept for backward compatibility)."""
         scored: list[tuple[NegativeArchiveEntry, float]] = []
         for e in self.entries:
             if e.embedding is None:

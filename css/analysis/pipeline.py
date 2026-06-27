@@ -40,7 +40,6 @@ from css.analysis.longitudinal import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
-    from css.analysis.embedding import Embedder
     from css.config import CSSConfig
     from css.data.pattern import PatternRecord
     from css.data.rollout import TaskRolloutGroup
@@ -70,13 +69,13 @@ class AnalysisResult:
 
 def run_analysis_epoch(
     client: "LLMClient",
-    embedder: "Embedder",
     node: "TreeNode",
     groups: list["TaskRolloutGroup"],
     *,
     epoch: int,
     l0_saturated: bool,
     cfg: "CSSConfig",
+    out_dir: str = "",
 ) -> "AnalysisResult":
     """Run Layers 1→3 for one node over one epoch's rollout groups.
 
@@ -93,8 +92,14 @@ def run_analysis_epoch(
        :meth:`PatternLibrary.l1_signals` predicate.
 
     Returns an :class:`AnalysisResult`; ``node.pattern_records`` is updated in
-    place as a side effect.
+    place as a side effect. When ``out_dir`` is given, the Layer-2 audit artifact
+    (``layer2_library.json``) and an ``analysis_result.json`` summary are written
+    there.
     """
+    import time
+
+    t_start = time.time()
+
     # ── Layer 1: trajectories → observations + contrastive divergences ──────
     observations, divergences = run_layer1(
         client,
@@ -104,13 +109,15 @@ def run_analysis_epoch(
         cfg=cfg,
     )
 
+    n_patterns_before = len(node.pattern_records)
+
     # ── Layer 2: observations → stable pattern library (mutates in place) ───
     build_or_update_library(
         client,
-        embedder,
         node.pattern_records,
         observations,
         cfg=cfg,
+        out_dir=out_dir,
     )
 
     # ── Layer 3: longitudinal occurrence + L1-signal detection ──────────────
@@ -126,10 +133,57 @@ def run_analysis_epoch(
         l0_saturated=l0_saturated,
     )
 
-    return AnalysisResult(
+    result = AnalysisResult(
         epoch=epoch,
         n_observations=len(observations),
         n_patterns=len(node.pattern_records),
         l1_signals=signals,
         divergences=divergences,
     )
+
+    if out_dir:
+        _save_analysis_result(
+            out_dir,
+            result=result,
+            n_divergences=len(divergences),
+            n_patterns_before=n_patterns_before,
+            elapsed_s=time.time() - t_start,
+        )
+
+    return result
+
+
+def _save_analysis_result(
+    out_dir: str,
+    *,
+    result: "AnalysisResult",
+    n_divergences: int,
+    n_patterns_before: int,
+    elapsed_s: float,
+) -> None:
+    """Write ``analysis_result.json`` — never raises (auditability is best-effort)."""
+    import json
+    import os
+
+    try:
+        artifact = {
+            "epoch": result.epoch,
+            "n_observations": result.n_observations,
+            "n_divergences": n_divergences,
+            "n_patterns": {
+                "before": n_patterns_before,
+                "after": result.n_patterns,
+                "new": max(0, result.n_patterns - n_patterns_before),
+            },
+            "l1_signals": [
+                {"pattern_id": s.pattern_id, "name": s.name}
+                for s in result.l1_signals
+            ],
+            "timing": {"elapsed_s": round(elapsed_s, 3)},
+        }
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, "analysis_result.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(artifact, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass

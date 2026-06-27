@@ -7,27 +7,27 @@ the optimizer model. We enforce this at the call boundary with two narrow
 capability views (:class:`TargetOnlyClient` / :class:`OptimizerOnlyClient`) that
 wrap a single underlying :class:`LLMClient`.
 
-The concrete :class:`RouterLLMClient` adapts SkillOpt's model backends. The
-backend module (claude/azure/codex) is injected at construction and resolved
-directly to the concrete SkillOpt backend module — we do NOT route through
-``router._ACTIVE_BACKEND`` / ``set_backend`` (whose alias normalization is
-internally inconsistent for the claude backend). The call-isolation guarantee
-(First Law) comes from the narrow capability views below, NOT from backend-global
-state.
+Two concrete implementations:
 
-Caveat: each ``complete_*`` call DOES set the backend module's process-global
-target/optimizer deployment (``set_target_deployment`` / ``set_optimizer_deployment``)
-to this client's model. Under ``batch_rollout``'s ThreadPoolExecutor all concurrent
-target callers set the identical ``target_model``, so this is race-benign for
-correctness; a process that shares one client across target and optimizer work
-must assume all concurrent callers request the same target/optimizer model.
+* :class:`RouterLLMClient` — adapts SkillOpt's model backends (claude / azure /
+  codex). Backend resolution is direct (not via ``router.set_backend``). All
+  SkillOpt imports are lazy so this module imports cleanly without SkillOpt.
 
-All SkillOpt imports are lazy (inside methods) so this module imports cleanly in
-environments without SkillOpt installed (tests use :class:`StubLLMClient`).
+* :class:`OpenAICompatLLMClient` — standalone OpenAI-compatible HTTP client with
+  no SkillOpt dependency. Uses ``urllib.request`` directly, supports Qwen3's
+  ``chat_template_kwargs`` for thinking-mode control, thread-safe for high
+  concurrency (256+), and retries with exponential backoff.
+
+The call-isolation guarantee (First Law) comes from the narrow capability views,
+not from backend-global state.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
+import json
+import time
+import urllib.error
+import urllib.request
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from css.config import CSSConfig
@@ -45,6 +45,12 @@ class LLMClient(Protocol):
         self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
     ) -> str:
         """Single-shot target (frozen task agent) completion -> text."""
+        ...
+
+    def complete_target_messages(
+        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+    ) -> str:
+        """Multi-turn target completion -> text."""
         ...
 
     def complete_optimizer(
@@ -121,6 +127,20 @@ class RouterLLMClient:
         )
         return text
 
+    def complete_target_messages(
+        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+    ) -> str:
+        del temperature
+        backend = self._resolve_backend()
+        if hasattr(backend, "set_target_deployment"):
+            backend.set_target_deployment(self.target_model)
+        text, _usage = backend.chat_target_messages(
+            messages=messages,
+            max_completion_tokens=max_tokens,
+            stage="target",
+        )
+        return text
+
     def complete_optimizer(
         self, system: str, user: str, *, max_tokens: int = 4096
     ) -> tuple[str, dict]:
@@ -171,6 +191,18 @@ class StubLLMClient:
         del max_tokens, temperature
         return self.target_fn(system, user)
 
+    def complete_target_messages(
+        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+    ) -> str:
+        del max_tokens, temperature
+        system = "\n".join(
+            str(m.get("content", "")) for m in messages if m.get("role") == "system"
+        )
+        user = "\n".join(
+            str(m.get("content", "")) for m in messages if m.get("role") != "system"
+        )
+        return self.target_fn(system, user)
+
     def complete_optimizer(
         self, system: str, user: str, *, max_tokens: int = 4096
     ) -> tuple[str, dict]:
@@ -210,6 +242,13 @@ class TargetOnlyClient:
             system, user, max_tokens=max_tokens, temperature=temperature
         )
 
+    def complete_target_messages(
+        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+    ) -> str:
+        return self._inner.complete_target_messages(
+            messages, max_tokens=max_tokens, temperature=temperature
+        )
+
     def complete_optimizer(self, *args, **kwargs) -> tuple[str, dict]:
         raise RuntimeError("target-only client cannot call optimizer")
 
@@ -240,18 +279,181 @@ class OptimizerOnlyClient:
     def complete_target(self, *args, **kwargs) -> str:
         raise RuntimeError("optimizer-only client cannot call target")
 
+    def complete_target_messages(self, *args, **kwargs) -> str:
+        raise RuntimeError("optimizer-only client cannot call target")
+
+
+# ── OpenAI-compatible standalone client ──────────────────────────────────────
+
+
+class OpenAICompatLLMClient:
+    """Standalone :class:`LLMClient` for OpenAI-compatible endpoints.
+
+    No SkillOpt dependency. Uses ``urllib.request`` directly, thread-safe for
+    high concurrency, retries with exponential backoff. Supports Qwen3's
+    ``chat_template_kwargs`` for thinking-mode control.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        target_model: str,
+        optimizer_model: str,
+        *,
+        max_tokens: int = 16384,
+        temperature: float = 0.7,
+        timeout_seconds: float = 300,
+        enable_thinking: bool = False,
+        retries: int = 5,
+        optimizer_json_mode: bool = False,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.target_model = target_model
+        self.optimizer_model = optimizer_model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.timeout_seconds = timeout_seconds
+        self.enable_thinking = enable_thinking
+        self.retries = retries
+        # When True, optimizer (NOT target) calls request a structured JSON
+        # object via ``response_format`` — engine-level guarantee for backends
+        # like Qwen/vLLM that honor it. Enable only when every optimizer prompt
+        # in use returns a top-level JSON object (e.g. the Plan A reflect
+        # pipeline); bare-array prompts would be rejected under this mode.
+        self.optimizer_json_mode = optimizer_json_mode
+
+    def _chat_url(self) -> str:
+        base = self.base_url
+        if base.endswith("/chat/completions"):
+            return base
+        return f"{base}/chat/completions"
+
+    def _post(
+        self, payload: dict[str, Any], timeout: float | None = None
+    ) -> dict[str, Any]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        req = urllib.request.Request(
+            self._chat_url(),
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        effective_timeout = timeout or self.timeout_seconds
+        last_err: Exception | None = None
+        for attempt in range(self.retries):
+            try:
+                with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="replace")
+                last_err = RuntimeError(
+                    f"OpenAI-compat API returned HTTP {e.code}: {body}"
+                )
+                if 400 <= e.code < 500:
+                    raise last_err
+            except (urllib.error.URLError, OSError) as e:
+                last_err = RuntimeError(f"OpenAI-compat API request failed: {e}")
+            time.sleep(min(2 ** attempt, 30))
+        raise last_err  # type: ignore[misc]
+
+    def _call(
+        self,
+        messages: list[dict],
+        model: str,
+        max_tokens: int,
+        temperature: float,
+        *,
+        response_format: dict | None = None,
+    ) -> tuple[str, dict[str, int]]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": min(max_tokens, self.max_tokens),
+            "temperature": temperature,
+            "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
+        }
+        if response_format is not None:
+            payload["response_format"] = response_format
+        data = self._post(payload)
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError(f"OpenAI-compat API returned no choices: {data}")
+        message = choices[0].get("message") or {}
+        text = message.get("content") or ""
+        if not isinstance(text, str):
+            text = json.dumps(text, ensure_ascii=False)
+        usage = data.get("usage") or {}
+        usage_info = {
+            "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+            "completion_tokens": int(usage.get("completion_tokens", 0)),
+            "total_tokens": int(usage.get("total_tokens", 0)),
+        }
+        return text, usage_info
+
+    def complete_target(
+        self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
+    ) -> str:
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        text, _ = self._call(messages, self.target_model, max_tokens, temperature)
+        return text
+
+    def complete_target_messages(
+        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+    ) -> str:
+        text, _ = self._call(list(messages), self.target_model, max_tokens, temperature)
+        return text
+
+    def complete_optimizer(
+        self, system: str, user: str, *, max_tokens: int = 4096
+    ) -> tuple[str, dict]:
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        return self._call(
+            messages, self.optimizer_model, max_tokens, self.temperature,
+            response_format=self._optimizer_response_format(),
+        )
+
+    def complete_optimizer_messages(
+        self, messages: list[dict], *, max_tokens: int = 4096
+    ) -> tuple[str, dict]:
+        return self._call(
+            list(messages), self.optimizer_model, max_tokens, self.temperature,
+            response_format=self._optimizer_response_format(),
+        )
+
+    def _optimizer_response_format(self) -> dict | None:
+        return {"type": "json_object"} if self.optimizer_json_mode else None
+
 
 def build_clients(cfg: "CSSConfig") -> tuple["TargetOnlyClient", "OptimizerOnlyClient"]:
-    """Build a router client from ``cfg`` and return its two narrow views.
+    """Build an LLM client from ``cfg`` and return its two narrow views.
 
-    Returns ``(target_view, optimizer_view)`` over a single shared
-    :class:`RouterLLMClient`, so both halves use the same backend yet remain
-    call-isolated per the First Law.
+    Returns ``(target_view, optimizer_view)`` over a single shared client,
+    call-isolated per the First Law. When ``cfg.extra["llm_backend"]`` is
+    ``"openai_compat"``, uses :class:`OpenAICompatLLMClient` (no SkillOpt
+    dependency); otherwise delegates to :class:`RouterLLMClient`.
     """
     backend = cfg.extra.get("llm_backend", "claude") if cfg.extra else "claude"
-    inner = RouterLLMClient(
-        target_model=cfg.target_model,
-        optimizer_model=cfg.optimizer_model,
-        backend=backend,
-    )
+    extra = cfg.extra or {}
+    if backend == "openai_compat":
+        inner: LLMClient = OpenAICompatLLMClient(
+            base_url=str(extra.get("base_url", "http://localhost:8000/v1")),
+            api_key=str(extra.get("api_key", "")),
+            target_model=cfg.target_model,
+            optimizer_model=cfg.optimizer_model,
+            max_tokens=int(extra.get("max_tokens", 16384)),
+            temperature=float(extra.get("temperature", 0.7)),
+            timeout_seconds=float(extra.get("timeout_seconds", 300)),
+            enable_thinking=bool(extra.get("enable_thinking", False)),
+            optimizer_json_mode=bool(extra.get("optimizer_json_mode", False)),
+        )
+    else:
+        inner = RouterLLMClient(
+            target_model=cfg.target_model,
+            optimizer_model=cfg.optimizer_model,
+            backend=backend,
+        )
     return TargetOnlyClient(inner), OptimizerOnlyClient(inner)

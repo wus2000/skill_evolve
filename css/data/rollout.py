@@ -232,7 +232,7 @@ def aggregate_scores(results: list[TaskResult]) -> dict[str, float | int]:
     """Compute headline scores over a flat list of rollouts.
 
     Returns ``hard`` (mean all-pass rate over rollouts), ``soft`` (mean fraction
-    over rollouts), and ``task_hard`` (fraction of *tasks* with majority pass).
+    over rollouts), and ``task_hard`` (mean per-task pass rate across K rollouts).
     ``task_hard`` is the fair node-comparison metric used by the tree.
     """
     if not results:
@@ -240,7 +240,7 @@ def aggregate_scores(results: list[TaskResult]) -> dict[str, float | int]:
     hard = sum(r.hard for r in results) / len(results)
     soft = sum(r.soft for r in results) / len(results)
     groups = group_rollouts(results)
-    task_hard = sum(1 for g in groups if g.pass_rate >= 0.5) / len(groups)
+    task_hard = sum(g.pass_rate for g in groups) / len(groups)
     return {
         "hard": hard,
         "soft": soft,

@@ -34,7 +34,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
-    from css.analysis.embedding import Embedder
     from css.config import CSSConfig
     from css.data.negative_archive import NegativeArchive
     from css.data.pattern import PatternLibrary, PatternRecord
@@ -68,21 +67,127 @@ class ColdStartResult:
 def _fallback_strategy_0() -> str:
     """A minimal generic ``strategy_0`` when derivation yields nothing.
 
-    Kept deliberately generic (a couple of ``###`` subsections so the document
-    has the same shape REFINE/PROPOSAL expect) — the real strategy emerges from
-    the search; this only guarantees the ROOT node is well-formed when the bare
-    rollouts produced no actionable failure signal.
+    Uses the two-section format (``## Name`` + overview + ``### Details`` + detail)
+    that REFINE/PROPOSAL expect — the real strategy emerges from the search;
+    this only guarantees the ROOT node is well-formed when the bare rollouts
+    produced no actionable failure signal.
     """
     return (
-        "### Understand before acting\n"
-        "Read the full task and all provided inputs carefully before deciding "
-        "on an approach. Restate the goal and the success criteria in your own "
-        "terms, and identify the concrete outputs that will be checked.\n\n"
-        "### Verify before finishing\n"
-        "Before declaring the task complete, re-check the produced result "
-        "against the stated requirements. Look for the most likely mistakes for "
-        "this kind of task and confirm each requirement is actually satisfied."
+        "## Methodical Task Execution\n"
+        "A disciplined approach that prioritizes thorough understanding of the "
+        "task before acting, followed by systematic verification of the result. "
+        "The core insight is that most failures stem from rushing to act before "
+        "fully grasping what is being asked.\n\n"
+        "### Details\n"
+        "Before taking any action, read the full task description and all provided "
+        "inputs carefully. Restate the goal and success criteria in your own terms, "
+        "and identify the concrete outputs that will be checked. Form an explicit "
+        "plan that maps each requirement to a specific action.\n\n"
+        "When executing, work through the plan step by step, verifying each "
+        "intermediate result before proceeding. If an unexpected situation arises, "
+        "pause and re-evaluate the plan rather than pressing forward with assumptions.\n\n"
+        "Before declaring the task complete, re-check the produced result against "
+        "the stated requirements. Look for the most likely mistakes for this kind "
+        "of task and confirm each requirement is actually satisfied."
     )
+
+
+def _save_coldstart_artifacts(cold_dir: str, node, analysis) -> None:
+    """Persist cold-start analysis intermediate products."""
+    import json
+    import os
+
+    art_dir = os.path.join(cold_dir, "analysis")
+    os.makedirs(art_dir, exist_ok=True)
+
+    patterns = []
+    for p in node.pattern_records.active():
+        patterns.append({
+            "pattern_id": p.pattern_id,
+            "name": p.name,
+            "description": p.description,
+            "cognitive_aspect": p.cognitive_aspect,
+            "polarity": p.polarity,
+            "counterpart_id": p.counterpart_id,
+            "support_count": p.support_count,
+            "n_observations": len(p.observations),
+        })
+    with open(os.path.join(art_dir, "patterns.json"), "w", encoding="utf-8") as f:
+        json.dump(patterns, f, ensure_ascii=False, indent=2)
+
+    obs_list = []
+    for p in node.pattern_records.active():
+        for o in p.observations:
+            obs_list.append({
+                "obs_id": o.obs_id,
+                "task_id": o.task_id,
+                "cognitive_aspect": o.cognitive_aspect,
+                "what": o.what,
+                "significance": o.significance,
+                "polarity": o.polarity,
+                "pattern_id": o.pattern_id,
+            })
+    with open(os.path.join(art_dir, "observations.json"), "w", encoding="utf-8") as f:
+        json.dump(obs_list, f, ensure_ascii=False, indent=2)
+
+    if analysis.divergences:
+        divs = []
+        for d in analysis.divergences:
+            divs.append({
+                "task_id": d.task_id,
+                "divergence_point": d.divergence_point,
+                "cognitive_difference": d.cognitive_difference,
+                "is_systematic": d.is_systematic,
+            })
+        with open(os.path.join(art_dir, "divergences.json"), "w", encoding="utf-8") as f:
+            json.dump(divs, f, ensure_ascii=False, indent=2)
+
+
+def _save_coldstart_derivation(cold_dir, signals, root_causes, proposal,
+                               counterparts, strategy_0):
+    """Persist root cause attribution and strategy derivation products."""
+    import json
+    import os
+
+    art_dir = os.path.join(cold_dir, "derivation")
+    os.makedirs(art_dir, exist_ok=True)
+
+    sig_list = []
+    for s in (signals or []):
+        sig_list.append({
+            "pattern_id": s.pattern_id,
+            "name": s.name,
+            "polarity": s.polarity,
+            "support_count": s.support_count,
+            "remedy_resistance": s.remedy_resistance,
+        })
+    with open(os.path.join(art_dir, "signals.json"), "w", encoding="utf-8") as f:
+        json.dump(sig_list, f, ensure_ascii=False, indent=2)
+
+    rc_list = []
+    for rc in (root_causes or []):
+        rc_list.append(rc.to_dict())
+    with open(os.path.join(art_dir, "root_causes.json"), "w", encoding="utf-8") as f:
+        json.dump(rc_list, f, ensure_ascii=False, indent=2)
+
+    if proposal is not None:
+        with open(os.path.join(art_dir, "proposal.json"), "w", encoding="utf-8") as f:
+            json.dump(proposal.to_dict(), f, ensure_ascii=False, indent=2)
+
+    cp_list = []
+    for cp in (counterparts or []):
+        cp_list.append({
+            "pattern_id": cp.pattern_id,
+            "name": cp.name,
+            "polarity": cp.polarity,
+            "cognitive_aspect": cp.cognitive_aspect,
+            "description": cp.description,
+        })
+    with open(os.path.join(art_dir, "counterparts.json"), "w", encoding="utf-8") as f:
+        json.dump(cp_list, f, ensure_ascii=False, indent=2)
+
+    with open(os.path.join(art_dir, "strategy_0.md"), "w", encoding="utf-8") as f:
+        f.write(strategy_0 or "")
 
 
 def _seed_failure_signals(
@@ -117,7 +222,6 @@ def cold_start(
     env,
     target_client: "LLMClient",
     optimizer_client: "LLMClient",
-    embedder: "Embedder",
     *,
     cfg: "CSSConfig",
     out_dir: str,
@@ -169,21 +273,28 @@ def cold_start(
         rules="",
         created_epoch=0,
     )
+    import os as _os
     analysis = run_analysis_epoch(
         optimizer_client,
-        embedder,
         temp_node,
         groups,
         epoch=0,
         l0_saturated=True,  # cold start: nothing to L0-optimize; treat as saturated
         cfg=cfg,
+        out_dir=_os.path.join(cold_dir, "analysis"),
     )
     library = temp_node.pattern_records
     n_patterns = len(library)
 
+    # Persist cold-start analysis artifacts.
+    _save_coldstart_artifacts(cold_dir, temp_node, analysis)
+
     # ── 3. Derive strategy_0 from the significant failure patterns ──────────
     strategy_0 = ""
     signals = _seed_failure_signals(library, analysis.l1_signals, cfg=cfg)
+    root_causes = []
+    counterparts: list = []
+    proposal = None
     if signals:
         root_causes = attribute_root_cause(
             optimizer_client,
@@ -196,7 +307,6 @@ def cold_start(
         if root_causes:
             top = root_causes[0]
             # Paired SUCCESS counterparts to systematize (resolve via library).
-            counterparts: list = []
             seen: set[str] = set()
             for pid in top.pattern_ids:
                 rec = library.get(pid)
@@ -217,6 +327,9 @@ def cold_start(
                 current_strategy="",
             )
             strategy_0 = (proposal.strategy_text or "").strip()
+
+    _save_coldstart_derivation(cold_dir, signals, root_causes, proposal,
+                               counterparts, strategy_0)
 
     if not strategy_0:
         strategy_0 = _fallback_strategy_0()

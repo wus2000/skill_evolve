@@ -403,7 +403,7 @@ def test_refine_diff_gate_accepts_local_change():
 
 def test_refine_diff_gate_rejects_empty_change():
     ok, reason = check_refine_diff(STRATEGY_A, STRATEGY_A, max_changed=2)
-    assert not ok and reason == "no_subsection_changed"
+    assert not ok and reason == "no_subsection_changed:escalate_to_proposal"
 
 
 def test_refine_diff_gate_rejects_too_many_changes():
@@ -433,11 +433,18 @@ def test_refine_diff_gate_escalates_on_added_subsection():
 
 
 def test_refine_diff_gate_no_subsections_at_all():
-    # A cold-start strategy with only ## headings (no ### subsections) cannot be
-    # REFINEd — the gate reports the empty-op condition clearly.
-    flat = "## Some Strategy\n\nJust prose, no subsections.\n"
+    # A strategy with no headings at all cannot be REFINEd.
+    flat = "Just prose, no subsections at all.\n"
     ok, reason = check_refine_diff(flat, flat + "more prose\n", max_changed=2)
-    assert not ok and reason == "no_subsection_changed"
+    assert not ok and reason == "no_subsection_changed:escalate_to_proposal"
+
+
+def test_refine_diff_gate_flat_h2_strategy():
+    # A D6-style strategy with flat ## headings IS now refinable.
+    parent = "## Section One\nContent one.\n\n## Section Two\nContent two.\n"
+    child = parent.replace("Content one.", "Refined content one.")
+    ok, reason = check_refine_diff(parent, child, max_changed=2)
+    assert ok and reason == "ok:1_changed"
 
 
 def test_refine_diff_duplicate_headings_aligned_by_ordinal():
@@ -533,6 +540,115 @@ def test_skill_document_empty_rules_clean_combined():
         combined = SkillDocument.load(doc.skill_dir).combined_skill_text()
         assert "# Tactical Rules" not in combined  # empty rules omitted
         assert "# Cognitive Strategy" in combined
+
+
+# ── Reflect mode dispatch tests ──────────────────────────────────────────────
+
+def _make_results_mixed():
+    """Create rollouts covering all three categories: pure_pass, pure_fail, mixed."""
+    results = []
+    # Task A: pure pass (2 rollouts, all pass)
+    results.append(TaskResult(task_id="A", rollout_index=0, hard=1, soft=1.0,
+                              n_cases=1, n_pass=1, messages=[{"role": "user", "content": "do A"}],
+                              task_description="task A"))
+    results.append(TaskResult(task_id="A", rollout_index=1, hard=1, soft=1.0,
+                              n_cases=1, n_pass=1, messages=[{"role": "user", "content": "do A"}],
+                              task_description="task A"))
+    # Task B: pure fail (2 rollouts, all fail)
+    results.append(TaskResult(task_id="B", rollout_index=0, hard=0, soft=0.0,
+                              n_cases=1, n_pass=0, fail_reason="wrong",
+                              messages=[{"role": "user", "content": "do B"}],
+                              task_description="task B"))
+    results.append(TaskResult(task_id="B", rollout_index=1, hard=0, soft=0.0,
+                              n_cases=1, n_pass=0, fail_reason="wrong",
+                              messages=[{"role": "user", "content": "do B"}],
+                              task_description="task B"))
+    # Task C: mixed (1 pass, 1 fail)
+    results.append(TaskResult(task_id="C", rollout_index=0, hard=1, soft=1.0,
+                              n_cases=1, n_pass=1, messages=[{"role": "user", "content": "do C"}],
+                              task_description="task C"))
+    results.append(TaskResult(task_id="C", rollout_index=1, hard=0, soft=0.0,
+                              n_cases=1, n_pass=0, fail_reason="partial",
+                              messages=[{"role": "user", "content": "do C"}],
+                              task_description="task C"))
+    return results
+
+
+def test_reflect_mode_dispatch_legacy():
+    from css.model.client import StubLLMClient
+    from css.optimizer.reflect import reflect_epoch
+
+    calls = []
+    def _track(system, user):
+        calls.append(system[:40])
+        return '[{"op": "append", "content": "test rule", "reason": "test"}]'
+
+    client = StubLLMClient(optimizer_fn=_track)
+    cfg = CSSConfig(reflect_mode="legacy", minibatch_size=10)
+    results = _make_results_mixed()
+    sb = StepBuffer()
+    patches = reflect_epoch(client, "# Strategy", "# Rules", results, sb, cfg=cfg)
+    assert len(patches) >= 1
+    assert all(p.patch is not None for p in patches)
+
+
+def test_reflect_mode_dispatch_plan_a():
+    from css.model.client import StubLLMClient
+    from css.optimizer.reflect import reflect_epoch
+
+    call_systems = []
+    def _track(system, user):
+        call_systems.append(system[:80])
+        if "success analyst" in system.lower():
+            return '{"rule_attributions": [], "success_patterns": [], "robustness_warnings": []}'
+        if "failure analyst" in system.lower():
+            return '{"failure_patterns": []}'
+        if "contrastive analyst" in system.lower():
+            return '{"contrastive_signals": []}'
+        return '[{"op": "append", "content": "plan_a rule", "reason": "synthesized"}]'
+
+    client = StubLLMClient(optimizer_fn=_track)
+    cfg = CSSConfig(reflect_mode="plan_a", minibatch_size=10)
+    results = _make_results_mixed()
+    sb = StepBuffer()
+    patches = reflect_epoch(client, "# Strategy", "# Rules", results, sb, cfg=cfg)
+    assert len(patches) >= 1  # plan_a returns one patch per generator (default num_generators=3)
+    assert all(p.source_type == "synthesized" for p in patches)
+    # Should have called success, failure, contrastive, AND edit generator (4+ calls)
+    assert len(call_systems) >= 4
+
+
+def test_reflect_mode_dispatch_plan_b():
+    from css.model.client import StubLLMClient
+    from css.optimizer.reflect import reflect_epoch
+
+    call_systems = []
+    def _track(system, user):
+        call_systems.append(system[:80])
+        if "success analyst" in system.lower():
+            return '{"rule_attributions": [], "success_patterns": [], "robustness_warnings": []}'
+        return '[{"op": "append", "content": "plan_b rule", "reason": "context-injected"}]'
+
+    client = StubLLMClient(optimizer_fn=_track)
+    cfg = CSSConfig(reflect_mode="plan_b", minibatch_size=10)
+    results = _make_results_mixed()
+    sb = StepBuffer()
+    patches = reflect_epoch(client, "# Strategy", "# Rules", results, sb, cfg=cfg)
+    # plan_b: one patch per fail-batch + one per mixed group = 2 patches
+    assert len(patches) >= 2
+    source_types = {p.source_type for p in patches}
+    assert "contrastive" in source_types or "failure" in source_types
+
+
+def test_triage_groups():
+    from css.optimizer.reflect import _group_by_task, _triage_groups
+    results = _make_results_mixed()
+    groups = _group_by_task(results)
+    assert len(groups) == 3
+    pure_pass, pure_fail, mixed = _triage_groups(groups)
+    assert len(pure_pass) == 1 and pure_pass[0].task_id == "A"
+    assert len(pure_fail) == 1 and pure_fail[0].task_id == "B"
+    assert len(mixed) == 1 and mixed[0].task_id == "C"
 
 
 # ── Standalone runner ─────────────────────────────────────────────────────────

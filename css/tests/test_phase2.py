@@ -144,10 +144,11 @@ def test_fake_env_run_one_nonempty_messages():
 
 # ── 4. aggregate_scores ────────────────────────────────────────────────────────
 def test_aggregate_scores_cases():
-    # 2 pass / 1 fail of the SAME task -> majority pass -> task_hard 1.0, hard 2/3.
+    # 2 pass / 1 fail of the SAME task -> mean per-task pass rate -> task_hard 2/3,
+    # hard 2/3 (mean all-pass rate over rollouts).
     group = [_result("t1", 0, 1), _result("t1", 1, 1), _result("t1", 2, 0)]
     scores = aggregate_scores(group)
-    assert scores["task_hard"] == 1.0
+    assert abs(scores["task_hard"] - (2 / 3)) < 1e-9
     assert abs(scores["hard"] - (2 / 3)) < 1e-9
     assert scores["n_rollouts"] == 3 and scores["n_tasks"] == 1
 

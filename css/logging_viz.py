@@ -25,7 +25,7 @@ if TYPE_CHECKING:  # avoid importing heavy modules at runtime
 # Snapshot
 # ──────────────────────────────────────────────────────────────────────────
 def _node_snapshot(node: "TreeNode") -> dict[str, Any]:
-    """Serializable view of a single node (no skill text, no embeddings)."""
+    """Serializable view of a single node including skill text."""
     return {
         "node_id": node.node_id,
         "parent_id": node.parent_id,
@@ -33,10 +33,15 @@ def _node_snapshot(node: "TreeNode") -> dict[str, Any]:
         "status": node.status,
         "val_score": node.val_score,
         "best_score": node.best_score,
+        "train_score": getattr(node, "train_score", 0.0),
         "n_steps": node.n_steps,
         "refine_count": node.refine_count,
         "maturity": node.maturity,
         "n_patterns": len(node.pattern_records),
+        "strategy": node.strategy or "",
+        "rules": node.rules or "",
+        "best_rules": node.best_rules or "",
+        "created_epoch": node.created_epoch,
         "learning_curve": [p.to_dict() for p in node.learning_curve],
     }
 

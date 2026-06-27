@@ -141,6 +141,8 @@ def _refine_optimizer_fn(system: str, user: str) -> str:
         )
     if "pair each failure" in low or "counterpart" in low:
         return json.dumps({"pairs": []})
+    if "organizing" in low or "group" in low:
+        return json.dumps({"groups": []})
     return "{}"
 
 
@@ -328,28 +330,25 @@ def test_dbscan_degenerate_inputs():
 def test_build_library_assigns_stable_ids_and_incremental_match_attaches():
     cfg = CSSConfig(eps_dbscan=0.05, min_samples=2)
     client = StubLLMClient(optimizer_fn=_refine_optimizer_fn)
-    e = StubEmbedder(dim=16)
     lib = PatternLibrary()
 
-    # Epoch 0: two observations with identical clustering text -> one pattern.
+    # Epoch 0: two observations with identical cognitive_aspect -> one pattern.
     obs0 = [
-        _obs("o0", "t0", "A", "premature commitment to one reading"),
-        _obs("o1", "t1", "A", "premature commitment to one reading"),
+        _obs("o0", "t0", "premature commitment", "premature commitment to one reading"),
+        _obs("o1", "t1", "premature commitment", "premature commitment to one reading"),
     ]
-    build_or_update_library(client, e, lib, obs0, cfg=cfg)
+    build_or_update_library(client, lib, obs0, cfg=cfg)
     assert len(lib) == 1
     rec = lib.active()[0]
-    # Stable id of the PatternLibrary.new_pattern_id() form.
     assert rec.pattern_id == "p0000"
-    assert rec.centroid is not None
     assert rec.support_count == 2
-    # Every member observation carries the assigned pattern_id.
     assert all(o.pattern_id == "p0000" for o in rec.observations)
 
-    # Epoch 1: an observation near the existing pattern attaches via
-    # incremental_match — no new pattern is created and support grows.
-    obs1 = [_obs("o2", "t2", "A", "premature commitment to one reading", epoch=1)]
-    build_or_update_library(client, e, lib, obs1, cfg=cfg)
+    # Epoch 1: an observation whose cognitive_aspect matches the existing
+    # pattern's name/cognitive_aspect by label Jaccard — attaches without
+    # creating a new pattern.
+    obs1 = [_obs("o2", "t2", "premature commitment", "premature commitment to one reading", epoch=1)]
+    build_or_update_library(client, lib, obs1, cfg=cfg)
     assert len(lib) == 1
     rec = lib.active()[0]
     assert rec.support_count == 3
@@ -519,7 +518,6 @@ def test_run_analysis_epoch_end_to_end():
         return _OBS_JSON
 
     client = StubLLMClient(optimizer_fn=opt)
-    e = StubEmbedder(dim=16)
     node = TreeNode(node_id="n0")
 
     # Two tasks, each with one failing rollout -> shared cognitive observations.
@@ -529,7 +527,7 @@ def test_run_analysis_epoch_end_to_end():
     ]
 
     res = run_analysis_epoch(
-        client, e, node, groups, epoch=0, l0_saturated=True, cfg=cfg
+        client, node, groups, epoch=0, l0_saturated=True, cfg=cfg
     )
     assert isinstance(res, AnalysisResult)
     assert res.epoch == 0
@@ -546,7 +544,7 @@ def test_run_analysis_epoch_end_to_end():
     # Determinism: a second identical run from a fresh node yields the same shape.
     node2 = TreeNode(node_id="n0")
     res2 = run_analysis_epoch(
-        client, e, node2, groups, epoch=0, l0_saturated=True, cfg=cfg
+        client, node2, groups, epoch=0, l0_saturated=True, cfg=cfg
     )
     assert res2.n_observations == res.n_observations
     assert res2.n_patterns == res.n_patterns
@@ -559,6 +557,7 @@ def test_import_smoke_no_heavy_backends():
     import importlib
     import sys
 
+    faiss_before = "faiss" in sys.modules
     for mod in (
         "css.analysis.embedding",
         "css.analysis.layer1",
@@ -567,8 +566,10 @@ def test_import_smoke_no_heavy_backends():
         "css.analysis.pipeline",
     ):
         importlib.import_module(mod)
-    # Importing the analysis stack must not pull faiss or load an ST model.
-    assert "faiss" not in sys.modules
+    # Importing the analysis stack must not NEWLY pull faiss (it may already
+    # be in sys.modules if a prior test constructed a VectorIndex).
+    if not faiss_before:
+        assert "faiss" not in sys.modules
     # sentence_transformers may be importable, but no model is constructed via
     # the StubEmbedder path used throughout these tests.
     e = StubEmbedder(dim=8)

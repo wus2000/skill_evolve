@@ -51,13 +51,27 @@ class CSSConfig:
     # ── L0 EXPLOITATION ──────────────────────────────────────────────────
     minibatch_size: int = 8             # trajectories per L0 minibatch
     max_l0_steps_per_epoch: int = 20    # safety cap on L0 steps within an epoch
+    batch_size: int = 40                # tasks per batch in batch-step architecture
+    num_generators: int = 3             # independent edit generators (Stage 2)
+    max_edits_per_step: int = 3         # max edits selected per step after aggregate
+
+    # ── L1 STRATEGY CYCLE ────────────────────────────────────────────────
+    max_l1_iterations: int = 3          # max hypothesis-test-verify iterations
+    l1_diagnostic_tasks: int = 20       # tasks in focused testing subset
+    l1_regression_tasks: int = 5        # passing tasks for regression check
+
+    # ── Reflect mode ─────────────────────────────────────────────────────
+    # "legacy"  — original flat fail/success split (no per-task grouping)
+    # "plan_a"  — three-way analysis → unified edit_generator (two-stage)
+    # "plan_b"  — success insights as context injection into fail/contrastive
+    reflect_mode: str = "plan_a"
 
     # ── Analysis / clustering (design D8 / §8) ───────────────────────────
     embedding_model: str = "Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
     eps_dbscan: float = 0.0             # 0.0 = adaptive (k-distance elbow)
     min_samples: int = 2                # DBSCAN minimum cluster size
-    l1_min_task_fraction: float = 0.15  # "significant proportion" for L1 signal
+    l1_min_task_fraction: float = 0.15  # deprecated: L1 now triggers on L0 saturation
 
     # ── Layer 5 thresholds (design D4 / D12) ─────────────────────────────
     coverage_low: float = 0.20          # < this → reconsider root cause
@@ -69,6 +83,7 @@ class CSSConfig:
     concurrency_limit: int = 4          # parallel tree nodes per round
     max_api_workers: int = 32           # parallel task rollouts
     task_timeout_s: int = 600
+    max_turns: int = 30                 # multi-turn conversation limit per rollout
 
     # LLM model names (dependency-injected; see Phase 2/3 LLM client).
     target_model: str = "claude-sonnet-4-6"   # frozen task agent
@@ -105,6 +120,12 @@ class CSSConfig:
             problems.append("context_use_frac must be in (0, 1]")
         if self.k_rollouts < 1:
             problems.append("k_rollouts must be >= 1")
+        if self.max_l1_iterations < 1:
+            problems.append("max_l1_iterations must be >= 1")
+        if self.l1_diagnostic_tasks < 1:
+            problems.append("l1_diagnostic_tasks must be >= 1")
+        if self.l1_regression_tasks < 0:
+            problems.append("l1_regression_tasks must be >= 0")
         if self.min_samples < 1:
             problems.append("min_samples must be >= 1")
         if not (0.0 <= self.coverage_low <= self.coverage_high <= 1.0):

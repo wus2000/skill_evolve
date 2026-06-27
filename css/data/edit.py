@@ -25,9 +25,15 @@ from typing import Any, Literal
 #   insert_after   : insert content on the line after `target`
 #   replace        : replace the first occurrence of `target` with content
 #   delete         : remove the first occurrence of `target`
-EditOp = Literal["append", "insert_after", "replace", "delete"]
+EditOp = Literal[
+    "append", "insert_after", "replace", "delete",
+    "add_section", "rewrite_section", "delete_section",
+]
 
-EDIT_OPS: tuple[str, ...] = ("append", "insert_after", "replace", "delete")
+EDIT_OPS: tuple[str, ...] = (
+    "append", "insert_after", "replace", "delete",
+    "add_section", "rewrite_section", "delete_section",
+)
 
 
 @dataclass
@@ -37,7 +43,10 @@ class Edit:
     Attributes
     ----------
     op:
-        One of :data:`EDIT_OPS`.
+        One of :data:`EDIT_OPS`. Section-level ops (``add_section``,
+        ``rewrite_section``, ``delete_section``) use ``target`` as the ``###``
+        section heading to locate, and ``content`` as the full section body
+        (heading included for ``add_section``/``rewrite_section``).
     content:
         Text to add (for ``append`` / ``insert_after`` / ``replace``). Ignored
         for ``delete``.

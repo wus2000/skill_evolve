@@ -31,11 +31,13 @@ faiss at import time).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+_log = logging.getLogger("css")
+
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
-    from css.analysis.embedding import Embedder
     from css.config import CSSConfig
     from css.data.negative_archive import NegativeArchive
     from css.data.rollout import TaskResult, TaskRolloutGroup
@@ -76,6 +78,28 @@ class RunResult:
     best_node_id: str | None = None
 
 
+def _round_to_dict(r: "RoundResult") -> dict:
+    """Serialize a RoundResult for the checkpoint's rounds-history metadata."""
+    return {
+        "round_index": r.round_index,
+        "selected_node_ids": list(r.selected_node_ids),
+        "branches": list(r.branches),
+        "pruned": list(r.pruned),
+        "global_best_score": r.global_best_score,
+    }
+
+
+def _round_from_dict(d: dict) -> "RoundResult":
+    """Rehydrate a RoundResult from checkpoint metadata."""
+    return RoundResult(
+        round_index=int(d.get("round_index", -1)),
+        selected_node_ids=list(d.get("selected_node_ids", [])),
+        branches=list(d.get("branches", [])),
+        pruned=list(d.get("pruned", [])),
+        global_best_score=float(d.get("global_best_score", 0.0)),
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────
@@ -102,6 +126,137 @@ def _combined_skill_text(node: "TreeNode") -> str:
 
     doc = SkillDocument(skill_dir="", strategy=node.strategy or "", rules=node.rules or "")
     return doc.combined_skill_text()
+
+
+def _save_analysis_artifacts(
+    out_dir: str, node: "TreeNode", round_index: int, analysis
+) -> None:
+    """Persist analysis intermediate products for auditability."""
+    import json
+    import os
+
+    art_dir = os.path.join(
+        out_dir, node.node_id, f"round_{round_index:04d}", "analysis"
+    )
+    os.makedirs(art_dir, exist_ok=True)
+
+    patterns = []
+    for p in node.pattern_records.active():
+        patterns.append({
+            "pattern_id": p.pattern_id,
+            "name": p.name,
+            "description": p.description,
+            "cognitive_aspect": p.cognitive_aspect,
+            "polarity": p.polarity,
+            "counterpart_id": p.counterpart_id,
+            "support_count": p.support_count,
+            "n_observations": len(p.observations),
+            "remedy_resistance": p.remedy_resistance,
+            "status": p.status,
+        })
+    with open(os.path.join(art_dir, "patterns.json"), "w", encoding="utf-8") as f:
+        json.dump(patterns, f, ensure_ascii=False, indent=2)
+
+    obs_list = []
+    for p in node.pattern_records.active():
+        for o in p.observations:
+            obs_list.append({
+                "obs_id": o.obs_id,
+                "task_id": o.task_id,
+                "cognitive_aspect": o.cognitive_aspect,
+                "what": o.what,
+                "significance": o.significance,
+                "polarity": o.polarity,
+                "pattern_id": o.pattern_id,
+            })
+    with open(os.path.join(art_dir, "observations.json"), "w", encoding="utf-8") as f:
+        json.dump(obs_list, f, ensure_ascii=False, indent=2)
+
+    if analysis.l1_signals:
+        signals = []
+        for s in analysis.l1_signals:
+            signals.append({
+                "pattern_id": s.pattern_id,
+                "name": s.name,
+                "polarity": s.polarity,
+                "support_count": s.support_count,
+                "remedy_resistance": s.remedy_resistance,
+            })
+        with open(os.path.join(art_dir, "l1_signals.json"), "w", encoding="utf-8") as f:
+            json.dump(signals, f, ensure_ascii=False, indent=2)
+
+    if analysis.divergences:
+        divs = []
+        for d in analysis.divergences:
+            divs.append({
+                "task_id": d.task_id,
+                "divergence_point": d.divergence_point,
+                "cognitive_difference": d.cognitive_difference,
+                "is_systematic": d.is_systematic,
+            })
+        with open(os.path.join(art_dir, "divergences.json"), "w", encoding="utf-8") as f:
+            json.dump(divs, f, ensure_ascii=False, indent=2)
+
+
+def _save_branch_artifacts(
+    out_dir: str, node: "TreeNode", round_index: int,
+    operation: str, outcome,
+) -> None:
+    """Persist PROPOSAL/REFINE intermediate products for auditability."""
+    import json
+    import os
+
+    art_dir = os.path.join(
+        out_dir, node.node_id, f"round_{round_index:04d}", "branch"
+    )
+    os.makedirs(art_dir, exist_ok=True)
+
+    summary = {
+        "operation": operation,
+        "success": outcome.success,
+        "reason": outcome.reason,
+        "n_iterations": outcome.n_iterations,
+    }
+    if outcome.new_node is not None:
+        summary["new_node_id"] = outcome.new_node.node_id
+        summary["new_strategy_len"] = len(outcome.new_node.strategy or "")
+        summary["new_rules_len"] = len(outcome.new_node.rules or "")
+    with open(os.path.join(art_dir, "outcome.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    if outcome.archived is not None:
+        with open(os.path.join(art_dir, "archived_entry.json"), "w", encoding="utf-8") as f:
+            json.dump(outcome.archived.to_dict(include_embedding=False), f, ensure_ascii=False, indent=2)
+
+    if outcome.new_node is not None:
+        with open(os.path.join(art_dir, "new_strategy.md"), "w", encoding="utf-8") as f:
+            f.write(outcome.new_node.strategy or "")
+        with open(os.path.join(art_dir, "new_rules.md"), "w", encoding="utf-8") as f:
+            f.write(outcome.new_node.rules or "")
+
+
+def _save_skill_snapshot(out_dir: str, node: "TreeNode", round_index: int) -> None:
+    """Persist strategy.md + rules.md for a node at a given round."""
+    import os
+
+    snap_dir = os.path.join(out_dir, "skill_snapshots", node.node_id, f"round_{round_index:04d}")
+    os.makedirs(snap_dir, exist_ok=True)
+    with open(os.path.join(snap_dir, "strategy.md"), "w", encoding="utf-8") as f:
+        f.write(node.strategy or "")
+    with open(os.path.join(snap_dir, "rules.md"), "w", encoding="utf-8") as f:
+        f.write(node.rules or "")
+    meta = {
+        "node_id": node.node_id,
+        "parent_id": node.parent_id,
+        "branch_type": node.branch_type,
+        "round": round_index,
+        "val_score": node.val_score,
+        "best_score": node.best_score,
+        "n_steps": node.n_steps,
+    }
+    with open(os.path.join(snap_dir, "metadata.json"), "w", encoding="utf-8") as f:
+        import json
+        json.dump(meta, f, indent=2, ensure_ascii=False)
 
 
 def _node_round_dir(out_dir: str, node: "TreeNode", round_index: int, leaf: str) -> str:
@@ -156,7 +311,6 @@ def _run_node_epoch(
     env,
     target_client: "LLMClient",
     optimizer_client: "LLMClient",
-    embedder: "Embedder",
     *,
     cfg: "CSSConfig",
     out_dir: str,
@@ -174,16 +328,53 @@ def _run_node_epoch(
     from css.data.tree import LearningCurvePoint
     from css.optimizer.exploitation import run_exploitation_epoch
     from css.rollout.batch import grouped_batch_rollout
+    from css.tracing import log_event
 
     train_items = list(env.train_items())
     val_items = list(env.val_items())
-    skill_text = _combined_skill_text(node)
 
-    # (1) Epoch rollout on the train set with the node's current skill (P2).
+    _log.info("Epoch start — round=%d node=%s train=%d val=%d steps=%d",
+              round_index, node.node_id, len(train_items), len(val_items), node.n_steps)
+
+    log_event("epoch_start", round_index=round_index, node_id=node.node_id,
+              n_train=len(train_items), n_val=len(val_items),
+              skill_len=len(_combined_skill_text(node)), n_steps=node.n_steps,
+              rules_len=len(node.rules or ""), strategy_len=len(node.strategy or ""))
+
+    # (1) L0 EXPLOITATION: batch-step loop until saturation or hard cap.
+    node.step_buffer.reset_saturation()
+    l0_steps_before = node.n_steps
+    run_exploitation_epoch(
+        node,
+        env,
+        train_items,
+        val_items,
+        target_client,
+        optimizer_client,
+        cfg,
+        _node_round_dir(out_dir, node, round_index, "exploit"),
+        epoch=round_index,
+        current_score=node.val_score,
+    )
+    _log.info("Exploitation done — round=%d node=%s steps=%d->%d best=%.3f saturated=%s rules=%d chars",
+              round_index, node.node_id, l0_steps_before, node.n_steps,
+              node.best_score, node.is_saturated(cfg.N), len(node.rules or ""))
+
+    log_event("exploitation_done", round_index=round_index, node_id=node.node_id,
+              steps_before=l0_steps_before, steps_after=node.n_steps,
+              new_steps=node.n_steps - l0_steps_before,
+              best_score=node.best_score, saturated=node.is_saturated(cfg.N),
+              consecutive_rejects=node.step_buffer.consecutive_rejects(),
+              rules_len=len(node.rules or ""))
+
+    # (2) Post-exploitation train rollout with the BEST skill.
+    # Done AFTER exploitation so analysis sees on-policy trajectories that
+    # reflect what problems remain unsolved by the optimized rules.
+    post_skill_text = _val_skill_text(node)
     train_groups = grouped_batch_rollout(
         env,
         train_items,
-        skill_text,
+        post_skill_text,
         target_client,
         k_rollouts=cfg.k_rollouts,
         out_dir=_node_round_dir(out_dir, node, round_index, "train"),
@@ -195,33 +386,35 @@ def _run_node_epoch(
     epoch_results_flat = [r for g in train_groups for r in g.rollouts]
     node.train_score = float(aggregate_scores(epoch_results_flat).get("task_hard", 0.0))
 
-    # (2) L0 EXPLOITATION over the epoch rollouts + the val set (P3). Mutates the
-    #     node's rules / step_buffer / best_* in place.
-    run_exploitation_epoch(
-        node,
-        env,
-        val_items,
-        epoch_results_flat,
-        target_client,
-        optimizer_client,
-        cfg,
-        _node_round_dir(out_dir, node, round_index, "exploit"),
-        epoch=round_index,
-        current_score=node.val_score,
-    )
+    n_pass = sum(1 for r in epoch_results_flat if getattr(r, "passed", False))
+    _log.info("Train rollout done — round=%d node=%s score=%.3f pass=%d/%d",
+              round_index, node.node_id, node.train_score, n_pass, len(epoch_results_flat))
 
-    # (3) Layer 1-3 analysis on the epoch groups (P4). Mutates node.pattern_records
-    #     in place and reports the L1 signals captured at this epoch.
+    log_event("train_rollout_done", round_index=round_index, node_id=node.node_id,
+              train_score=node.train_score, n_results=len(epoch_results_flat),
+              n_pass=n_pass, n_groups=len(train_groups))
+
+    # (3) Layer 1-3 analysis on post-exploitation trajectories.
     l0_saturated = node.is_saturated(cfg.N)
     analysis = run_analysis_epoch(
         optimizer_client,
-        embedder,
         node,
         train_groups,
         epoch=round_index,
         l0_saturated=l0_saturated,
         cfg=cfg,
+        out_dir=_node_round_dir(out_dir, node, round_index, "analysis"),
     )
+    _log.info("Analysis done — round=%d node=%s obs=%d patterns=%d l1_signals=%d l0_saturated=%s",
+              round_index, node.node_id, analysis.n_observations, analysis.n_patterns,
+              len(analysis.l1_signals), l0_saturated)
+
+    log_event("analysis_done", round_index=round_index, node_id=node.node_id,
+              n_observations=analysis.n_observations, n_patterns=analysis.n_patterns,
+              n_l1_signals=len(analysis.l1_signals), l0_saturated=l0_saturated,
+              l1_signal_ids=[getattr(s, "pattern_id", "") for s in analysis.l1_signals])
+
+    _save_analysis_artifacts(out_dir, node, round_index, analysis)
 
     # (4) Validation eval with the node's BEST skill -> node.val_score + curve.
     val_skill_text = _val_skill_text(node)
@@ -239,6 +432,24 @@ def _run_node_epoch(
     )
     val_flat = [r for g in val_groups for r in g.rollouts]
     node.val_score = float(aggregate_scores(val_flat).get("task_hard", 0.0))
+
+    # (5) Test eval with the node's BEST skill -> generalization measure.
+    test_items = list(env.test_items())
+    test_groups = grouped_batch_rollout(
+        env,
+        test_items,
+        val_skill_text,
+        target_client,
+        k_rollouts=cfg.k_rollouts,
+        out_dir=_node_round_dir(out_dir, node, round_index, "test"),
+        max_workers=cfg.max_api_workers,
+        task_timeout=cfg.task_timeout_s,
+        epoch=round_index,
+        node_id=node.node_id,
+    )
+    test_flat = [r for g in test_groups for r in g.rollouts]
+    test_score = float(aggregate_scores(test_flat).get("task_hard", 0.0))
+
     node.record_learning_point(
         LearningCurvePoint(
             epoch=round_index,
@@ -251,10 +462,23 @@ def _run_node_epoch(
     )
     node.maturity += 1
 
+    _log.info("Epoch done — round=%d node=%s train=%.3f val=%.3f test=%.3f best=%.3f maturity=%d",
+              round_index, node.node_id, node.train_score, node.val_score,
+              test_score, node.best_score, node.maturity)
+
+    log_event("epoch_done", round_index=round_index, node_id=node.node_id,
+              train_score=node.train_score, val_score=node.val_score,
+              test_score=test_score,
+              best_score=node.best_score, maturity=node.maturity,
+              accept_rate=node.step_buffer.accept_rate(),
+              accept_slope=node.accept_slope(cfg.W))
+
     return {
         "node": node,
         "train_groups": train_groups,
         "val_groups": val_groups,
+        "test_groups": test_groups,
+        "test_score": test_score,
         "l1_signals": list(analysis.l1_signals),
         "success_results": _success_results(train_groups),
         "persistent_fail_groups": _persistent_fail_groups(train_groups),
@@ -335,7 +559,6 @@ def _branch_pass(
     env,
     target_client: "LLMClient",
     optimizer_client: "LLMClient",
-    embedder: "Embedder",
     *,
     cfg: "CSSConfig",
     out_dir: str,
@@ -352,6 +575,7 @@ def _branch_pass(
     """
     from css.proposal.proposal import run_proposal, run_refine
     from css.tree.branching import decide_branch, make_rollout_validate_fn
+    from css.tracing import log_event
 
     labels: list[str] = []
     produced = False
@@ -364,13 +588,13 @@ def _branch_pass(
         l1_signals = payload["l1_signals"]
         decision = decide_branch(node, l1_signals, cfg=cfg)
 
+        log_event("branch_decision", round_index=round_index, node_id=node_id,
+                  decision=decision, n_l1_signals=len(l1_signals),
+                  saturated=node.is_saturated(cfg.N),
+                  refine_count=node.refine_count, K=cfg.K)
+
         if decision == "EXPLOITATION":
             labels.append("EXPLOITATION")
-            continue
-        if decision == "NONE":
-            # Saturated with no remedy-resistant signal: this node is done.
-            node.status = "saturated"
-            labels.append("NONE")
             continue
 
         # REFINE or PROPOSAL: run the operation with the real Layer-5c closure.
@@ -384,7 +608,6 @@ def _branch_pass(
             env,
             target_client,
             optimizer_client,
-            embedder,
             cfg=cfg,
             out_dir=out_dir,
             round_index=round_index,
@@ -408,7 +631,6 @@ def _run_branch_operation(
     env,
     target_client: "LLMClient",
     optimizer_client: "LLMClient",
-    embedder: "Embedder",
     *,
     cfg: "CSSConfig",
     out_dir: str,
@@ -417,28 +639,13 @@ def _run_branch_operation(
     run_proposal,
     make_rollout_validate_fn,
 ) -> tuple[str, bool]:
-    """Run one REFINE/PROPOSAL (escalating REFINE->PROPOSAL on gate failure).
+    """Run one REFINE/PROPOSAL via the L1 hypothesis-test-verify cycle.
 
     Returns ``(label, produced_new_node)`` where ``label`` is e.g.
     ``"REFINE:success"`` / ``"PROPOSAL:fail"``.
     """
-    persistent_fail_groups = payload["persistent_fail_groups"]
-    success_results = payload["success_results"]
     library = node.pattern_records
-
-    def _validate_fn():
-        return make_rollout_validate_fn(
-            env,
-            target_client,
-            embedder,
-            optimizer_client,
-            node,
-            library,
-            persistent_fail_groups,
-            cfg=cfg,
-            out_dir=out_dir,
-            epoch=round_index,
-        )
+    train_groups = payload["train_groups"]
 
     operation = decision  # "REFINE" or "PROPOSAL"
     runner = run_refine if operation == "REFINE" else run_proposal
@@ -448,58 +655,66 @@ def _run_branch_operation(
         l1_signals,
         library,
         archive,
-        embedder,
         optimizer_client,
         cfg=cfg,
         new_node_id=tree.new_node_id(),
         epoch=round_index,
-        success_results=success_results,
-        persistent_fail_groups=persistent_fail_groups,
-        rollout_validate_fn=_validate_fn(),
+        env=env,
+        target_client=target_client,
+        train_groups=train_groups,
+        out_dir=out_dir,
     )
 
-    # REFINE gate failure -> escalate to a full PROPOSAL this same round.
+    # REFINE failure -> consume the REFINE budget, then escalate to PROPOSAL.
     if (
         operation == "REFINE"
         and not outcome.success
-        and "escalate_to_proposal" in (outcome.reason or "")
     ):
+        node.refine_count += 1  # the failed REFINE attempt spends one K-budget slot
         operation = "PROPOSAL"
         outcome = run_proposal(
             node,
             l1_signals,
             library,
             archive,
-            embedder,
             optimizer_client,
             cfg=cfg,
             new_node_id=tree.new_node_id(),
             epoch=round_index,
-            success_results=success_results,
-            persistent_fail_groups=persistent_fail_groups,
-            rollout_validate_fn=_validate_fn(),
+            env=env,
+            target_client=target_client,
+            train_groups=train_groups,
+            out_dir=out_dir,
         )
+
+    from css.tracing import log_event
+
+    _save_branch_artifacts(
+        out_dir, node, round_index, operation, outcome,
+    )
 
     if outcome.success and outcome.new_node is not None:
         tree.add_child(node.node_id, outcome.new_node)
         if operation == "REFINE":
-            # Consume one unit of the source node's REFINE budget so a saturated
-            # node escalates to PROPOSAL after cfg.K local edits (decide_branch
-            # reads node.refine_count). The child carries refine_count+1 already.
             node.refine_count += 1
+        log_event("branch_result", round_index=round_index, node_id=node.node_id,
+                  operation=operation, success=True,
+                  new_node_id=outcome.new_node.node_id,
+                  new_strategy_len=len(outcome.new_node.strategy or ""),
+                  new_rules_len=len(outcome.new_node.rules or ""),
+                  reason=outcome.reason or "")
+        _save_skill_snapshot(out_dir, outcome.new_node, round_index)
         return f"{operation}:success", True
 
-    # A non-escalating REFINE that produced no child still consumes budget: bump
-    # the source's refine_count so repeated remedy-resistant signals eventually
-    # escalate to PROPOSAL (decide_branch) instead of looping REFINE forever.
     if operation == "REFINE":
         node.refine_count += 1
+        log_event("branch_result", round_index=round_index, node_id=node.node_id,
+                  operation=operation, success=False, reason=outcome.reason or "")
         return f"{operation}:fail", False
 
-    # A saturated node whose terminal PROPOSAL failed has no further productive
-    # move: retire it from the active set so SELECT stops re-spending rounds on
-    # it and the loop can drain to termination.
     node.status = "saturated"
+    log_event("branch_result", round_index=round_index, node_id=node.node_id,
+              operation=operation, success=False, reason=outcome.reason or "")
     return f"{operation}:fail", False
 
 
@@ -512,7 +727,6 @@ def run_round(
     env,
     target_client: "LLMClient",
     optimizer_client: "LLMClient",
-    embedder: "Embedder",
     *,
     cfg: "CSSConfig",
     out_dir: str,
@@ -526,27 +740,48 @@ def run_round(
     BRANCH over exactly the nodes touched this round.
     """
     from css.tree.select import select_batch
+    from css.tracing import log_event
 
     selected = select_batch(tree, cfg=cfg)
     selected_ids = [n.node_id for n in selected]
+    _log.info("Round %d start — selected=%s active=%d total=%d",
+              round_index, selected_ids, len(tree.active_nodes()), len(tree.nodes))
+
+    log_event("round_start", round_index=round_index,
+              selected=[n.node_id for n in selected],
+              n_active=len(tree.active_nodes()),
+              n_total=len(tree.nodes))
 
     # Per-node epochs. Keyed by node_id so the SYNC point can pair siblings.
-    payloads: dict[str, dict] = {}
-    for node in selected:
-        payloads[node.node_id] = _run_node_epoch(
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    concurrency = getattr(cfg, "concurrency_limit", 4)
+
+    def _run_one(node):
+        return node.node_id, _run_node_epoch(
             tree,
             node,
             env,
             target_client,
             optimizer_client,
-            embedder,
             cfg=cfg,
             out_dir=out_dir,
             round_index=round_index,
         )
 
+    payloads: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        futures = [pool.submit(_run_one, n) for n in selected]
+        for fut in as_completed(futures):
+            nid, payload = fut.result()
+            payloads[nid] = payload
+
     # ── SYNC POINT ──────────────────────────────────────────────────────────
+    _log.info("Round %d SYNC — pruning + branching", round_index)
     pruned = _prune_pass(tree, payloads, cfg=cfg)
+    if pruned:
+        _log.info("Pruned nodes: %s", pruned)
+        log_event("prune", round_index=round_index, pruned=pruned)
     branches, _produced = _branch_pass(
         tree,
         payloads,
@@ -554,7 +789,6 @@ def run_round(
         env,
         target_client,
         optimizer_client,
-        embedder,
         cfg=cfg,
         out_dir=out_dir,
         round_index=round_index,
@@ -562,6 +796,7 @@ def run_round(
 
     best = _best_unpruned(tree)
     global_best = best.val_score if best is not None else 0.0
+    _log.info("Round %d done — branches=%s global_best=%.3f", round_index, branches, global_best)
 
     return RoundResult(
         round_index=round_index,
@@ -576,11 +811,11 @@ def run_css(
     env,
     target_client: "LLMClient",
     optimizer_client: "LLMClient",
-    embedder: "Embedder",
     *,
     cfg: "CSSConfig",
     out_dir: str,
     max_rounds: int = 10,
+    resume: bool = False,
 ) -> "RunResult":
     """Full CSS run: cold start -> round loop -> artifacts.
 
@@ -588,24 +823,105 @@ def run_css(
     node is non-saturated AND no branch produced a new node in the round (the
     search is exhausted) or ``max_rounds`` is reached. Writes the run artifacts
     (tree snapshot / rounds / summary) under ``out_dir`` before returning.
+
+    A stage checkpoint is written after cold start and after every round (see
+    :mod:`css.checkpoint`). With ``resume=True`` and an existing checkpoint under
+    ``out_dir``, the run RESUMES from the next stage — cold start and all
+    completed rounds are skipped, their state loaded from the checkpoint. The
+    checkpoint's config fingerprint must match the current config or resume is
+    refused.
     """
+    import os
+    import random
+    import time
+
+    from css.checkpoint import (
+        Checkpoint,
+        capture_rng_state,
+        config_fingerprint,
+        latest_checkpoint,
+        load_checkpoint,
+        restore_rng_state,
+        save_checkpoint,
+    )
     from css.coldstart import cold_start
     from css.logging_viz import write_run_artifacts
+    from css.model.client import OptimizerOnlyClient, TargetOnlyClient
+    from css.tracing import TracingLLMClient, init_trace, log_event
 
-    cs = cold_start(
-        env,
-        target_client,
-        optimizer_client,
-        embedder,
-        cfg=cfg,
-        out_dir=out_dir,
-    )
-    tree, archive = cs.tree, cs.archive
+    # ── Initialize tracing ──────────────────────────────────────────────────
+    os.makedirs(out_dir, exist_ok=True)
+    trace_path = init_trace(out_dir)
+    log_event("run_start", max_rounds=max_rounds,
+              target_model=cfg.target_model, optimizer_model=cfg.optimizer_model,
+              n_train=cfg.n_train, n_val=cfg.n_val, max_workers=cfg.max_api_workers,
+              max_turns=cfg.max_turns, resume=resume)
 
+    # Wrap clients with tracing so every LLM call is recorded.
+    if isinstance(target_client, TargetOnlyClient):
+        target_client._inner = TracingLLMClient(target_client._inner, role="target")
+    if isinstance(optimizer_client, OptimizerOnlyClient):
+        optimizer_client._inner = TracingLLMClient(optimizer_client._inner, role="optimizer")
+
+    fp = config_fingerprint(cfg)
     rounds: list[RoundResult] = []
+    ckpt_path = latest_checkpoint(out_dir) if resume else None
+
+    if ckpt_path:
+        # ── RESUME: load the checkpoint and skip every completed stage ──────
+        ckpt = load_checkpoint(ckpt_path)
+        if ckpt.config_fingerprint and ckpt.config_fingerprint != fp:
+            raise ValueError(
+                f"resume refused: config fingerprint mismatch "
+                f"(checkpoint={ckpt.config_fingerprint} current={fp}); the data "
+                f"split / models / search params changed since this checkpoint"
+            )
+        tree, archive = ckpt.tree, ckpt.archive
+        baseline_score = ckpt.baseline_score
+        start_round = ckpt.next_round
+        restore_rng_state(ckpt.rng_state)
+        rounds = [_round_from_dict(r) for r in ckpt.rounds]
+        _log.info("RESUMED from %s — stage=%s next_round=%d nodes=%d archive=%d baseline=%.3f",
+                  os.path.basename(ckpt_path), ckpt.stage, start_round,
+                  len(tree.nodes), len(archive), baseline_score)
+        log_event("resume", checkpoint=os.path.basename(ckpt_path), stage=ckpt.stage,
+                  next_round=start_round, n_nodes=len(tree.nodes), n_archive=len(archive))
+    else:
+        # ── FRESH: cold start, then checkpoint the seeded tree ──────────────
+        random.seed(cfg.seed)
+        cs = cold_start(
+            env,
+            target_client,
+            optimizer_client,
+            cfg=cfg,
+            out_dir=out_dir,
+        )
+        tree, archive = cs.tree, cs.archive
+        baseline_score = cs.baseline_score
+        start_round = 0
+
+        # Save ROOT node skill snapshot.
+        root = tree.get(tree.root_id) if tree.root_id else None
+        if root:
+            _save_skill_snapshot(out_dir, root, 0)
+            root.val_score = cs.baseline_score
+        _log.info("Cold start done — baseline=%.3f patterns=%d root=%s strategy=%d chars",
+                  cs.baseline_score, cs.n_patterns, tree.root_id,
+                  len(root.strategy or "") if root else 0)
+
+        log_event("cold_start_done", baseline_score=cs.baseline_score,
+                  n_patterns=cs.n_patterns,
+                  root_id=tree.root_id,
+                  strategy_len=len(root.strategy or "") if root else 0)
+
+        save_checkpoint(Checkpoint(
+            stage="coldstart", next_round=0, baseline_score=baseline_score,
+            tree=tree, archive=archive, config_fingerprint=fp,
+            rng_state=capture_rng_state(), rounds=[], created_ts=time.time(),
+        ), out_dir)
+
     terminated_reason = "max_rounds"
-    for round_index in range(max_rounds):
-        # Termination check BEFORE the round: nothing active left to explore.
+    for round_index in range(start_round, max_rounds):
         if not tree.active_nodes():
             terminated_reason = "no_active_nodes"
             break
@@ -616,16 +932,36 @@ def run_css(
             env,
             target_client,
             optimizer_client,
-            embedder,
             cfg=cfg,
             out_dir=out_dir,
             round_index=round_index,
         )
         rounds.append(rnd)
 
-        # Exhausted: every active node is saturated (no EXPLOITATION pending) and
-        # this round produced no new child. A new PROPOSAL/REFINE success keeps
-        # the search alive; an all-saturated, no-growth round ends it.
+        log_event("round_done", round_index=round_index,
+                  branches=rnd.branches, pruned=rnd.pruned,
+                  global_best_score=rnd.global_best_score)
+
+        # Save skill snapshots for all active nodes at round end.
+        for node in tree.active_nodes():
+            _save_skill_snapshot(out_dir, node, round_index)
+
+        # Write incremental tree snapshot after each round (crash-safe).
+        write_run_artifacts(
+            RunResult(tree=tree, archive=archive, rounds=rounds,
+                      terminated_reason="in_progress",
+                      best_node_id=(_best_unpruned(tree) or type('', (), {'node_id': None})()).node_id),
+            out_dir,
+        )
+
+        # Stage checkpoint: the resumable boundary after this completed round.
+        save_checkpoint(Checkpoint(
+            stage=f"round_{round_index:04d}", next_round=round_index + 1,
+            baseline_score=baseline_score, tree=tree, archive=archive,
+            config_fingerprint=fp, rng_state=capture_rng_state(),
+            rounds=[_round_to_dict(r) for r in rounds], created_ts=time.time(),
+        ), out_dir)
+
         non_saturated = any(
             "EXPLOITATION" in b for b in rnd.branches
         )
@@ -636,6 +972,13 @@ def run_css(
 
     best = _best_unpruned(tree)
     best_node_id = best.node_id if best is not None else None
+
+    log_event("run_done", terminated_reason=terminated_reason,
+              best_node_id=best_node_id,
+              best_val_score=best.val_score if best else 0.0,
+              n_rounds=len(rounds),
+              best_strategy=best.strategy[:500] if best else "",
+              best_rules=best.rules[:500] if best else "")
 
     run = RunResult(
         tree=tree,
