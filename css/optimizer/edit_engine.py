@@ -32,6 +32,7 @@ import re
 from typing import TYPE_CHECKING
 
 from css.data.edit import Edit, EditReport, Patch
+from css.model.json_repair import complete_optimizer_json
 
 if TYPE_CHECKING:
     from css.model.client import LLMClient
@@ -393,10 +394,12 @@ def llm_apply_edits(
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
     try:
-        text, _usage = client.complete_optimizer(_LLM_APPLY_SYSTEM, user, max_tokens=16384)
+        obj = complete_optimizer_json(
+            client, _LLM_APPLY_SYSTEM, user, parse=_parse_json_obj,
+            ok=lambda r: r is not None, max_tokens=16384, stage="edit_apply",
+        )
     except Exception:  # noqa: BLE001
         return None, []
-    obj = _parse_json_obj(text)
     if not isinstance(obj, dict) or not isinstance(obj.get("rules"), str):
         return None, []
     new_rules = obj["rules"]

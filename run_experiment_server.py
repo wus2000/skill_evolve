@@ -65,7 +65,8 @@ def main() -> None:
         # Runtime
         max_api_workers=256,
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
-        max_turns=100,         # ReAct agent: aligned with Trace2Skill paper
+        bash_timeout_s=180,    # per single bash command (3 min); kills hung commands fast (+ their whole tree)
+        max_turns=50,          # 99.84% of rollouts finish <=50 turns (median 5); halves the long-tail budget
 
         # Reflect pipeline (three-way analysis -> unified edit generator)
         reflect_mode="plan_a",

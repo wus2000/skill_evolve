@@ -46,6 +46,7 @@ from css.data.pattern import (
     PatternRecord,
 )
 from css.analysis.embedding import Embedder, cosine_similarity
+from css.model.json_repair import complete_optimizer_json
 
 # ──────────────────────────────────────────────────────────────────────────
 # Layer 2b prompt (per-cluster unification). Open-ended: the LLM names the
@@ -375,8 +376,10 @@ def _refine_one_cluster(
     )
     from css.tracing import stage_context
     with stage_context(client, "cluster_refine"):
-        text, _usage = client.complete_optimizer(_REFINE_SYSTEM, user)
-    obj = _parse_json_object(text)
+        obj = complete_optimizer_json(
+            client, _REFINE_SYSTEM, user, parse=_parse_json_object,
+            stage="cluster_refine",
+        )
 
     # Deterministic fallbacks keep the pipeline robust under a terse stub.
     name = str(obj.get("name") or "").strip()
@@ -543,8 +546,10 @@ def pair_counterparts(
         try:
             from css.tracing import stage_context
             with stage_context(client, "counterpart_pair"):
-                text, _usage = client.complete_optimizer(_COUNTERPART_SYSTEM, user)
-            obj = _parse_json_object(text)
+                obj = complete_optimizer_json(
+                    client, _COUNTERPART_SYSTEM, user, parse=_parse_json_object,
+                    stage="counterpart",
+                )
         except Exception:
             obj = {}
         for pair in obj.get("pairs", []) or []:

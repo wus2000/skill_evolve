@@ -30,6 +30,8 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from css.model.json_repair import complete_optimizer_json
+
 if TYPE_CHECKING:
     from css.data.pattern import Observation
     from css.model.client import LLMClient
@@ -134,15 +136,29 @@ def _llm_group_labels(
     from css.tracing import stage_context
     try:
         with stage_context(client, "label_group"):
-            text, _usage = client.complete_optimizer(_GROUP_SYSTEM, user)
+            groups = complete_optimizer_json(
+                client, _GROUP_SYSTEM, user,
+                parse=lambda t: _parse_group_response(t, len(labels)),
+                ok=lambda r: r is not None,
+                stage="group",
+            )
     except Exception:
         return [[i] for i in range(len(labels))]
 
-    return _parse_group_response(text, len(labels))
+    # ``groups`` is None only when parsing failed AND the repair could not
+    # recover it — fall back to all-singletons (graceful degradation).
+    if groups is None:
+        return [[i] for i in range(len(labels))]
+    return groups
 
 
-def _parse_group_response(text: str, n_labels: int) -> list[list[int]]:
-    """Parse the LLM grouping response into 0-based index lists."""
+def _parse_group_response(text: str, n_labels: int) -> "list[list[int]] | None":
+    """Parse the LLM grouping response into 0-based index lists.
+
+    Returns ``None`` on a genuine parse failure (so the caller can run a repair
+    retry); a successful parse returns the index-lists (possibly all-singletons
+    when the model legitimately found no synonym groups).
+    """
     # Try to extract JSON
     obj = None
     for pattern in [
@@ -159,11 +175,13 @@ def _parse_group_response(text: str, n_labels: int) -> list[list[int]]:
                 continue
 
     if obj is None:
-        return [[i] for i in range(n_labels)]
+        # Genuine parse failure -> signal None so the caller can repair + retry
+        # (distinct from a valid grouping that happens to be all-singletons).
+        return None
 
     raw_groups = obj.get("groups", []) if isinstance(obj, dict) else []
     if not isinstance(raw_groups, list):
-        return [[i] for i in range(n_labels)]
+        return None
 
     result: list[list[int]] = []
     seen: set[int] = set()

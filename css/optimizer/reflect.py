@@ -32,6 +32,7 @@ import re
 from typing import TYPE_CHECKING
 
 from css.data.edit import EDIT_OPS, Edit, Patch, RawPatch
+from css.model.json_repair import complete_optimizer_json
 from css.trajectory import format_trajectory
 
 if TYPE_CHECKING:
@@ -446,11 +447,12 @@ def run_minibatch_analyst(
         recent_window=cfg.W,
     )
     try:
-        text, _usage = client.complete_optimizer(system, user)
+        raw_edits = complete_optimizer_json(
+            client, system, user, parse=_parse_edit_list, stage="reflect",
+        )
     except Exception:  # noqa: BLE001 — an analyst failure must not crash the loop
-        text = ""
+        raw_edits = []
 
-    raw_edits = _parse_edit_list(text)
     edits: list[Edit] = []
     for d in raw_edits:
         edit = _edit_from_dict(d, source_type)
@@ -998,12 +1000,15 @@ def _run_minibatch_proposer(
     user = "\n\n".join(sections)
 
     try:
-        text, _usage = client.complete_optimizer(system_prompt, user, max_tokens=8192)
+        raw_edits = complete_optimizer_json(
+            client, system_prompt, user, parse=_parse_edit_list,
+            max_tokens=8192, stage="proposer",
+        )
     except Exception:  # noqa: BLE001 — a proposer failure must not crash the step
-        text = ""
+        raw_edits = []
 
     edits: list[Edit] = []
-    for d in _parse_edit_list(text)[:budget]:  # enforce the per-minibatch budget
+    for d in raw_edits[:budget]:  # enforce the per-minibatch budget
         edit = _edit_from_dict(d, source_type)
         if edit is not None:
             edits.append(edit)
@@ -1221,11 +1226,12 @@ def _run_minibatch_with_insights(
 
     user = "\n\n".join(sections)
     try:
-        text, _usage = client.complete_optimizer(system, user)
+        raw_edits = complete_optimizer_json(
+            client, system, user, parse=_parse_edit_list, stage="reflect_b",
+        )
     except Exception:
-        text = ""
+        raw_edits = []
 
-    raw_edits = _parse_edit_list(text)
     edits: list[Edit] = []
     for d in raw_edits:
         edit = _edit_from_dict(d, source_type)
@@ -1282,11 +1288,13 @@ def _run_contrastive_analyst_b(
 
     user = "\n\n".join(sections)
     try:
-        text, _usage = client.complete_optimizer(_SYSTEM_CONTRASTIVE, user)
+        raw_edits = complete_optimizer_json(
+            client, _SYSTEM_CONTRASTIVE, user, parse=_parse_edit_list,
+            stage="contrastive",
+        )
     except Exception:
-        text = ""
+        raw_edits = []
 
-    raw_edits = _parse_edit_list(text)
     edits: list[Edit] = []
     for d in raw_edits:
         edit = _edit_from_dict(d, "contrastive")

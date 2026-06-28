@@ -26,6 +26,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+from css.model.json_repair import repair_json_via_llm
+
 if TYPE_CHECKING:
     from css.config import CSSConfig
     from css.data.negative_archive import NegativeArchive, NegativeArchiveEntry
@@ -695,7 +697,12 @@ def _step1a(client: "LLMClient", node: "TreeNode", *, cfg: "CSSConfig",
 
     user = "\n\n".join(user_parts)
     text = _safe_optimizer_call(client, _STEP1A_SYSTEM, user, max_tokens=4096)
-    return _parse_json_safe(text, {"ceiling_analysis": text})
+    result = _parse_json_safe(text, None)
+    if result is None:
+        repaired = repair_json_via_llm(client, _STEP1A_SYSTEM, user, text, stage="step1a")
+        if repaired is not None:
+            result = _parse_json_safe(repaired, None)
+    return result if result is not None else {"ceiling_analysis": text}
 
 
 def _step1b(client: "LLMClient", trajectories: "list[TaskResult]", *,
@@ -712,7 +719,12 @@ def _step1b(client: "LLMClient", trajectories: "list[TaskResult]", *,
 
     user = "## Failure trajectories for analysis\n\n" + "\n\n---\n\n".join(traj_parts)
     text = _safe_optimizer_call(client, _STEP1B_SYSTEM, user, max_tokens=8192)
-    return _parse_json_safe(text, {"raw_analysis": text})
+    result = _parse_json_safe(text, None)
+    if result is None:
+        repaired = repair_json_via_llm(client, _STEP1B_SYSTEM, user, text, stage="step1b")
+        if repaired is not None:
+            result = _parse_json_safe(repaired, None)
+    return result if result is not None else {"raw_analysis": text}
 
 
 def _step1c(client: "LLMClient", node: "TreeNode",
@@ -746,7 +758,12 @@ def _step1c(client: "LLMClient", node: "TreeNode",
 
     user = "\n\n".join(user_parts)
     text = _safe_optimizer_call(client, _STEP1C_SYSTEM, user, max_tokens=4096)
-    return _parse_json_safe(text, {"raw_analysis": text})
+    result = _parse_json_safe(text, None)
+    if result is None:
+        repaired = repair_json_via_llm(client, _STEP1C_SYSTEM, user, text, stage="step1c")
+        if repaired is not None:
+            result = _parse_json_safe(repaired, None)
+    return result if result is not None else {"raw_analysis": text}
 
 
 def _step1d(client: "LLMClient", analyses: dict) -> dict:
@@ -761,7 +778,12 @@ def _step1d(client: "LLMClient", analyses: dict) -> dict:
 
     user = "\n\n".join(user_parts)
     text = _safe_optimizer_call(client, _STEP1D_SYSTEM, user, max_tokens=4096)
-    return _parse_json_safe(text, {"raw_synthesis": text})
+    result = _parse_json_safe(text, None)
+    if result is None:
+        repaired = repair_json_via_llm(client, _STEP1D_SYSTEM, user, text, stage="step1d")
+        if repaired is not None:
+            result = _parse_json_safe(repaired, None)
+    return result if result is not None else {"raw_synthesis": text}
 
 
 def _run_step2(
@@ -792,6 +814,10 @@ def _run_step2(
     user = "\n\n".join(user_parts)
     text = _safe_optimizer_call(client, _STEP2_SYSTEM, user, max_tokens=8192)
     result = _parse_json_safe(text, None)
+    if result is None:
+        repaired = repair_json_via_llm(client, _STEP2_SYSTEM, user, text, stage="step2")
+        if repaired is not None:
+            result = _parse_json_safe(repaired, None)
     if result is None:
         _save_json(os.path.join(step_dir, "raw_response.txt"), {"raw": text})
         return None
@@ -874,7 +900,15 @@ def _run_step4(
         text = _safe_optimizer_call(
             client, _STEP4_PER_TRAJ_SYSTEM, user, max_tokens=4096
         )
-        verdict = _parse_json_safe(text, {"task_id": result.task_id, "raw": text})
+        verdict = _parse_json_safe(text, None)
+        if verdict is None:
+            repaired = repair_json_via_llm(
+                client, _STEP4_PER_TRAJ_SYSTEM, user, text, stage="step4_judge"
+            )
+            if repaired is not None:
+                verdict = _parse_json_safe(repaired, None)
+        if verdict is None:
+            verdict = {"task_id": result.task_id, "raw": text}
         verdict["task_id"] = str(result.task_id)
         verdict["outcome"] = "pass" if result.passed else "fail"
         return verdict
@@ -905,14 +939,22 @@ def _run_step4(
     agg_text = _safe_optimizer_call(
         client, _STEP4_AGGREGATE_SYSTEM, aggregate_user, max_tokens=4096
     )
-    diagnosis = _parse_json_safe(agg_text, {
-        "overall_diagnosis": {
-            "strategy_effective": False,
-            "primary_issue": "hypothesis_failure",
-            "diagnosis_detail": "Failed to parse aggregate verdict",
-            "iteration_suggestion": "Retry with different approach",
+    diagnosis = _parse_json_safe(agg_text, None)
+    if diagnosis is None:
+        repaired = repair_json_via_llm(
+            client, _STEP4_AGGREGATE_SYSTEM, aggregate_user, agg_text, stage="step4_agg"
+        )
+        if repaired is not None:
+            diagnosis = _parse_json_safe(repaired, None)
+    if diagnosis is None:
+        diagnosis = {
+            "overall_diagnosis": {
+                "strategy_effective": False,
+                "primary_issue": "hypothesis_failure",
+                "diagnosis_detail": "Failed to parse aggregate verdict",
+                "iteration_suggestion": "Retry with different approach",
+            }
         }
-    })
     _save_json(os.path.join(step_dir, "aggregated_verdict.json"), diagnosis)
     return diagnosis
 

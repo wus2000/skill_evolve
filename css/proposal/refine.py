@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from css.data.edit import EDIT_OPS, Edit, Patch
 from css.markdown_utils import check_refine_diff, diff_subsections
+from css.model.json_repair import complete_optimizer_json
 from css.proposal.root_cause import RootCause
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
@@ -325,11 +326,13 @@ def derive_refine(
     )
 
     try:
-        text, _usage = client.complete_optimizer(_REFINE_SYSTEM, user)
+        obj = complete_optimizer_json(
+            client, _REFINE_SYSTEM, user, parse=_parse_refine_obj,
+            ok=lambda r: r is not None, stage="refine",
+        )
     except Exception as exc:
         return None, f"llm_error:{type(exc).__name__}"
 
-    obj = _parse_refine_obj(text)
     if obj is None:
         return None, "unparseable_refine_output:escalate_to_proposal"
 

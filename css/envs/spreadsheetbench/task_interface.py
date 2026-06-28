@@ -345,7 +345,11 @@ class SpreadsheetBenchEnv:
 
             # ── Create and run ReAct agent ────────────────────────────────
             max_turns = getattr(self.cfg, "max_turns", 8)
-            bash_timeout = int(getattr(self.cfg, "task_timeout_s", 600) * 0.8)
+            # Per single bash command — decoupled from the whole-rollout
+            # task_timeout_s. A hung command (catastrophic regex / infinite loop)
+            # is killed at this bound (with its whole process tree) so it cannot
+            # stall the run; legitimate spreadsheet code finishes in seconds.
+            bash_timeout = int(getattr(self.cfg, "bash_timeout_s", 180))
 
             adapter = CSSLLMClientAdapter(target_client, max_tokens=16384, temperature=0.0)
             bash_tool = create_bash_tool(

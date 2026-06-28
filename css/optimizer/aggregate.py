@@ -28,6 +28,7 @@ import re
 from typing import TYPE_CHECKING
 
 from css.data.edit import Edit, Patch, RawPatch
+from css.model.json_repair import complete_optimizer_json
 
 if TYPE_CHECKING:
     from css.model.client import LLMClient
@@ -279,13 +280,13 @@ def llm_merge_coordinator(
         + json.dumps(proposed, ensure_ascii=False, indent=2)
     )
     try:
-        text, _usage = client.complete_optimizer(
-            _MERGE_COORDINATOR_SYSTEM, user, max_tokens=8192
+        raw = complete_optimizer_json(
+            client, _MERGE_COORDINATOR_SYSTEM, user, parse=_parse_merge_output,
+            max_tokens=8192, stage="merge",
         )
     except Exception:  # noqa: BLE001
         return aggregate_patches(patches)
 
-    raw = _parse_merge_output(text)
     if raw is None:
         return aggregate_patches(patches)
     edits: list[Edit] = []
@@ -435,11 +436,14 @@ def llm_semantic_dedup(
     user = "Proposed edits to deduplicate:\n" + "\n".join(lines)
 
     try:
-        text, _usage = client.complete_optimizer(_DEDUP_SYSTEM, user, max_tokens=1024)
+        keep_indices = complete_optimizer_json(
+            client, _DEDUP_SYSTEM, user,
+            parse=lambda t: _parse_keep_indices(t, len(edits)),
+            max_tokens=1024, stage="dedup",
+        )
     except Exception:
         return list(edits)
 
-    keep_indices = _parse_keep_indices(text, len(edits))
     if not keep_indices:
         return list(edits)
 

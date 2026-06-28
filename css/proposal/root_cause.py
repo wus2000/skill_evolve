@@ -37,9 +37,12 @@ crashes — :func:`attribute_root_cause` returns ``[]``.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from css.config import CSSConfig
@@ -406,26 +409,52 @@ def attribute_root_cause(
         return []
 
     valid_ids = {p.pattern_id for p in l1_signals}
-    n_parsed = 0
-    n_dropped = 0
-    causes: list[RootCause] = []
-    for raw in _parse_rc_list(text):
-        n_parsed += 1
-        try:
-            rc = RootCause.from_dict(raw)
-        except Exception:
-            continue
-        # Keep only ids that are actually among the L1 signals we asked about;
-        # fall back to the full signal set if the LLM omitted/garbled the ids.
-        rc.pattern_ids = [pid for pid in rc.pattern_ids if pid in valid_ids]
-        if not rc.pattern_ids:
-            rc.pattern_ids = sorted(valid_ids)
-        # CODE GATE: a level with no content or no evidence is not a diagnosis;
-        # drop it (a flagged-but-dropped RootCause has no observable caller).
-        if rc.missing_levels():
-            n_dropped += 1
-            continue
-        causes.append(rc)
+
+    def _build_causes(resp_text: str) -> "tuple[list[RootCause], int, int]":
+        parsed = 0
+        dropped = 0
+        out: list[RootCause] = []
+        for raw in _parse_rc_list(resp_text):
+            parsed += 1
+            try:
+                rc = RootCause.from_dict(raw)
+            except Exception:
+                continue
+            # Keep only ids that are actually among the L1 signals we asked about;
+            # fall back to the full signal set if the LLM omitted/garbled the ids.
+            rc.pattern_ids = [pid for pid in rc.pattern_ids if pid in valid_ids]
+            if not rc.pattern_ids:
+                rc.pattern_ids = sorted(valid_ids)
+            # CODE GATE: a level with no content or no evidence is not a diagnosis;
+            # drop it (a flagged-but-dropped RootCause has no observable caller).
+            if rc.missing_levels():
+                dropped += 1
+                continue
+            out.append(rc)
+        return out, parsed, dropped
+
+    causes, n_parsed, n_dropped = _build_causes(text)
+
+    # Unified JSON repair: the model routinely produces an excellent diagnosis
+    # whose JSON form is corrupted (e.g. unescaped double-quotes in the cited
+    # evidence split the strings into spurious keys), so every level loses its
+    # evidence and the CODE GATE drops the whole thing -> 0 causes -> a generic
+    # fallback strategy downstream. Re-ask the model to repair its own output
+    # (with the original request as context) and retry once.
+    if not causes:
+        from css.model.json_repair import repair_json_via_llm
+        repaired = repair_json_via_llm(
+            client, _ROOT_CAUSE_SYSTEM, user, text, stage="root_cause_attribution"
+        )
+        if repaired is not None:
+            r_causes, r_parsed, r_dropped = _build_causes(repaired)
+            if r_causes:
+                _log.info(
+                    "[json-repair:root_cause] recovered %d root cause(s) from a "
+                    "malformed response via LLM repair (was %d parsed / %d gated)",
+                    len(r_causes), n_parsed, n_dropped,
+                )
+                causes, n_parsed, n_dropped = r_causes, r_parsed, r_dropped
 
     # High-leverage first.
     causes.sort(key=lambda rc: _leverage_sort_key(rc, library))

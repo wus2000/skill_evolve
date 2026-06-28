@@ -83,7 +83,11 @@ class CSSConfig:
     seed: int = 42
     concurrency_limit: int = 4          # parallel tree nodes per round
     max_api_workers: int = 32           # parallel task rollouts
-    task_timeout_s: int = 600
+    task_timeout_s: int = 600           # whole-rollout (multi-turn) wall-clock budget
+    bash_timeout_s: int = 180           # per single bash command (3 min); decoupled
+                                        # from task_timeout_s so one hung command
+                                        # (catastrophic regex / infinite loop) is
+                                        # killed fast instead of stalling the run.
     max_turns: int = 30                 # multi-turn conversation limit per rollout
 
     # LLM model names (dependency-injected; see Phase 2/3 LLM client).

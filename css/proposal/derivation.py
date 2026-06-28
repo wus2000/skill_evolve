@@ -38,6 +38,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from css.model.json_repair import complete_optimizer_json
 from css.proposal.root_cause import RootCause
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
@@ -396,11 +397,12 @@ def derive_strategy(
     try:
         from css.tracing import stage_context
         with stage_context(client, "strategy_derivation"):
-            text, _usage = client.complete_optimizer(_DERIVE_SYSTEM, user, max_tokens=8192)
+            obj = complete_optimizer_json(
+                client, _DERIVE_SYSTEM, user, parse=_parse_obj,
+                max_tokens=8192, stage="derive",
+            )
     except Exception:
-        text = ""
-
-    obj = _parse_obj(text)
+        obj = {}
     proposal = StrategyProposal.from_dict(
         {
             "strategy_text": obj.get("strategy_text", ""),
@@ -532,14 +534,15 @@ def check_negative_archive(
     try:
         from css.tracing import stage_context
         with stage_context(client, "negative_archive_check"):
-            text, _usage = client.complete_optimizer(_NEG_ARCHIVE_SYSTEM, user)
+            obj = complete_optimizer_json(
+                client, _NEG_ARCHIVE_SYSTEM, user, parse=_parse_obj,
+                stage="neg_archive",
+            )
     except Exception as exc:  # noqa: BLE001
         return True, (
             f"similar to abandoned {top_entry.entry_id} ({top_score:.3f}) but "
             f"difference-check LLM call failed ({exc!r}); deferring to 5c rollout"
         )
-
-    obj = _parse_obj(text)
     proceed = bool(obj.get("proceed", False))
     difference = str(obj.get("difference", "")).strip()
     # "Reminder not prohibition": proceed requires a clearly articulated difference.
@@ -662,11 +665,13 @@ def retrospective_validate(
     try:
         from css.tracing import stage_context
         with stage_context(client, "retrospective_validate"):
-            text, _usage = client.complete_optimizer(_RETRO_SYSTEM, user, max_tokens=4096)
+            obj = complete_optimizer_json(
+                client, _RETRO_SYSTEM, user, parse=_parse_obj,
+                max_tokens=4096, stage="retro",
+            )
     except Exception:
         return ValidationResult(coverage=0.0, verdict="reconsider")
 
-    obj = _parse_obj(text)
     result = ValidationResult.from_dict(obj)
     # Apply the coverage gate (verdict from the LLM is advisory; code decides):
     # proceed only when coverage clears the high threshold (design "> high").

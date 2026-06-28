@@ -33,6 +33,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from css.data.pattern import Observation, Significance
+from css.model.json_repair import complete_optimizer_json
 from css.rollout.contrastive import (
     ContrastiveDivergence,
     format_contrastive_pair,
@@ -324,15 +325,16 @@ def annotate_trajectory(
     from css.tracing import stage_context
     try:
         with stage_context(client, "layer1_annotate"):
-            text, _usage = client.complete_optimizer(
-                _SINGLE_SYSTEM, user, max_tokens=8192,
+            obs_list = complete_optimizer_json(
+                client, _SINGLE_SYSTEM, user, parse=_parse_obs_list,
+                max_tokens=8192, stage="obs",
             )
     except Exception:
         return []
 
     outcome_polarity = "success" if result.passed else "failure"
     observations: list[Observation] = []
-    for i, raw in enumerate(_parse_obs_list(text)):
+    for i, raw in enumerate(obs_list):
         what = str(raw.get("what", "")).strip()
         aspect = str(raw.get("cognitive_aspect", "")).strip()
         if not what and not aspect:
@@ -380,11 +382,13 @@ def annotate_contrastive_pair(
     from css.tracing import stage_context
     try:
         with stage_context(client, "layer1_contrastive"):
-            text, _usage = client.complete_optimizer(_CONTRASTIVE_SYSTEM, user)
+            obj = complete_optimizer_json(
+                client, _CONTRASTIVE_SYSTEM, user, parse=_parse_divergence,
+                stage="divergence",
+            )
     except Exception:
         return None
 
-    obj = _parse_divergence(text)
     if obj is None:
         return None
 

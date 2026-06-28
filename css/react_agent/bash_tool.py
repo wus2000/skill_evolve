@@ -25,6 +25,7 @@ forbidden paths or any mention of restrictions.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import tempfile
 
@@ -120,6 +121,37 @@ except ImportError:
 '''
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the whole process group of ``proc`` — the shell PLUS every
+    grandchild it spawned.
+
+    ``proc`` is started with ``start_new_session=True`` so ``proc.pid`` leads a
+    fresh process group; killing the group tears down a hung shell AND any
+    orphan-prone grandchildren (a ``python3`` spinning on a catastrophic regex, a
+    stray ``soffice``, a process blocked on stdin, …). A plain ``proc.kill()``
+    only kills the direct child shell and leaves those grandchildren running,
+    holding the stdout/stderr pipes open and hanging the drain forever — the
+    exact failure that stalled the experiment for ~24 min per incident.
+    Best-effort: never raises.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def create_bash_tool(
     working_dir: str,
     timeout: int = 120,
@@ -157,28 +189,59 @@ def create_bash_tool(
             existing = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = sandbox_dir + (":" + existing if existing else "")
 
+        # ``start_new_session=True`` puts the shell in its OWN process group so a
+        # timeout can kill the WHOLE tree (the shell AND any grandchildren it
+        # spawned). A plain ``subprocess.run(..., timeout=)`` only kills the direct
+        # child shell; an orphaned grandchild (e.g. a python3 stuck in a
+        # catastrophic-backtracking regex) keeps the pipes open and hangs forever.
+        proc = None
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 command,
                 shell=True,
                 cwd=working_dir,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
                 env=env,
+                start_new_session=True,
             )
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(proc)
+                # Drain quickly now that the tree is dead (pipes close on kill).
+                try:
+                    stdout, stderr = proc.communicate(timeout=10)
+                except Exception:
+                    stdout, stderr = "", ""
+                msg = (
+                    f"[ERROR] Command timed out after {timeout}s and was killed, "
+                    f"along with every subprocess it spawned. A command this slow is "
+                    f"almost always hung — an infinite loop, a catastrophic-"
+                    f"backtracking regex (avoid nested '.*?' / '.*' on large text), "
+                    f"or a process waiting on stdin. Do NOT retry it unchanged: run a "
+                    f"faster, bounded version (add a limit/timeout, simplify the "
+                    f"regex, or read/scan less data)."
+                )
+                partial = (stdout or "").strip()
+                if partial:
+                    msg += (
+                        "\n[Partial stdout captured before the command was killed]\n"
+                        + partial[:2000]
+                    )
+                return msg
             output = ""
-            if result.stdout:
-                output += result.stdout
-            if result.stderr:
-                stderr_clean = result.stderr
-                output += f"\n[STDERR]\n{stderr_clean}" if output else stderr_clean
-            if result.returncode != 0:
-                output += f"\n[Exit code: {result.returncode}]"
+            if stdout:
+                output += stdout
+            if stderr:
+                output += f"\n[STDERR]\n{stderr}" if output else stderr
+            if proc.returncode != 0:
+                output += f"\n[Exit code: {proc.returncode}]"
             return output.strip() if output.strip() else "[Command completed with no output]"
-        except subprocess.TimeoutExpired:
-            return f"[ERROR] Command timed out after {timeout} seconds"
         except Exception as e:
+            if proc is not None:
+                _kill_process_group(proc)
             return f"[ERROR] Failed to execute command: {e}"
 
     return bash

@@ -31,6 +31,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
+from css.model.json_repair import complete_optimizer_json
 from css.optimizer.edit_engine import apply_patch
 from css.proposal.refine import is_cleanup_only
 
@@ -191,12 +192,14 @@ def proposal_inherit_rules(
     del cfg  # signature symmetry with the other Phase-5 derive/validate calls;
     # the optimizer call uses the client's default token budget (as root_cause.py).
     try:
-        text, _usage = client.complete_optimizer(_INHERIT_SYSTEM, user)
+        kept = complete_optimizer_json(
+            client, _INHERIT_SYSTEM, user, parse=_parse_kept_rules,
+            ok=lambda r: r is not None, stage="inherit",
+        )
     except Exception:
         # Model/transport failure -> conservative full inherit.
         return parent_rules.strip() + "\n"
 
-    kept = _parse_kept_rules(text)
     if kept is None:
         # Unparseable -> conservative full inherit (do not drop on noise).
         return parent_rules.strip() + "\n"
