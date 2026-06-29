@@ -706,15 +706,25 @@ def run_l1_cycle(
     # ── One-time Step-1 grounding (1a/1b/1c cached + 1d directions) ──────────
     # The node's post-exploitation state is fixed, so this is computed ONCE and
     # fed to every round's Step 2 as the starting point; the LEDGER then steers.
-    fail_results = [r for g in train_groups for r in g.rollouts if not getattr(r, "passed", False)]
     grounding_dir = os.path.join(cycle_dir, "grounding")
-    analyses_1abc = _run_step1_analyses(
-        optimizer_client, node, train_groups, fail_results, cfg=cfg,
-        max_workers=max_workers, round_dir=grounding_dir,
-    )
-    grounding = _run_step1d(
-        optimizer_client, analyses_1abc, _IterationContext(), round_dir=grounding_dir,
-    )
+    grounding_ckpt = os.path.join(grounding_dir, "grounding.json")
+    if os.path.exists(grounding_ckpt):
+        _ckpt = _load_json(grounding_ckpt)
+        analyses_1abc = _ckpt.get("analyses_1abc", {})
+        grounding = _ckpt.get("grounding", {})
+        _log.info("L1 cycle: loaded Step 1 grounding from checkpoint")
+    else:
+        fail_results = [r for g in train_groups for r in g.rollouts if not getattr(r, "passed", False)]
+        analyses_1abc = _run_step1_analyses(
+            optimizer_client, node, train_groups, fail_results, cfg=cfg,
+            max_workers=max_workers, round_dir=grounding_dir,
+        )
+        grounding = _run_step1d(
+            optimizer_client, analyses_1abc, _IterationContext(), round_dir=grounding_dir,
+        )
+        _save_json(grounding_ckpt, {
+            "analyses_1abc": analyses_1abc, "grounding": grounding,
+        })
 
     last_strategy = ""
     best: dict | None = None  # best EFFECTIVE candidate {strategy_text, iteration, lift, regression, net_lift}
@@ -722,17 +732,115 @@ def run_l1_cycle(
     target_effective = int(getattr(cfg, "l1_target_effective", 3))
     next_mode = "new"         # generation mode for the upcoming round (round 1 = NEW)
     refine_target = ""        # strategy text to refine when next_mode == "refine"
+    start_iteration = 1       # first round to actually run (after resume)
 
-    for iteration in range(1, max_iters + 1):
+    # ── Resume: find the last fully-completed round and restore state ──────
+    for _probe in range(max_iters, 0, -1):
+        _probe_ckpt = os.path.join(cycle_dir, f"round_{_probe:04d}", "iteration_context.json")
+        if not os.path.exists(_probe_ckpt):
+            continue
+        _saved_ctx = _load_json(_probe_ckpt)
+        prev_attempts = _saved_ctx.get("previous_attempts", [])
+        if not prev_attempts:
+            break
+        # Reconstruct iteration_ctx from the latest completed round
+        iteration_ctx = _IterationContext(
+            iteration_round=int(_saved_ctx.get("iteration_round", _probe + 1)),
+            previous_attempts=[
+                _PreviousAttempt(
+                    round=int(a.get("round", 0)),
+                    philosophy=str(a.get("philosophy", "") or ""),
+                    mechanism_difference=str(a.get("mechanism_difference", "") or ""),
+                    strategy_name=str(a.get("strategy_name", "") or ""),
+                    strategy_summary=str(a.get("strategy_summary", "") or ""),
+                    design_reasoning=str(a.get("design_reasoning", "") or ""),
+                    was_refine=bool(a.get("was_refine", False)),
+                    lift=int(a.get("lift", 0)),
+                    regression=int(a.get("regression", 0)),
+                    net_lift=int(a.get("net_lift", 0)),
+                    n_residual=int(a.get("n_residual", 0)),
+                    n_regression=int(a.get("n_regression", 0)),
+                    cracked_task_ids=list(a.get("cracked_task_ids", [])),
+                    regressed_task_ids=list(a.get("regressed_task_ids", [])),
+                    still_failed_task_ids=list(a.get("still_failed_task_ids", [])),
+                    diagnosis=dict(a.get("diagnosis", {}) or {}),
+                    failure_note=str(a.get("failure_note", "") or ""),
+                )
+                for a in prev_attempts
+            ],
+        )
+        # Replay accumulated state: best candidate, n_effective, last_strategy
+        for a in iteration_ctx.previous_attempts:
+            if a.failure_note:
+                continue
+            effective_a = a.lift > 0 and a.net_lift >= 0
+            # Recover the FULL strategy text from the round's Step 2 checkpoint
+            # (strategy_summary in the ledger is truncated to 500 chars).
+            _full_strat = a.strategy_summary
+            _step2_path = os.path.join(
+                cycle_dir, f"round_{a.round:04d}", "step2", "strategy_proposal.json",
+            )
+            if os.path.exists(_step2_path):
+                try:
+                    _full_strat = _load_json(_step2_path).get("strategy_text", _full_strat)
+                except Exception:
+                    pass
+            if effective_a:
+                n_effective += 1
+                harm_a = int((a.diagnosis or {}).get("harm_reg", 0) or 0)
+                deploy_a = int((a.diagnosis or {}).get("deploy_net", a.lift - harm_a))
+                cand_a = {
+                    "strategy_text": _full_strat,
+                    "iteration": a.round, "lift": a.lift,
+                    "regression": a.regression, "net_lift": a.net_lift,
+                    "harm_reg": harm_a, "deploy_net": deploy_a,
+                }
+                if _is_better_candidate(cand_a, best):
+                    best = cand_a
+            last_strategy = _full_strat or last_strategy
+
+        # Derive next_mode from the last completed round
+        last_att = prev_attempts[-1]
+        if last_att.get("failure_note"):
+            next_mode, refine_target = "new", ""
+        elif last_att.get("lift", 0) > 0 or last_att.get("was_refine", False):
+            next_mode, refine_target = "new", ""
+        else:
+            na = str((last_att.get("diagnosis") or {}).get("next_action", "") or "").strip().lower()
+            if na == "refine_current":
+                next_mode = "refine"
+                refine_target = last_att.get("strategy_summary", "")
+            else:
+                next_mode, refine_target = "new", ""
+
+        start_iteration = _probe + 1
+        _log.info("L1 cycle: resumed from round %d checkpoint (n_effective=%d, "
+                  "start_iteration=%d)", _probe, n_effective, start_iteration)
+        break
+
+    if n_effective >= target_effective:
+        _log.info("L1: already collected %d effective strategies from checkpoint — done",
+                  n_effective)
+        # Fall through to the post-loop best-selection logic below.
+
+    for iteration in range(start_iteration, max_iters + 1):
+        if n_effective >= target_effective:
+            break
         round_dir = os.path.join(cycle_dir, f"round_{iteration:04d}")
         os.makedirs(round_dir, exist_ok=True)
+
         mode = next_mode
         _log.info("L1 round %d/%d (node %s) [mode=%s]", iteration, max_iters, node.node_id, mode)
 
         # ── Step 2: produce a cognitive strategy (NEW philosophy or REFINE) ──
-        step2 = _run_step2(optimizer_client, node, grounding, iteration_ctx,
-                           cfg=cfg, round_dir=round_dir,
-                           mode=mode, refine_target=refine_target)
+        step2_ckpt = os.path.join(round_dir, "step2", "strategy_proposal.json")
+        if os.path.exists(step2_ckpt):
+            step2 = _load_json(step2_ckpt)
+            _log.info("L1 round %d: loaded Step 2 from checkpoint", iteration)
+        else:
+            step2 = _run_step2(optimizer_client, node, grounding, iteration_ctx,
+                               cfg=cfg, round_dir=round_dir,
+                               mode=mode, refine_target=refine_target)
         if not step2 or not (step2.get("strategy_text") or "").strip():
             note = "Step 2 produced no usable strategy proposal (empty or unparseable)."
             _save_json(os.path.join(round_dir, "step2", "error.json"), {"error": note})
@@ -746,10 +854,17 @@ def run_l1_cycle(
         last_strategy = strategy_text
 
         # ── Step 3: test candidate (strategy, EMPTY rules) K times ──────────
-        candidate_groups = _run_step3(
-            env, target_client, strategy_text, test_items,
-            cfg=cfg, round_dir=round_dir, epoch=epoch, node_id=node.node_id,
-        )
+        step3_ckpt = os.path.join(round_dir, "step3", "candidate_groups.json")
+        if os.path.exists(step3_ckpt):
+            from css.data.rollout import TaskRolloutGroup
+            candidate_groups = [TaskRolloutGroup.from_dict(d) for d in _load_json(step3_ckpt)]
+            _log.info("L1 round %d: loaded Step 3 candidate_groups from checkpoint", iteration)
+        else:
+            candidate_groups = _run_step3(
+                env, target_client, strategy_text, test_items,
+                cfg=cfg, round_dir=round_dir, epoch=epoch, node_id=node.node_id,
+            )
+            _save_json(step3_ckpt, [g.to_dict() for g in candidate_groups])
 
         # ── Objective categorization vs baseline (pass@K, NO LLM) ───────────
         cats = _categorize(candidate_groups, baseline_map)
@@ -762,10 +877,16 @@ def run_l1_cycle(
         # ── Step 4: category-specific contrastive diagnosis (steers next) ───
         # Also yields the OBJECTIVE harm_reg / deploy_net (= lift - harm_reg, the
         # post-exploitation net lower bound) used for keep-best tie-breaking.
-        diagnosis = _diagnose_round(
-            optimizer_client, strategy_text, cats, candidate_groups, baseline_map,
-            cfg=cfg, max_workers=max_workers, round_dir=round_dir,
-        )
+        step4_ckpt = os.path.join(round_dir, "step4", "diagnosis.json")
+        if os.path.exists(step4_ckpt):
+            _diag_data = _load_json(step4_ckpt)
+            diagnosis = _diag_data.get("aggregate", _diag_data)
+            _log.info("L1 round %d: loaded Step 4 diagnosis from checkpoint", iteration)
+        else:
+            diagnosis = _diagnose_round(
+                optimizer_client, strategy_text, cats, candidate_groups, baseline_map,
+                cfg=cfg, max_workers=max_workers, round_dir=round_dir,
+            )
         harm_reg = int((diagnosis or {}).get("harm_reg", 0) or 0)
         deploy_net = int((diagnosis or {}).get("deploy_net", cats["lift"] - harm_reg))
 
@@ -1581,13 +1702,21 @@ def _archive_failed_cycle(
 
 
 def _save_json(path: str, data: Any) -> None:
-    """Persist a JSON-serializable object to disk."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    """Atomic JSON write (tmp + os.replace) — crash-safe checkpoint."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, path)
     except Exception as exc:
         _log.warning("Failed to save %s: %s", path, exc)
+
+
+def _load_json(path: str) -> Any:
+    """Load a JSON file from disk."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _safe_optimizer_call(
