@@ -296,7 +296,7 @@ def llm_apply_edit(
     )
 
     try:
-        text, _usage = client.complete_optimizer(
+        text, _usage = client.complete_optimizer_text(
             _LLM_APPLY_SYSTEM, user, max_tokens=max_tokens
         )
     except Exception:
@@ -339,7 +339,7 @@ def llm_apply_edits(
     )
 
     try:
-        text, _usage = client.complete_optimizer(
+        text, _usage = client.complete_optimizer_text(
             _LLM_APPLY_SYSTEM, user, max_tokens=max_tokens
         )
     except Exception:

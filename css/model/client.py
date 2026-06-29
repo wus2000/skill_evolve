@@ -309,6 +309,23 @@ class OptimizerOnlyClient:
             _inject_firewall_messages(messages), max_tokens=max_tokens
         )
 
+    def complete_optimizer_text(
+        self, system: str, user: str, *, max_tokens: int = 4096
+    ) -> tuple[str, dict]:
+        """Like complete_optimizer but WITHOUT json_mode response_format.
+
+        Use for LLM calls that need plain-text output (e.g., applying edits
+        to rules.md). GT firewall is still injected.
+        """
+        messages = [
+            {"role": "system", "content": _inject_firewall_system(system)},
+            {"role": "user", "content": user},
+        ]
+        return self._inner._call(
+            messages, self._inner.optimizer_model,
+            max_tokens, self._inner.temperature,
+        )
+
     def complete_target(self, *args, **kwargs) -> str:
         raise RuntimeError("optimizer-only client cannot call target")
 
