@@ -67,10 +67,9 @@ def main() -> None:
         optimizer_model="qwen3.6-35b-a3b",
 
         # Runtime
-        max_api_workers=256,
-        concurrency_limit=1,   # ONE tree node (branch) exploited per round — serial beam-1,
-                               # not parallel multi-branch (avoids splitting the shared LLM
-                               # endpoint across branches; each branch gets full throughput).
+        max_api_workers=512,
+        concurrency_limit=1,   # ONE tree node per round — new PROPOSAL nodes get inf UCB
+                               # (n_steps=0) so they are always selected first for exploitation.
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
         bash_timeout_s=180,    # per single bash command (3 min); kills hung commands fast (+ their whole tree)
         max_turns=50,          # 99.84% of rollouts finish <=50 turns (median 5); halves the long-tail budget
@@ -82,8 +81,8 @@ def main() -> None:
         # Test-set sizes for this run (residual = baseline-0/K, regression = baseline-K/K);
         # other L1 knobs (k_rollouts=3, l1_target_effective=3, max_l1_iterations=8,
         # l1_diagnosis_per_category=5) use the agreed-design dataclass defaults.
-        l1_diagnostic_tasks=20,
-        l1_regression_tasks=16,
+        l1_diagnostic_tasks=24,
+        l1_regression_tasks=12,
 
         # Output
         out_root=out_root,
