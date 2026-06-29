@@ -614,8 +614,7 @@ def _branch_pass(
         new child is attached to the tree; on failure the node is marked
         ``saturated`` (done branching). (REFINE was unified into PROPOSAL.)
     """
-    from css.proposal.proposal import run_proposal
-    from css.tree.branching import decide_branch, make_rollout_validate_fn
+    from css.tree.branching import decide_branch
     from css.tracing import log_event
 
     labels: list[str] = []
@@ -637,7 +636,7 @@ def _branch_pass(
             labels.append("EXPLOITATION")
             continue
 
-        # PROPOSAL: run the L1 diverse-iterate cycle with the real Layer-5c closure.
+        # PROPOSAL: run the L1 diverse-iterate cycle.
         label, made = _run_branch_operation(
             tree,
             node,
@@ -651,8 +650,6 @@ def _branch_pass(
             cfg=cfg,
             out_dir=out_dir,
             round_index=round_index,
-            run_proposal=run_proposal,
-            make_rollout_validate_fn=make_rollout_validate_fn,
         )
         labels.append(label)
         produced = produced or made
@@ -674,14 +671,14 @@ def _run_branch_operation(
     cfg: "CSSConfig",
     out_dir: str,
     round_index: int,
-    run_proposal,
-    make_rollout_validate_fn,
 ) -> tuple[str, bool]:
     """Run one PROPOSAL via the L1 diverse-iterate cycle (REFINE unified into it).
 
     Returns ``(label, produced_new_node)`` where ``label`` is e.g.
     ``"PROPOSAL:success"`` / ``"PROPOSAL:fail"``.
     """
+    from css.proposal.proposal import run_proposal
+
     library = node.pattern_records
     train_groups = payload["train_groups"]
 

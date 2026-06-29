@@ -1,5 +1,12 @@
 """Phase 5 — knowledge inheritance for PROPOSAL and REFINE (design §4.2 / §4.3, D4 / D10).
 
+.. deprecated::
+    DEAD in v3. PROPOSAL now deploys with ``rules=""`` (empty rules), so rule
+    inheritance is unnecessary. ``proposal_inherit_rules`` and
+    ``refine_apply_cleanup`` are no longer called from the main flow
+    (``run_l1_cycle`` does not invoke them). This module is retained only because
+    existing tests import it; do NOT add new callers.
+
 When a strategy change is accepted, the L0 ``rules.md`` of the parent node cannot
 be carried over blindly: a rule that made sense under the OLD strategy may now
 contradict the NEW strategy (e.g. a rule that hard-codes a workaround for a habit

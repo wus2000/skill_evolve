@@ -6,9 +6,10 @@ free-form ``rules.md`` text and returns per-edit
 
 V2 note: ``llm_apply_patch`` and ``normalize_rules_structure`` have been removed.
 The V2 exploitation flow uses deterministic section-level apply via
-``css.optimizer.section_apply`` instead. This module retains the deterministic
-``apply_edit`` / ``apply_patch`` functions used by ``css.proposal.inheritance``
-and tests.
+``css.optimizer.section_apply`` instead. The remaining ``apply_edit`` /
+``apply_patch`` functions are effectively dead in the main flow: their only
+production caller (``css.proposal.inheritance``) is itself deprecated in v3
+(PROPOSAL deploys with empty rules). They are retained for existing tests.
 
 Operation semantics (on ``rules.md`` text)
 -------------------------------------------

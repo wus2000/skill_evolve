@@ -1,9 +1,8 @@
-"""Phase 6 — branching decision + the real Layer-5c rollout-validation closure.
+"""Phase 6 — branching decision (+ deprecated Layer-5c rollout-validation closure).
 
-This module bridges Phase 4's L1 signals to Phase 5's PROPOSAL / REFINE operations
-and supplies the concrete ``rollout_validate_fn`` those operations consume.
+This module bridges Phase 4's L1 signals to Phase 5's PROPOSAL operations.
 
-Two responsibilities (design §5 / §7, D11 / D14):
+Active:
 
   :func:`decide_branch` — the deterministic per-node branching rule run at the
     SYNC point of every round. A node that has NOT yet saturated its L0 buffer
@@ -11,20 +10,14 @@ Two responsibilities (design §5 / §7, D11 / D14):
     (the L1 diverse-iterate cycle). REFINE has been unified into PROPOSAL, so
     ``refine_count`` / ``cfg.K`` / ``l1_signals`` are no longer consulted.
 
-  :func:`make_rollout_validate_fn` — builds the INJECTED Layer-5c callback that
-    Phase 5 (:func:`css.proposal.proposal.run_proposal`) calls to
-    measure whether a candidate skill actually suppresses the targeted failure
-    pattern on the persistent-fail subset. It re-rolls those tasks with the
-    candidate skill (Phase 2), re-annotates the trajectories (Phase 4 Layer 1),
-    matches the new observations against the library, and reports the fraction of
-    persistent-fail tasks that STILL exhibit a targeted pattern (occurrence_after)
-    versus the targeted patterns' current library occurrence (occurrence_before).
+Deprecated (v3 — retained for tests only):
+
+  :func:`make_rollout_validate_fn` — the v1/v2 Layer-5c callback. In v3,
+    ``run_l1_cycle`` does its own rollout + categorization internally (Step 3 +
+    ``_categorize``); it does NOT accept or use ``rollout_validate_fn``.
 
 All Phase-2/4/5 heavy modules are imported LAZILY inside the functions so this
-module imports cheaply and free of model / embedding / faiss side effects. The
-closure is deliberately fail-LOUD: any infrastructure failure RAISES, so Phase 5's
-``_safe_rollout`` records it as an INFRASTRUCTURE error (distinct from a measured
-no-decrease) rather than silently committing a candidate.
+module imports cheaply and free of model / embedding / faiss side effects.
 """
 from __future__ import annotations
 
@@ -52,7 +45,11 @@ def decide_branch(node: "TreeNode", l1_signals: list, *, cfg: "CSSConfig") -> st
       * not L0-saturated -> ``"EXPLOITATION"``
       * saturated        -> ``"PROPOSAL"``
 
-    (``l1_signals`` / ``cfg.K`` are no longer consulted here.)
+    NOTE: ``l1_signals`` is accepted but NOT used for the branching decision
+    itself (v3 decides purely on saturation). The parameter is kept because the
+    caller (``_branch_pass``) already has it from the analysis pipeline, and the
+    value is still used for logging / artifacts elsewhere. Do NOT remove the
+    analysis step that produces it — cold_start and pattern_records depend on it.
     """
     if not node.is_saturated(cfg.N):
         return "EXPLOITATION"
@@ -74,6 +71,12 @@ def make_rollout_validate_fn(
     epoch: int,
 ):
     """Build the injected Layer-5c ``rollout_validate_fn`` for one PROPOSAL/REFINE.
+
+    .. deprecated::
+        DEAD in v3. ``run_l1_cycle`` does its own rollout + categorization
+        internally (Step 3 + ``_categorize``); it does NOT accept or use
+        ``rollout_validate_fn``. This function is retained only because
+        existing tests import it. Do NOT add new callers.
 
     Returns ``fn(strategy_text, rules_text, targeted_pattern_ids) -> (occ_before,
     occ_after)``:
