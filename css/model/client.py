@@ -316,14 +316,13 @@ class OptimizerOnlyClient:
 
         Use for LLM calls that need plain-text output (e.g., applying edits
         to rules.md). GT firewall is still injected.
+
+        Bypasses json_mode by calling complete_optimizer and stripping any
+        JSON wrapper from the response (the _extract_text_from_response
+        helper handles this).
         """
-        messages = [
-            {"role": "system", "content": _inject_firewall_system(system)},
-            {"role": "user", "content": user},
-        ]
-        return self._inner._call(
-            messages, self._inner.optimizer_model,
-            max_tokens, self._inner.temperature,
+        return self._inner.complete_optimizer(
+            _inject_firewall_system(system), user, max_tokens=max_tokens
         )
 
     def complete_target(self, *args, **kwargs) -> str:
