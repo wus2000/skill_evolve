@@ -109,7 +109,11 @@ def _cell_level_compare(wb_gt, wb_proc, sheet_name: str, cell_range: str):
         cg = ws_gt[cn]
         cp = ws_proc[cn]
         if not _compare_cell_value(cg.value, cp.value):
-            return False, f"value@{sheet_name}!{cn}: gt={cg.value!r} pred={cp.value!r}"
+            # GROUND-TRUTH SAFETY: this reason is stored on the result and read
+            # by the OPTIMIZER (failure_modes, post-mortem). Report the cell and
+            # the agent's own prediction, but NEVER the ground-truth value — the
+            # optimizer must stay in the agent's epistemic position (no answers).
+            return False, f"value@{sheet_name}!{cn}: pred={cp.value!r} (did not match)"
     return True, ""
 
 

@@ -17,6 +17,35 @@ from __future__ import annotations
 
 from typing import Any
 
+# ── Ground-truth firewall ───────────────────────────────────────────────────
+# CSS trains skill documents (strategy.md / rules.md) on the TRAIN split, where
+# ground-truth answers exist for evaluation, then DEPLOYS them on TEST, where the
+# agent has NO ground truth. It is fine — useful, even — for the OPTIMIZER to SEE
+# ground truth while analysing a trajectory: that is how it understands what truly
+# went wrong. The invariant is NOT "hide gt from the optimizer"; it is that NOTHING
+# the optimizer PRODUCES (its analysis, the patterns it mines, and above all the
+# strategy.md / rules.md it emits) may reference or depend on ground truth, because
+# those artifacts are deployed where no ground truth exists. We therefore do NOT
+# scrub trajectories; we enforce the invariant in every optimizer prompt via the
+# clause below (injected centrally at the optimizer LLM entry point).
+
+#: Canonical train/test firewall clause. Injected into EVERY optimizer system prompt
+#: at the single optimizer LLM call site, so the optimizer may freely reason FROM
+#: ground truth yet never emit an output that depends on it.
+GROUND_TRUTH_FIREWALL = """\
+TRAIN/TEST FIREWALL (non-negotiable). You are operating during TRAINING on the \
+training split, where ground-truth / "expected" / golden answers may be visible to \
+you (in evaluation notes, fail reasons, or trajectories). It is fine to LOOK at them \
+to understand what truly went wrong. But everything you PRODUCE — your analysis, the \
+patterns you mine, and above all the strategy.md / rules.md that result — is DEPLOYED \
+at TEST time, where the agent has NO ground truth and sees only the task instruction \
+and the input. Therefore nothing you output may reference, depend on, compare against, \
+validate with, or instruct the agent to use expected / ground-truth / golden / \
+"Expected Results" values. Reason FROM ground truth privately if it helps your \
+diagnosis, but the agent can NEVER access it at run time, so any analysis, pattern, \
+strategy, or rule you emit that requires it is invalid by construction. State your \
+findings in terms of what the agent can observe from the task and input alone."""
+
 
 def _content_str(content: Any) -> str | None:
     """Return ``content`` if it is a plain string, else ``None``.
@@ -63,14 +92,28 @@ def truncate_tool_results(messages: list[dict], tool_trunc: int) -> list[dict]:
     return out
 
 
-def format_trajectory(messages: list[dict], *, tool_trunc: int = 4000) -> str:
+def format_trajectory(
+    messages: list[dict], *, tool_trunc: int = 4000, include_system: bool = True
+) -> str:
     """Render messages as a readable transcript for analysis prompts.
 
     Applies :func:`truncate_tool_results` first, then emits ``"[role]\\ncontent"``
     blocks joined by blank lines. Structured (list) content is stringified for
     display only.
+
+    ``include_system`` (default True) keeps the full transcript — including the
+    leading system prompt that carries the injected skill (strategy + rules) and
+    the ReAct action protocol. Pass ``include_system=False`` to drop ONLY that
+    leading system message (any later system message — e.g. a post-execution
+    verification note appended at the end — is preserved). The L0 reflect stage
+    uses this: it already receives the current ``rules.md`` separately, so
+    repeating the large, identical system prompt across all eight minibatch
+    trajectories would only burn context to no benefit.
     """
-    truncated = truncate_tool_results(messages, tool_trunc)
+    msgs = list(messages)
+    if not include_system and msgs and str(msgs[0].get("role", "")) == "system":
+        msgs = msgs[1:]
+    truncated = truncate_tool_results(msgs, tool_trunc)
     blocks: list[str] = []
     for msg in truncated:
         role = str(msg.get("role", ""))

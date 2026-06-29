@@ -56,10 +56,12 @@ class CSSConfig:
     l0_edit_budget: int = 3             # max edits each minibatch proposer may emit (L)
     max_edits_per_step: int = 6         # max edits applied per step after the merge coordinator
 
-    # ── L1 STRATEGY CYCLE ────────────────────────────────────────────────
-    max_l1_iterations: int = 3          # max hypothesis-test-verify iterations
-    l1_diagnostic_tasks: int = 20       # tasks in focused testing subset
-    l1_regression_tasks: int = 5        # passing tasks for regression check
+    # ── L1 STRATEGY CYCLE (diverse-iterate + objective lift selection) ────
+    max_l1_iterations: int = 8          # max diverse-iterate rounds (hard cap)
+    l1_target_effective: int = 3        # stop once this many EFFECTIVE (lift>0) strategies collected
+    l1_diagnostic_tasks: int = 16       # R: residual tasks (baseline 0/K) — the lift set
+    l1_regression_tasks: int = 8        # G: robustly-passing tasks (baseline K/K) — harm guard
+    l1_diagnosis_per_category: int = 5  # max per-task trajectory analyses per category (cracked/regressed/still)
 
     # ── Reflect mode ─────────────────────────────────────────────────────
     # "legacy"  — original flat fail/success split (no per-task grouping)

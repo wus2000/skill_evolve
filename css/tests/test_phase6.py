@@ -363,19 +363,13 @@ def test_decide_branch_not_saturated_exploitation():
     assert decide_branch(nd, ["sig"], cfg=cfg) == "EXPLOITATION"
 
 
-def test_decide_branch_saturated_with_signals_refine_then_proposal():
+def test_decide_branch_saturated_always_proposal():
+    """v3: L0 saturation directly triggers PROPOSAL. REFINE has been unified into
+    PROPOSAL, so refine_count and l1_signals are no longer consulted."""
     cfg = CSSConfig(N=3, K=3)
-    nd = _saturated_node(0, cfg=cfg)
-    assert decide_branch(nd, ["sig"], cfg=cfg) == "REFINE"
-    nd2 = _saturated_node(3, cfg=cfg)  # refine_count >= K
-    assert decide_branch(nd2, ["sig"], cfg=cfg) == "PROPOSAL"
-
-
-def test_decide_branch_saturated_no_signals_enters_l1():
-    """v2: L0 saturation directly triggers L1 cycle — no more NONE."""
-    cfg = CSSConfig(N=3)
-    nd = _saturated_node(0, cfg=cfg)
-    assert decide_branch(nd, [], cfg=cfg) == "REFINE"
+    assert decide_branch(_saturated_node(0, cfg=cfg), ["sig"], cfg=cfg) == "PROPOSAL"
+    assert decide_branch(_saturated_node(3, cfg=cfg), ["sig"], cfg=cfg) == "PROPOSAL"
+    assert decide_branch(_saturated_node(0, cfg=cfg), [], cfg=cfg) == "PROPOSAL"
 
 
 # ── 4. branching.make_rollout_validate_fn (wiring on the happy path) ────────────

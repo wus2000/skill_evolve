@@ -29,6 +29,8 @@ import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
+from css.trajectory import GROUND_TRUTH_FIREWALL
+
 if TYPE_CHECKING:
     from css.config import CSSConfig
 
@@ -256,11 +258,38 @@ class TargetOnlyClient:
         raise RuntimeError("target-only client cannot call optimizer")
 
 
+def _inject_firewall_system(system: str) -> str:
+    """Append the train/test ground-truth firewall to an optimizer system prompt."""
+    if not system:
+        return GROUND_TRUTH_FIREWALL
+    return f"{system}\n\n{GROUND_TRUTH_FIREWALL}"
+
+
+def _inject_firewall_messages(messages: list[dict]) -> list[dict]:
+    """Ensure the firewall is present in the leading system message of a message
+    list (prepending a system message if there is none). Input is not mutated."""
+    if not messages:
+        return [{"role": "system", "content": GROUND_TRUTH_FIREWALL}]
+    out = [dict(m) for m in messages]
+    if str(out[0].get("role", "")) == "system":
+        out[0]["content"] = _inject_firewall_system(str(out[0].get("content", "")))
+    else:
+        out.insert(0, {"role": "system", "content": GROUND_TRUTH_FIREWALL})
+    return out
+
+
 class OptimizerOnlyClient:
     """Narrow view: exposes only the optimizer capability (First Law).
 
     Analysis / optimization code receives one of these so it is structurally
-    incapable of calling the frozen target agent.
+    incapable of calling the frozen target agent. It is also the SINGLE, can't-miss
+    enforcement point for the ground-truth firewall: every optimizer LLM call in
+    the system routes through here (direct ``complete_optimizer`` calls AND the
+    ``complete_optimizer_json`` wrapper, which calls ``complete_optimizer`` on the
+    client it is given), so injecting :data:`GROUND_TRUTH_FIREWALL` into the system
+    prompt here guarantees EVERY current and future optimizer prompt carries it —
+    the optimizer may reason FROM ground truth but can never emit an output that
+    depends on it. See :data:`css.trajectory.GROUND_TRUTH_FIREWALL`.
     """
 
     def __init__(self, inner: LLMClient) -> None:
@@ -269,12 +298,16 @@ class OptimizerOnlyClient:
     def complete_optimizer(
         self, system: str, user: str, *, max_tokens: int = 4096
     ) -> tuple[str, dict]:
-        return self._inner.complete_optimizer(system, user, max_tokens=max_tokens)
+        return self._inner.complete_optimizer(
+            _inject_firewall_system(system), user, max_tokens=max_tokens
+        )
 
     def complete_optimizer_messages(
         self, messages: list[dict], *, max_tokens: int = 4096
     ) -> tuple[str, dict]:
-        return self._inner.complete_optimizer_messages(messages, max_tokens=max_tokens)
+        return self._inner.complete_optimizer_messages(
+            _inject_firewall_messages(messages), max_tokens=max_tokens
+        )
 
     def complete_target(self, *args, **kwargs) -> str:
         raise RuntimeError("optimizer-only client cannot call target")

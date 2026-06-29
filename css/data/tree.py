@@ -79,6 +79,11 @@ class TreeNode:
     train_score: float = 0.0
     best_score: float = 0.0            # best L0 selection-set score seen at this node
     best_step: int = -1
+    # The node's INITIAL strategy (+ initial rules) val score, measured ONCE before
+    # any exploitation. It is the node's baseline and the gate's first incumbent, so
+    # exploitation gain is measured from the initial strategy (not 0 / a train floor).
+    # -1.0 = not yet measured.
+    baseline_val_score: float = -1.0
     # The rules.md body that achieved best_score. Threaded by EXPLOITATION so the
     # tree manager (Phase 4+) can recover the best snapshot even after `rules`
     # advances past it on an accept-not-best step. "" until a best is recorded.
@@ -130,6 +135,7 @@ class TreeNode:
             train_score=float(d.get("train_score", 0.0)),
             best_score=float(d.get("best_score", 0.0)),
             best_step=int(d.get("best_step", -1)),
+            baseline_val_score=float(d.get("baseline_val_score", -1.0)),
             best_rules=str(d.get("best_rules", "")),
             maturity=int(d.get("maturity", 0)),
             refine_count=int(d.get("refine_count", 0)),
@@ -153,6 +159,7 @@ class TreeNode:
             "train_score": self.train_score,
             "best_score": self.best_score,
             "best_step": self.best_step,
+            "baseline_val_score": self.baseline_val_score,
             "best_rules": self.best_rules,
             "maturity": self.maturity,
             "refine_count": self.refine_count,

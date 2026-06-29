@@ -92,7 +92,13 @@ def _auto_verify_output(
                 gv = ws_gold[cn].value if ws_gold else "N/A"
                 pv = ws_pred[cn].value
                 match = "✓" if repr(gv) == repr(pv) else "✗"
-                lines.append(f"  {sheet_name}!{cn}: got={pv!r}, expected={gv!r} {match}")
+                # GROUND-TRUTH SAFETY: this report is appended to the agent
+                # trajectory and later read by the OPTIMIZER. Never emit the
+                # expected (ground-truth) VALUE — only the agent's own output and
+                # whether it matched (✓/✗). Otherwise the optimizer designs
+                # strategies that "reverse-engineer from the expected value",
+                # which the agent cannot do at runtime (it has no ground truth).
+                lines.append(f"  {sheet_name}!{cn}: got={pv!r} {match}")
 
         # Also check if any cells in the output contain formula strings
         formula_cells = []

@@ -214,7 +214,7 @@ def _render_minibatch(minibatch: list["TaskResult"], tool_trunc: int) -> str:
         if r.fail_reason:
             header_lines.append(f"Failure reason: {r.fail_reason}")
         header = "\n".join(header_lines)
-        traj = format_trajectory(r.messages, tool_trunc=tool_trunc)
+        traj = format_trajectory(r.messages, tool_trunc=tool_trunc, include_system=False)
         parts.append(f"{header}\n\n{traj}")
     return "\n\n---\n\n".join(parts)
 
@@ -622,7 +622,7 @@ def _run_success_analyst(
         header = f"### Task {r.task_id} (K={len(g.rollouts)}, all PASS, soft_mean={g.mean_soft:.3f})"
         if r.task_description:
             header += f"\nTask: {r.task_description}"
-        traj = format_trajectory(r.messages, tool_trunc=tool_trunc)
+        traj = format_trajectory(r.messages, tool_trunc=tool_trunc, include_system=False)
         parts.append(f"{header}\n\n{traj}")
 
     trajectories_text = "\n\n---\n\n".join(parts)
@@ -696,7 +696,7 @@ def _render_contrastive_group(group: "TaskRolloutGroup", tool_trunc: int) -> str
                 header += f"\nTask: {r.task_description}"
             if r.fail_reason:
                 header += f"\nFail reason: {r.fail_reason}"
-            traj = format_trajectory(r.messages, tool_trunc=tool_trunc)
+            traj = format_trajectory(r.messages, tool_trunc=tool_trunc, include_system=False)
             parts.append(f"{header}\n\n{traj}")
 
     return "\n\n---\n\n".join(parts)

@@ -50,12 +50,16 @@ def main() -> None:
     out_root = resume_dir if resume else f"runs/spreadsheetbench_{timestamp}"
 
     cfg = CSSConfig(
-        # Data (Trace2Skill-aligned: [0:200] evolving → 140 train + 60 val,
-        #        [200:400] held-out → 200 test, identical to Trace2Skill)
+        # Data: SHUFFLED split of verified_400 (seed=42), ratio 140:60:200.
+        # The whole 400 is shuffled BEFORE splitting so each of train/val/test
+        # holds a representative mix of Cell-Level + Sheet-Level tasks. (The earlier
+        # t2s_aligned split was SEQUENTIAL — [200:400] held-out — which put 100% of
+        # the Cell-Level tasks in test; shuffling fixes that but no longer matches
+        # Trace2Skill's exact task split.)
         n_train=140,
         n_val=60,
         n_test=200,
-        split_dir=f"{DATA_BASE}/spreadsheetbench_split_t2s_aligned",
+        split_dir=f"{DATA_BASE}/spreadsheetbench_split_shuffled_seed42",
         data_root=f"{DATA_BASE}/spreadsheet_raw/spreadsheetbench_verified_400",
 
         # LLM (remote OpenAI-compatible endpoint, reachable from this server)
@@ -64,12 +68,22 @@ def main() -> None:
 
         # Runtime
         max_api_workers=256,
+        concurrency_limit=1,   # ONE tree node (branch) exploited per round — serial beam-1,
+                               # not parallel multi-branch (avoids splitting the shared LLM
+                               # endpoint across branches; each branch gets full throughput).
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
         bash_timeout_s=180,    # per single bash command (3 min); kills hung commands fast (+ their whole tree)
         max_turns=50,          # 99.84% of rollouts finish <=50 turns (median 5); halves the long-tail budget
 
         # Reflect pipeline (three-way analysis -> unified edit generator)
         reflect_mode="plan_a",
+
+        # L1 strategy cycle (v3): diverse-iterate + objective lift/deploy_net.
+        # Test-set sizes for this run (residual = baseline-0/K, regression = baseline-K/K);
+        # other L1 knobs (k_rollouts=3, l1_target_effective=3, max_l1_iterations=8,
+        # l1_diagnosis_per_category=5) use the agreed-design dataclass defaults.
+        l1_diagnostic_tasks=20,
+        l1_regression_tasks=16,
 
         # Output
         out_root=out_root,

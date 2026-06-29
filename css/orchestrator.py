@@ -12,9 +12,9 @@ D14). After cold start seeds a ROOT node, the search proceeds in concurrent
          (4) periodic validation eval -> update val_score + learning curve.
     -> SYNC POINT:
          (5) PRUNE: paired-bootstrap sibling-dominance test (P6 prune),
-         (6) BRANCH: saturated nodes spawn REFINE / PROPOSAL (P5), escalating
-             REFINE -> PROPOSAL when the REFINE gate fails; new children are
-             attached to the tree on success.
+         (6) BRANCH: saturated nodes spawn a PROPOSAL (P5) — the L1 diverse-iterate
+             cycle searches for a new cognitive strategy; a successful one is
+             attached to the tree as a new child. (REFINE was unified into PROPOSAL.)
 
 The loop terminates when no active node is non-saturated AND no branch produced
 a new node in a round (the search has nothing left to do), or when ``max_rounds``
@@ -305,6 +305,41 @@ def _persistent_fail_groups(groups: list["TaskRolloutGroup"]) -> list["TaskRollo
 # ──────────────────────────────────────────────────────────────────────────
 # Per-node epoch (the body run for each selected node)
 # ──────────────────────────────────────────────────────────────────────────
+def _measure_initial_val(
+    node: "TreeNode", env, target_client: "LLMClient", *,
+    cfg: "CSSConfig", out_dir: str, round_index: int,
+) -> float:
+    """Measure the node's INITIAL skill (strategy + initial rules) on the val set,
+    BEFORE any exploitation, and set it as the node's baseline + gate incumbent.
+
+    This is the node's true starting point: ``node.val_score`` (the incumbent the
+    L0 gate compares its first edit against — never 0 or a train floor) and
+    ``node.baseline_val_score`` (the floor exploitation is measured FROM). Called
+    once per node (cold-start root + each newly-branched node's first epoch).
+    """
+    from css.rollout.batch import grouped_batch_rollout
+    from css.data.rollout import aggregate_scores
+    from css.skill_document import SkillDocument
+
+    val_items = list(env.val_items())
+    skill = SkillDocument(skill_dir="", strategy=node.strategy or "",
+                          rules=node.rules or "").combined_skill_text()
+    groups = grouped_batch_rollout(
+        env, val_items, skill, target_client,
+        k_rollouts=cfg.k_rollouts,
+        out_dir=_node_round_dir(out_dir, node, round_index, "val_baseline"),
+        max_workers=cfg.max_api_workers, task_timeout=cfg.task_timeout_s,
+        epoch=round_index, node_id=node.node_id,
+    )
+    flat = [r for g in groups for r in g.rollouts]
+    score = float(aggregate_scores(flat).get("task_hard", 0.0))
+    node.baseline_val_score = score
+    node.val_score = score
+    _log.info("Node baseline — round=%d node=%s initial_strategy_val=%.3f (gate incumbent)",
+              round_index, node.node_id, score)
+    return score
+
+
 def _run_node_epoch(
     tree: "SearchTree",
     node: "TreeNode",
@@ -340,6 +375,13 @@ def _run_node_epoch(
               n_train=len(train_items), n_val=len(val_items),
               skill_len=len(_combined_skill_text(node)), n_steps=node.n_steps,
               rules_len=len(node.rules or ""), strategy_len=len(node.strategy or ""))
+
+    # (0) First epoch only: measure the node's INITIAL strategy on val so the L0
+    # gate's incumbent (node.val_score) is the true starting point, not 0 / a train
+    # floor. Already set for the cold-start root (measured at cold-start).
+    if node.baseline_val_score < 0:
+        _measure_initial_val(node, env, target_client,
+                             cfg=cfg, out_dir=out_dir, round_index=round_index)
 
     # (1) L0 EXPLOITATION: batch-step loop until saturation or hard cap.
     node.step_buffer.reset_saturation()
@@ -568,12 +610,11 @@ def _branch_pass(
 
     Returns ``(branch_labels, produced_new_node)``. For each node:
       * not saturated -> ``EXPLOITATION`` (keep optimizing next round).
-      * saturated + L1 signals -> REFINE (while budget) else PROPOSAL; on REFINE
-        gate failure (``escalate_to_proposal``) immediately retry as PROPOSAL.
-      * saturated + no signal -> ``NONE`` and the node is marked ``saturated``.
-    On a successful PROPOSAL/REFINE the new child is attached to the tree.
+      * saturated     -> ``PROPOSAL`` (the L1 diverse-iterate cycle). On success the
+        new child is attached to the tree; on failure the node is marked
+        ``saturated`` (done branching). (REFINE was unified into PROPOSAL.)
     """
-    from css.proposal.proposal import run_proposal, run_refine
+    from css.proposal.proposal import run_proposal
     from css.tree.branching import decide_branch, make_rollout_validate_fn
     from css.tracing import log_event
 
@@ -590,14 +631,13 @@ def _branch_pass(
 
         log_event("branch_decision", round_index=round_index, node_id=node_id,
                   decision=decision, n_l1_signals=len(l1_signals),
-                  saturated=node.is_saturated(cfg.N),
-                  refine_count=node.refine_count, K=cfg.K)
+                  saturated=node.is_saturated(cfg.N))
 
         if decision == "EXPLOITATION":
             labels.append("EXPLOITATION")
             continue
 
-        # REFINE or PROPOSAL: run the operation with the real Layer-5c closure.
+        # PROPOSAL: run the L1 diverse-iterate cycle with the real Layer-5c closure.
         label, made = _run_branch_operation(
             tree,
             node,
@@ -611,7 +651,6 @@ def _branch_pass(
             cfg=cfg,
             out_dir=out_dir,
             round_index=round_index,
-            run_refine=run_refine,
             run_proposal=run_proposal,
             make_rollout_validate_fn=make_rollout_validate_fn,
         )
@@ -635,22 +674,20 @@ def _run_branch_operation(
     cfg: "CSSConfig",
     out_dir: str,
     round_index: int,
-    run_refine,
     run_proposal,
     make_rollout_validate_fn,
 ) -> tuple[str, bool]:
-    """Run one REFINE/PROPOSAL via the L1 hypothesis-test-verify cycle.
+    """Run one PROPOSAL via the L1 diverse-iterate cycle (REFINE unified into it).
 
     Returns ``(label, produced_new_node)`` where ``label`` is e.g.
-    ``"REFINE:success"`` / ``"PROPOSAL:fail"``.
+    ``"PROPOSAL:success"`` / ``"PROPOSAL:fail"``.
     """
     library = node.pattern_records
     train_groups = payload["train_groups"]
 
-    operation = decision  # "REFINE" or "PROPOSAL"
-    runner = run_refine if operation == "REFINE" else run_proposal
+    operation = decision  # always "PROPOSAL" in v3 (REFINE unified into PROPOSAL)
 
-    outcome = runner(
+    outcome = run_proposal(
         node,
         l1_signals,
         library,
@@ -665,38 +702,12 @@ def _run_branch_operation(
         out_dir=out_dir,
     )
 
-    # REFINE failure -> consume the REFINE budget, then escalate to PROPOSAL.
-    if (
-        operation == "REFINE"
-        and not outcome.success
-    ):
-        node.refine_count += 1  # the failed REFINE attempt spends one K-budget slot
-        operation = "PROPOSAL"
-        outcome = run_proposal(
-            node,
-            l1_signals,
-            library,
-            archive,
-            optimizer_client,
-            cfg=cfg,
-            new_node_id=tree.new_node_id(),
-            epoch=round_index,
-            env=env,
-            target_client=target_client,
-            train_groups=train_groups,
-            out_dir=out_dir,
-        )
-
     from css.tracing import log_event
 
-    _save_branch_artifacts(
-        out_dir, node, round_index, operation, outcome,
-    )
+    _save_branch_artifacts(out_dir, node, round_index, operation, outcome)
 
     if outcome.success and outcome.new_node is not None:
         tree.add_child(node.node_id, outcome.new_node)
-        if operation == "REFINE":
-            node.refine_count += 1
         log_event("branch_result", round_index=round_index, node_id=node.node_id,
                   operation=operation, success=True,
                   new_node_id=outcome.new_node.node_id,
@@ -706,12 +717,7 @@ def _run_branch_operation(
         _save_skill_snapshot(out_dir, outcome.new_node, round_index)
         return f"{operation}:success", True
 
-    if operation == "REFINE":
-        node.refine_count += 1
-        log_event("branch_result", round_index=round_index, node_id=node.node_id,
-                  operation=operation, success=False, reason=outcome.reason or "")
-        return f"{operation}:fail", False
-
+    # PROPOSAL produced no effective strategy -> the node is done branching.
     node.status = "saturated"
     log_event("branch_result", round_index=round_index, node_id=node.node_id,
               operation=operation, success=False, reason=outcome.reason or "")
@@ -900,14 +906,17 @@ def run_css(
         baseline_score = cs.baseline_score
         start_round = 0
 
-        # Save ROOT node skill snapshot.
+        # Save ROOT node skill snapshot + measure the COLD-START STRATEGY on the val
+        # set as the root's baseline / gate incumbent (replaces the old bare-LLM
+        # train floor, which mismatched the val-based gate).
         root = tree.get(tree.root_id) if tree.root_id else None
         if root:
             _save_skill_snapshot(out_dir, root, 0)
-            root.val_score = cs.baseline_score
-        _log.info("Cold start done — baseline=%.3f patterns=%d root=%s strategy=%d chars",
-                  cs.baseline_score, cs.n_patterns, tree.root_id,
-                  len(root.strategy or "") if root else 0)
+            _measure_initial_val(root, env, target_client, cfg=cfg, out_dir=out_dir, round_index=0)
+        _log.info("Cold start done — baseline(strategy@val)=%.3f bare_floor(train)=%.3f "
+                  "patterns=%d root=%s strategy=%d chars",
+                  root.val_score if root else 0.0, cs.baseline_score, cs.n_patterns,
+                  tree.root_id, len(root.strategy or "") if root else 0)
 
         log_event("cold_start_done", baseline_score=cs.baseline_score,
                   n_patterns=cs.n_patterns,

@@ -7,13 +7,12 @@ Two responsibilities (design §5 / §7, D11 / D14):
 
   :func:`decide_branch` — the deterministic per-node branching rule run at the
     SYNC point of every round. A node that has NOT yet saturated its L0 buffer
-    keeps exploiting (``"EXPLOITATION"``). A saturated node with live L1 signals
-    spends its REFINE budget first (``"REFINE"`` while ``refine_count < cfg.K``)
-    then escalates to a full strategy rewrite (``"PROPOSAL"``). A saturated node
-    with no L1 signal has nothing left to branch on (``"NONE"``).
+    keeps exploiting (``"EXPLOITATION"``). A saturated node spawns a ``"PROPOSAL"``
+    (the L1 diverse-iterate cycle). REFINE has been unified into PROPOSAL, so
+    ``refine_count`` / ``cfg.K`` / ``l1_signals`` are no longer consulted.
 
   :func:`make_rollout_validate_fn` — builds the INJECTED Layer-5c callback that
-    Phase 5 (:func:`css.proposal.proposal.run_proposal` / ``run_refine``) calls to
+    Phase 5 (:func:`css.proposal.proposal.run_proposal`) calls to
     measure whether a candidate skill actually suppresses the targeted failure
     pattern on the persistent-fail subset. It re-rolls those tasks with the
     candidate skill (Phase 2), re-annotates the trajectories (Phase 4 Layer 1),
@@ -44,18 +43,19 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 def decide_branch(node: "TreeNode", l1_signals: list, *, cfg: "CSSConfig") -> str:
     """Decide the operation to spawn from ``node`` at the round SYNC point.
 
-    v2 logic: L0 saturation directly triggers the L1 hypothesis-test-verify
-    cycle. The old l1_signals statistical gate is bypassed — Step 1 multi-
-    dimensional analysis replaces it.
+    v3 logic: L0 saturation directly triggers a PROPOSAL — the L1 diverse-iterate
+    cycle that searches for a new cognitive strategy. The old ``l1_signals``
+    statistical gate is bypassed (Step-1 multi-dimensional analysis replaces it),
+    and REFINE has been UNIFIED INTO PROPOSAL: both used to run the same L1 cycle,
+    differing only in rules-inheritance, so we keep one path (fresh PROPOSAL).
 
       * not L0-saturated -> ``"EXPLOITATION"``
-      * saturated, REFINE budget remaining -> ``"REFINE"``
-      * saturated, REFINE budget spent     -> ``"PROPOSAL"``
+      * saturated        -> ``"PROPOSAL"``
+
+    (``l1_signals`` / ``cfg.K`` are no longer consulted here.)
     """
     if not node.is_saturated(cfg.N):
         return "EXPLOITATION"
-    if node.refine_count < cfg.K:
-        return "REFINE"
     return "PROPOSAL"
 
 

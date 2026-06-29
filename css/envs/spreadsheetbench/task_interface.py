@@ -376,13 +376,32 @@ class SpreadsheetBenchEnv:
             result["n_turns"] = agent_result.total_turns
             result["code_ok"] = agent_result.success
 
-            # ── Build conversation from agent steps ───────────────────────
-            conversation: list[dict] = []
-            for step in agent_result.steps:
-                if step.thought:
-                    conversation.append({"role": "assistant", "content": step.thought})
-                if step.observation:
-                    conversation.append({"role": "user", "content": f"Observation: {step.observation}"})
+            # ── Build the COMPLETE conversation = the faithful trajectory ──
+            # The recorded conversation must be the whole trajectory the agent
+            # saw: the system prompt (which carries the injected skill — strategy
+            # + rules — and the ReAct action protocol), the task prompt, then
+            # every turn's raw assistant output (reasoning + Action) and its
+            # observation. The L1 optimizer's failure analysis (Step 1b) and
+            # adherence judging (Step 4) need this whole picture to assess whether
+            # the agent actually followed the strategy; a thought/observation-only
+            # reconstruction silently dropped the system prompt and the task, so
+            # adherence was being judged blind to what the agent was even told.
+            system_prompt = agent.get_system_prompt() or system_template
+            conversation: list[dict] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": task_prompt},
+            ]
+
+            def _append_turns(steps: list, start: int = 0) -> None:
+                # ``step.thought`` is the agent's raw response (its reasoning AND
+                # the Action JSON), so the action is preserved verbatim.
+                for step in steps[start:]:
+                    if step.thought:
+                        conversation.append({"role": "assistant", "content": step.thought})
+                    if step.observation:
+                        conversation.append({"role": "user", "content": f"Observation: {step.observation}"})
+
+            _append_turns(agent_result.steps)
 
             if not agent_result.success:
                 result["fail_reason"] = f"agent-failed: {agent_result.error or 'max-turns-exceeded'}"
@@ -397,11 +416,7 @@ class SpreadsheetBenchEnv:
                         f"then signal ACTION: TASK_COMPLETE again."
                     )
                     result["n_turns"] = retry_result.total_turns
-                    for step in retry_result.steps[agent_result.total_turns:]:
-                        if step.thought:
-                            conversation.append({"role": "assistant", "content": step.thought})
-                        if step.observation:
-                            conversation.append({"role": "user", "content": f"Observation: {step.observation}"})
+                    _append_turns(retry_result.steps, agent_result.total_turns)
 
             # ── Save conversation ─────────────────────────────────────────
             with open(os.path.join(prediction_dir, "conversation.json"), "w") as f:

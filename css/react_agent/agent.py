@@ -181,6 +181,20 @@ class ReActAgent:
         finally:
             loop.close()
 
+    def get_system_prompt(self) -> str:
+        """Return the exact system prompt used in the most recent run.
+
+        This is the system message the agent built for the model — tool
+        definitions filled in, injected skill (strategy + rules) included. It is
+        the authoritative head of the trajectory and is reliably available after
+        ``run`` / ``run_async`` and after ``continue_with_message`` (every exit
+        path stores ``_last_messages``). Returns ``""`` if the agent has not run.
+        """
+        msgs = self._last_messages
+        if msgs and msgs[0].role == "system":
+            return msgs[0].content
+        return ""
+
     def _build_max_turns_exceeded_result(
         self,
         task: str,

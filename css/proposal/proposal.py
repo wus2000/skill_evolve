@@ -1,19 +1,31 @@
-"""L1 Strategy Cycle — hypothesis-test-verify loop (v2 design).
+"""L1 Strategy Cycle — diverse-iterate + objective-lift candidate search (v3).
 
-This module implements the five-step L1 cycle that replaces the old single-shot
-PROPOSAL/REFINE pipeline.  When L0 saturates, this cycle runs:
+When L0 saturates, this cycle searches for a better COGNITIVE STRATEGY. It is a
+CANDIDATE GENERATOR, not a gatekeeper: it selects the best candidate by an
+objective signal and hands it to the tree, whose val/test is the real judge.
 
-  Step 1  Multi-dimensional analysis (1a/1b/1c parallel → 1d synthesis)
-  Step 2  Strategy proposal + behavioral predictions (single LLM call)
-  Step 3  Focused testing (rollout with new strategy, empty rules)
-  Step 4  Two-layer verification (per-trajectory Judge → aggregate diagnosis)
-  Step 5  Iteration control (succeed → MCTS node, or loop back with feedback)
+  Step 1  One-time grounding analysis (1a/1b/1c parallel → 1d directions)
+  Loop (up to cfg.max_l1_iterations rounds, each a DISTINCT philosophy):
+    Step 2  Strategy proposal — a NEW cognitive philosophy, ledger-anchored
+    Step 3  Test the candidate (new strategy, EMPTY rules) K times on a FIXED
+            residual + regression task set
+    Categorize vs the node's baseline (pass@K, symmetric is_persistent_fail):
+            cracked / still_failed / regressed / maintained → lift, regression
+    Step 4  Category-specific contrastive diagnosis (per-trajectory Layer-1
+            analyzers → Layer-2 aggregate) — drives the next philosophy
+    Keep-best by net_lift; early-stop when a clearly strong candidate appears
 
-Only strategies that pass verification create MCTS child nodes.  Failed
-directions are archived in the negative archive.
+After the loop, the best candidate with lift>0 becomes an MCTS child node;
+if none cracked any residual task, the last direction is archived.
 
-All intermediate products are persisted to disk under
-``{out_dir}/{node_id}/l1_cycle/round_{N}/step{1-4}/``.
+Why EMPTY rules: testing the strategy alone handicaps it, which makes lift a
+conservative LOWER bound on the deployed (post-exploitation, rules-restored)
+artifact and regression an UPPER bound — a cracked-under-handicap residual will
+(in expectation) also crack once L0 restores rules. Selection stays objective
+(no LLM); the LLM is used only to produce rich diagnosis that steers the search.
+
+All intermediate products are persisted under
+``{out_dir}/{node_id}/l1_cycle/round_{N}/``.
 
 Heavy imports are lazy so this module imports cheaply.
 """
@@ -71,13 +83,41 @@ class ProposalOutcome:
 
 @dataclass
 class _PreviousAttempt:
+    """One round's full decision record — the unit of the cross-round ledger.
+
+    Assembled in code from each round's objective categorization + the Layer-2
+    diagnosis; NO dedicated LLM call generates the record itself. Later rounds
+    read it (via :meth:`_IterationContext.render_ledger`) so the search
+    accumulates — preserving the active ingredient, avoiding harm, attacking the
+    residual — instead of re-deriving from scratch or drifting via depth-refine.
+    """
     round: int
-    strategy_summary: str
-    diagnosis: str  # adherence_failure | hypothesis_failure | partial_success
-    adherence_results: list[dict]
-    improvement_results: list[dict]
-    judge_diagnosis: str
-    judge_suggestion: str
+    # ── Generation (the philosophy this round explored) ─────────────────────
+    philosophy: str = ""            # the declared cognitive philosophy
+    mechanism_difference: str = ""  # how it differed in MECHANISM from priors
+    strategy_name: str = ""
+    strategy_summary: str = ""
+    design_reasoning: str = ""
+    was_refine: bool = False        # True if this round REFINED the prior strategy
+    # ── Objective categorization vs baseline (pass@K, NO LLM) ───────────────
+    lift: int = 0                   # #cracked (residual unlocked)
+    regression: int = 0             # #regressed (solved task broken)
+    net_lift: int = 0               # lift - regression
+    n_residual: int = 0             # residual tasks tested this cycle
+    n_regression: int = 0           # regression-guard tasks tested this cycle
+    cracked_task_ids: list = field(default_factory=list)
+    regressed_task_ids: list = field(default_factory=list)
+    still_failed_task_ids: list = field(default_factory=list)
+    # ── Layer-2 aggregate diagnosis (LLM; steers the next philosophy) ───────
+    # {active_ingredient, harm, residual_characterization, residual_nature,
+    #  next_direction_hint}
+    diagnosis: dict = field(default_factory=dict)
+    # Set instead of the above when Step 2 produced no usable strategy.
+    failure_note: str = ""
+
+    @property
+    def residual_nature(self) -> str:
+        return str((self.diagnosis or {}).get("residual_nature", "") or "")
 
 
 @dataclass
@@ -86,21 +126,73 @@ class _IterationContext:
     previous_attempts: list[_PreviousAttempt] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        """Full serialization (disk / observability)."""
         return {
             "iteration_round": self.iteration_round,
             "previous_attempts": [
                 {
                     "round": a.round,
+                    "philosophy": a.philosophy,
+                    "mechanism_difference": a.mechanism_difference,
+                    "strategy_name": a.strategy_name,
                     "strategy_summary": a.strategy_summary,
+                    "design_reasoning": a.design_reasoning,
+                    "was_refine": a.was_refine,
+                    "lift": a.lift,
+                    "regression": a.regression,
+                    "net_lift": a.net_lift,
+                    "n_residual": a.n_residual,
+                    "n_regression": a.n_regression,
+                    "cracked_task_ids": a.cracked_task_ids,
+                    "regressed_task_ids": a.regressed_task_ids,
+                    "still_failed_task_ids": a.still_failed_task_ids,
                     "diagnosis": a.diagnosis,
-                    "adherence_results": a.adherence_results,
-                    "improvement_results": a.improvement_results,
-                    "judge_diagnosis": a.judge_diagnosis,
-                    "judge_suggestion": a.judge_suggestion,
+                    "failure_note": a.failure_note,
                 }
                 for a in self.previous_attempts
             ],
         }
+
+    def render_ledger(self) -> str:
+        """Render the cross-round decision ledger as a distilled, readable text
+        block for prompt injection (Step 2 generation).
+
+        Per round it tells the next philosophy designer four things it must act
+        on: the PHILOSOPHY already tried (do not repeat its mechanism), the
+        OBJECTIVE result (lift/regression — what truly worked), the ACTIVE
+        INGREDIENT to preserve, the HARM to avoid, and the RESIDUAL still open.
+        Assembled purely from recorded fields — no raw JSON or trajectories.
+        """
+        if not self.previous_attempts:
+            return "(no prior rounds — this is the first philosophy in this cycle)"
+        blocks: list[str] = []
+        for a in self.previous_attempts:
+            if a.failure_note:
+                blocks.append(
+                    f"=== Round {a.round} ===\n"
+                    f"Philosophy: (Step 2 produced no usable strategy)\n"
+                    f"Note: {a.failure_note}"
+                )
+                continue
+            d = a.diagnosis or {}
+            cracked = ", ".join(str(t) for t in a.cracked_task_ids[:8]) or "none"
+            regressed = ", ".join(str(t) for t in a.regressed_task_ids[:8]) or "none"
+            mode = "REFINE of prior" if a.was_refine else "NEW philosophy"
+            verdict = "EFFECTIVE (lift>0)" if a.lift > 0 else "ineffective (lift 0)"
+            blocks.append(
+                f"=== Round {a.round} [{mode}]: {a.strategy_name or '(unnamed)'} — {verdict} ===\n"
+                f"Philosophy: {a.philosophy or '(undeclared)'}\n"
+                f"How it differed in mechanism: {a.mechanism_difference or '(unstated)'}\n"
+                f"Objective result: lift +{a.lift} (cracked: {cracked}) | "
+                f"regression -{a.regression} (regressed: {regressed}) | "
+                f"net {a.net_lift:+d} | still-failed {len(a.still_failed_task_ids)}/{a.n_residual}\n"
+                f"Active ingredient (PRESERVE): {(d.get('active_ingredient') or '(none found)')[:300]}\n"
+                f"Harm (AVOID): {(d.get('harm') or '(no strategy-level harm)')[:250]}\n"
+                f"Residual still open: {(d.get('residual_characterization') or '?')[:250]} "
+                f"[nature: {d.get('residual_nature', '?')} — if L0_tactical, leave it to L0]\n"
+                f"  -> next-direction hint (cognitive): {(d.get('next_direction_hint') or '(none)')[:250]}"
+            )
+        return "\n\n".join(blocks)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -210,201 +302,319 @@ Output ONLY the JSON object — no prose, no fences."""
 
 
 _STEP1D_SYSTEM = """\
-You are synthesizing three independent analyses into a strategic hypothesis \
-for improving an AI agent's cognitive strategy:
+You are synthesizing analysis into the NEXT strategic hypothesis for improving an \
+AI agent's cognitive strategy. You receive TWO kinds of input:
 
-1. L0 CEILING ANALYSIS: why tactical optimization stalled
-2. TRAJECTORY ANALYSIS: deep behavioral patterns from failure traces
-3. CONTRASTIVE LIMITATION ANALYSIS: why L0-identified divergences couldn't be \
+A. FIXED ANALYSIS of the agent's post-exploitation state (computed once; identical \
+every round of this cycle):
+   1. L0 CEILING ANALYSIS — why tactical optimization stalled
+   2. TRAJECTORY ANALYSIS — deep behavioral patterns from failure traces
+   3. CONTRASTIVE LIMITATION ANALYSIS — why L0-identified divergences couldn't be \
 fixed with rules
 
-Your task is to produce a STRATEGIC-LEVEL synthesis — not a list of tactical \
-fixes, but insights about what fundamental change in the agent's thinking \
-approach is needed.
+B. CYCLE LEDGER — what PRIOR ROUNDS of this same cycle already tried: each round's \
+hypothesis/direction, the strategy, its OBJECTIVE result (pass rate), the verdict, \
+and the post-mortem of WHY it failed (e.g. "the agent followed it but anchored to a \
+wrong logical hypothesis"). Empty on the first round.
+
+CRITICAL — synthesize ACROSS rounds; do NOT re-derive from scratch:
+- The FIXED analysis (A) will keep suggesting the SAME high-level framing every \
+round. The LEDGER (B) is authoritative on what has actually been tried and ruled \
+out. If a direction was already tried, do NOT re-propose it under a new name.
+- Build on what the post-mortems established. If prior rounds established the agent \
+now FOLLOWS a structured approach but still fails because of X, the open problem is \
+X — attack THAT, not the already-solved framing.
+- PRESERVE what worked: anything the ledger shows as effective (e.g. a format the \
+agent reliably adheres to) is a constraint to keep, not discard.
+
+GROUND-TRUTH CONSTRAINT — the agent has NO access to ground-truth/expected answers \
+at runtime. NEVER recommend a direction that requires comparing against or reverse- \
+engineering from expected/ground-truth values; the agent cannot do it.
 
 Output a JSON object:
 {
-  "core_assumptions_and_limitations": "<the key strategic assumptions that \
-are limiting agent performance — state these as high-level judgments about \
-the strategy, not as a list of bugs>",
+  "cycle_synthesis": {
+    "established": ["<what prior rounds CONFIRMED works — [] on round 1>"],
+    "ruled_out": ["<directions already tried that are NOT the bottleneck — [] on round 1>"],
+    "open_problem": "<the current binding constraint the next strategy must attack>"
+  },
+  "core_assumptions_and_limitations": "<key strategic limitation behind the open_problem>",
   "recommended_directions": [
     {
-      "direction": "<name of the strategic change>",
-      "rationale": "<why this direction addresses the identified limitations>",
+      "direction": "<the strategic change — MUST attack open_problem and differ from ruled_out>",
+      "rationale": "<why this addresses the open problem, given what's already been tried>",
       "expected_impact": "<what types of tasks would benefit and how>",
       "risk": "<what could go wrong or what effective behaviors might be lost>"
     }
   ],
-  "constraints": "<what is working well in the current strategy that must be \
-preserved in any new approach>"
+  "constraints": "<what is working well (from the current strategy AND prior rounds) that must be preserved>"
 }
 
 Output ONLY the JSON object — no prose, no fences."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Step 2: Strategy proposal + behavioral predictions
+# Step 2: Strategy proposal — a NEW cognitive philosophy, ledger-anchored
 # ══════════════════════════════════════════════════════════════════════════════
 
 _STEP2_SYSTEM = """\
-You are an L1 strategy designer for an AI agent optimization system. Based on \
-multi-dimensional analysis of the agent's performance, you design a new \
-cognitive strategy — the document that tells the agent HOW TO THINK when \
-approaching tasks.
+You design a COGNITIVE STRATEGY — the document injected into an agent's SYSTEM \
+PROMPT that tells it HOW TO THINK when approaching tasks.
 
-You are designing both the strategy AND the criteria by which it will be \
-verified. This is critical: you know what behavior you expect from this \
-strategy, so you must articulate that expectation clearly enough for an \
-independent judge to evaluate it from trajectory evidence.
+ALTITUDE — THE ONE RULE YOU MUST NOT BREAK. L1 searches COGNITIVE STRATEGIES (ways of \
+THINKING). It does NOT learn tactical rules. The system has a strict division of \
+labour: YOU produce the thinking frame; a SEPARATE L0 optimizer then adds tactical \
+rules (exact APIs, formats, idioms) on top of your strategy. Therefore:
+  - GOOD (strategy): "Form a structural hypothesis about the data before acting."
+  - BAD (tactical rule — NEVER write this): "Compute values in Python and write \
+literals, not formula strings"; "preserve the header row"; "use exact date format".
+  - When the diagnosis says the residual is tactical (formula strings, formats, \
+headers, exact matching), that residual is L0's JOB. Do NOT try to fix it by encoding \
+tactics into your strategy. Leave it. Stay at the altitude of THINKING. A strategy \
+polluted with tactical rules is a failed strategy even if it happens to pass.
+
+You operate in one of two MODES (given at the top of the input):
+
+▸ MODE = NEW — propose a strategy on a GENUINELY DIFFERENT cognitive MECHANISM from \
+every philosophy in the ledger. This is diverse exploration: do not re-propose a tried \
+philosophy under a new name; state how yours differs in mechanism (not just wording). \
+Drift into ever-more-elaborate variants of the same idea is the failure mode to avoid.
+
+▸ MODE = REFINE — the CURRENT strategy (given in full) was tested and cracked NOTHING \
+(lift 0), but its core cognitive idea looks sound and is worth one more try. KEEP its \
+core philosophy; improve its OPERATIONALIZATION so the agent actually follows and \
+benefits from it — per the diagnosis (e.g. it was too abstract / not enacted in the \
+Thought→Action loop / a key thinking move was under-specified). Do NOT switch to an \
+unrelated idea, and do NOT pile on tactics — same frame, made to actually work.
+
+You receive a one-time GROUNDING analysis and a CYCLE LEDGER (every prior round's \
+philosophy, its objective lift/regression, and its diagnosis: the active ingredient \
+that worked, the harm to avoid, the residual). Use them under BOTH modes:
+1. PRESERVE the active ingredient — anything the ledger shows OBJECTIVELY cracked \
+tasks is a thinking behavior to KEEP; re-express it, never drop it.
+2. AVOID the harm — never re-introduce a genuine strategy-level harm. ("Handicap" \
+regressions are NOT harm; they vanish once L0 restores rules — do not contort to avoid them.)
+3. PURSUE cognitive leverage — target failures a better WAY OF THINKING can unlock; \
+leave purely tactical residual to L0.
 
 STRATEGY FORMAT — two sections, nothing else:
 
   ## <Strategy Name>
-  <A concise paragraph: the core mental model, key insight, and what makes \
-this way of thinking effective. A reader should grasp the strategy in 30 \
-seconds.>
+  <A concise paragraph: the core mental model, the key insight, why this way of \
+thinking is effective. Graspable in 30 seconds.>
 
   ### Details
-  <Detailed expansion: cognitive mechanisms, thinking processes, mental moves, \
-when-to-switch triggers, adaptation to different situations. As long as \
-needed — use multiple paragraphs, sub-sections (####), bullet lists. The \
-agent reading only this document should know exactly HOW to think through \
-any task.>
+  <Detailed expansion: cognitive mechanisms, thinking moves, when-to-switch triggers. \
+Multiple paragraphs / #### sub-sections / bullets as needed. The agent reading ONLY \
+this should know exactly HOW to think — not what API to call.>
 
-ALTITUDE — a strategy describes HOW to think, not WHAT to do:
-  - GOOD: "Form a structural hypothesis about the data before acting"
-  - BAD: "Always check range boundaries" (that's a rule, not a strategy)
-
-Output a JSON object:
-{
-  "strategy_text": "<full strategy.md body: ## Name + overview + ### Details + \
-detail>",
-  "design_reasoning": "<why this strategy addresses the diagnosed limitations>",
-  "adherence_criteria": [
-    {
-      "id": "AC-1",
-      "expected_behavior_pattern": "<observable behavior in trajectories when \
-the agent follows this strategy>",
-      "current_behavior_contrast": "<what the agent does now in the same \
-situation, as a comparison baseline>"
-    }
-  ],
-  "improvement_expectations": [
-    {
-      "id": "IE-1",
-      "target_problem": "<the specific failure mode this strategy addresses>",
-      "improvement_mechanism": "<how the strategy changes agent behavior to \
-fix this>",
-      "trajectory_evidence": "<what an observer should see in the trajectory \
-text if the improvement is working>"
-    }
-  ]
-}
-
-QUALITY REQUIREMENTS for adherence_criteria and improvement_expectations:
-- Must be BEHAVIORAL-PARADIGM level, not L0 rule level
-- Must reference things observable in trajectory message sequences ([role] + \
-content blocks)
-- adherence_criteria: 2-3 items, each with a current_behavior_contrast baseline
-- improvement_expectations: 2-3 items, each with concrete trajectory_evidence
-
-Output ONLY the JSON object — no prose, no fences."""
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Step 4: Two-layer verification
-# ══════════════════════════════════════════════════════════════════════════════
-
-_STEP4_PER_TRAJ_SYSTEM = """\
-You are judging whether an agent followed a proposed cognitive strategy and \
-whether the strategy produced improvements. You receive ONE agent execution \
-trajectory along with the strategy's adherence criteria and improvement \
-expectations.
-
-Your task:
-1. For each adherence criterion: extract BEHAVIORAL EVIDENCE from the \
-trajectory showing whether the agent's thinking aligns with the expected \
-pattern. Compare against the current_behavior_contrast baseline.
-2. For each improvement expectation: extract evidence of whether the \
-trajectory_evidence described in the expectation is actually observable.
-
-Ground every judgment in SPECIFIC evidence from the trajectory. If evidence is \
-ambiguous, say so — do not guess.
+FOLLOWABILITY — the agent runs in a ReAct loop that forces an Action every turn. Lead \
+with a few OPERABLE mental moves it can enact inside the Thought→Action loop, each \
+observable in a Thought line, stated briefly enough not to be skimmed. It is tested \
+with NO tactical rules, so it must be SELF-CONTAINED — but self-contained as a way of \
+THINKING, never by smuggling in tactics.
 
 Output a JSON object:
 {
-  "task_id": "<from input>",
-  "outcome": "<pass or fail>",
-  "criteria_assessments": [
-    {
-      "criterion_id": "AC-1",
-      "behavioral_evidence": "<what the agent actually did in this trajectory \
-relevant to this criterion>",
-      "verdict": "adhered | not_adhered | partial",
-      "analysis": "<why you made this judgment>"
-    }
-  ],
-  "expectation_assessments": [
-    {
-      "expectation_id": "IE-1",
-      "behavioral_evidence": "<evidence of improvement or lack thereof>",
-      "verdict": "improved | not_improved | inconclusive",
-      "analysis": "<why you made this judgment>"
-    }
-  ]
+  "philosophy": "<the core cognitive philosophy of THIS strategy, in one or two sentences>",
+  "mechanism_difference": "<MODE=NEW: how this differs in COGNITIVE MECHANISM from every \
+prior philosophy ('(first round)' if ledger empty). MODE=REFINE: what you changed in the \
+operationalization and why, keeping the same core philosophy>",
+  "strategy_text": "<full strategy.md body: ## Name + overview + ### Details>",
+  "design_reasoning": "<why this pursues cognitive leverage while preserving the active \
+ingredient and avoiding the harm — and why it stays at thinking altitude>"
 }
 
 Output ONLY the JSON object — no prose, no fences."""
 
 
-_STEP4_AGGREGATE_SYSTEM = """\
-You are aggregating per-trajectory verification results into an overall \
-diagnosis of whether a proposed strategy is effective.
+# ══════════════════════════════════════════════════════════════════════════════
+# Step 4: Category-specific contrastive diagnosis (Layer-1 analyzers + Layer-2)
+# ══════════════════════════════════════════════════════════════════════════════
+# The candidate was categorized OBJECTIVELY (no LLM) vs the baseline. The LLM's
+# only job here is to explain WHY, to steer the next philosophy. Each Layer-1
+# analyzer sees ONE task in depth (a contrast pair, or a single trajectory) — never
+# all trajectories at once — then Layer-2 synthesizes the per-task analyses.
 
-You receive:
-- The strategy proposal (strategy text + adherence criteria + improvement \
-expectations)
-- Per-trajectory judge verdicts from multiple test trajectories
+_CRACKED_ANALYZER_SYSTEM = """\
+You analyze WHY a new cognitive strategy UNLOCKED a task the baseline could not solve.
 
-Your task: synthesize the per-trajectory evidence into cross-trajectory \
-patterns and make an overall judgment.
+Setup:
+- The BASELINE agent (prior strategy + FULL tactical rules) FAILED this task on every attempt.
+- The CANDIDATE agent (the NEW strategy, with NO tactical rules) SUCCEEDED.
+- The candidate had no rules, so its COGNITIVE FRAME — not tactical detail — is what made the difference.
+
+You receive: the strategy under test, ONE candidate SUCCESS trajectory, and ONE \
+baseline FAILURE trajectory of the SAME task.
+
+Compare the two move by move. Find the ACTIVE INGREDIENT: the specific cognitive \
+move, framing, check, or decision the strategy induced in the candidate that the \
+baseline never made — the thing that turned failure into success. Pinpoint the \
+exact divergence point and quote both trajectories.
+
+Constraints:
+- The active ingredient must be a STRATEGY-level cognitive behavior the agent can \
+reproduce on OTHER tasks — not a one-off tactical trick (the candidate had no rules \
+to give it tactical tricks anyway).
+- GROUND TRUTH: the agent never sees expected/ground-truth answers at runtime; the \
+active ingredient must be doable WITHOUT them (you may read expected values to \
+understand WHY it worked, but the deployed agent never has them).
 
 Output a JSON object:
 {
-  "adherence_verdicts": [
-    {
-      "criterion_id": "AC-1",
-      "verdict": "adhered | not_adhered | partial",
-      "evidence": "<cross-trajectory pattern summary>",
-      "analysis": "<overall judgment reasoning>"
-    }
-  ],
-  "improvement_verdicts": [
-    {
-      "expectation_id": "IE-1",
-      "verdict": "improved | not_improved | inconclusive",
-      "evidence": "<cross-trajectory improvement pattern>",
-      "analysis": "<overall judgment reasoning>"
-    }
-  ],
-  "overall_diagnosis": {
-    "strategy_effective": true or false,
-    "primary_issue": "none | adherence_failure | hypothesis_failure | \
-partial_success",
-    "diagnosis_detail": "<what specifically is the problem, if any>",
-    "iteration_suggestion": "<what the next iteration should try differently>"
-  }
+  "task_id": "<id>",
+  "active_ingredient": "<the specific strategy-induced cognitive move that unlocked this task>",
+  "baseline_missing": "<what the baseline did instead / failed to do at the same decision point>",
+  "evidence": "<quotes/actions from BOTH trajectories pinpointing the divergence>",
+  "generalizable": "<whether this likely helps other residual tasks, and which kinds>"
 }
 
-DECISION CRITERIA:
-- strategy_effective=true: majority of adherence criteria are adhered AND \
-majority of improvement expectations show improvement
-- adherence_failure: the agent is NOT following the strategy (the strategy \
-text needs rephrasing for the agent to understand)
-- hypothesis_failure: the agent follows the strategy but it doesn't help \
-(the strategic direction is wrong, need to go back to analysis)
-- partial_success: some aspects work, some don't (refine the strategy in the \
-working direction)
+Output ONLY the JSON object — no prose, no fences."""
+
+
+_REGRESSED_ANALYZER_SYSTEM = """\
+You analyze WHY a new cognitive strategy BROKE a task the baseline solved — and, \
+crucially, whether the strategy is actually at fault.
+
+Setup:
+- The BASELINE agent (prior strategy + FULL tactical rules) SOLVED this task.
+- The CANDIDATE agent (the NEW strategy, with NO tactical rules) FAILED it.
+- TWO things changed at once: the strategy changed AND the tactical rules were \
+removed. You MUST separate their effects.
+
+Classify the failure cause:
+- "handicap": the candidate pursued a SOUND approach but tripped on a concrete \
+TACTICAL detail the baseline's rules supplied (a specific openpyxl idiom, a known \
+edge case, an exact range). This is EXPECTED and NOT the strategy's fault — once \
+this strategy is deployed, the L0 optimizer re-adds tactical rules and this failure \
+very likely disappears.
+- "harm": the new strategy's COGNITIVE FRAME actively MISLED the agent — directed \
+its attention wrongly, imposed a wrong mental model, or induced a counter-productive \
+procedure the baseline never followed. This IS the strategy's fault and must be fixed.
+
+You receive: the strategy under test, ONE baseline SUCCESS trajectory, and ONE \
+candidate FAILURE trajectory of the SAME task.
+
+Compare them at the point they diverge. Decide handicap vs harm from the EVIDENCE: a \
+sound approach stumbling on a tactical detail is handicap; the new strategy steering \
+the agent into a wrong approach is harm. When in genuine doubt, prefer "handicap" \
+(do not penalize the strategy for missing rules) — but call clear misdirection "harm".
+
+GROUND TRUTH: you may use the expected values you see to understand the divergence, \
+but the deployed agent has none — your handicap/harm call and harm_detail must hold \
+without them and must not instruct using them.
+
+Output a JSON object:
+{
+  "task_id": "<id>",
+  "failure_cause": "handicap | harm",
+  "harm_detail": "<if harm: exactly how the new strategy misled the agent; if handicap: which tactical detail/rule was missing>",
+  "evidence": "<quotes/actions at the divergence point supporting the classification>"
+}
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+_STILLFAILED_ANALYZER_SYSTEM = """\
+You characterize a RESIDUAL failure — a task BOTH the baseline and the new strategy \
+fail. There is no successful trajectory to contrast against; characterize the \
+difficulty from the failure alone.
+
+You receive: the strategy under test and ONE candidate FAILURE trajectory (the new \
+strategy, no tactical rules).
+
+Determine:
+1. The concrete POINT the agent gets wrong (where, in the trajectory, it goes off).
+2. The NATURE of the residual difficulty:
+   - "reasoning": the agent's approach/logic is wrong — a better cognitive strategy \
+could still fix it (L1-addressable).
+   - "tactical": the approach is sound but the agent trips on a concrete, recurring \
+tactical/syntactic detail a specific RULE would fix (L0-addressable; expected to \
+improve once rules are restored).
+   - "perception": the agent misreads the task instruction or the spreadsheet \
+structure before reasoning even begins.
+   - "capability": the task needs an operation or precision the model simply cannot \
+produce, regardless of strategy or rules.
+3. A NEXT-DIRECTION HINT: if reasoning/perception, what KIND of cognitive frame might \
+crack it next; otherwise, why a strategy cannot help.
+
+GROUND TRUTH: the agent never sees expected/ground-truth answers; propose nothing \
+that needs them (you may read expected values to understand the failure; the \
+deployed agent cannot).
+
+Output a JSON object:
+{
+  "task_id": "<id>",
+  "residual_point": "<the concrete thing the agent gets wrong>",
+  "residual_nature": "reasoning | tactical | perception | capability",
+  "next_direction_hint": "<for reasoning/perception: what cognitive frame might address it; else why strategy can't help>"
+}
+
+Output ONLY the JSON object — no prose, no fences."""
+
+
+_DIAGNOSE_AGGREGATE_SYSTEM = """\
+You synthesize per-task analyses from ONE round of L1 STRATEGY search into a single \
+actionable diagnosis that steers the NEXT round.
+
+ALTITUDE — THIS IS THE MOST IMPORTANT CONSTRAINT. L1 searches COGNITIVE STRATEGIES \
+(how the agent THINKS), NOT tactical rules (what exact API call / format to use). The \
+two-layer system has a strict division of labour: L1 finds the thinking frame; a \
+SEPARATE L0 optimizer then adds the tactical rules on top. So:
+- A residual that is tactical (e.g. "writes a formula string instead of a computed \
+value", "wrong date format", "didn't preserve the header row") is L0's job. It is the \
+EXPECTED, normal leftover of any cognitive frame — NOT a failure of L1, and NOT \
+something the next strategy should try to fix by encoding tactics.
+- Your "next_direction_hint" MUST stay at cognitive altitude: a DIFFERENT WAY OF \
+THINKING. It must NEVER be a list of tactical rules (do-compute-literals, \
+preserve-headers, exact-match-format). If you catch yourself prescribing rules, you \
+are at the wrong altitude — re-express as a thinking habit or re-frame, or redirect to \
+a different cognitive leverage point entirely.
+
+This round a candidate strategy (the new cognitive frame, tested with NO tactical \
+rules) was compared against the baseline on a fixed task set. You receive:
+- CRACKED analyses: tasks the strategy unlocked — each names the ACTIVE INGREDIENT.
+- REGRESSED analyses: tasks the strategy broke — each classified "handicap" (missing \
+tactical rule; EXPECTED; the L0 optimizer fixes it; NOT the strategy's fault) or \
+"harm" (the strategy actively misled).
+- STILL-FAILED analyses: residual tasks neither solved — each with its nature.
+- The objective counts (lift = residual cracked, regression, net_lift).
+
+Synthesize ACROSS tasks:
+1. ACTIVE INGREDIENT — the consistent cognitive behavior(s) that produced the cracks; \
+what to preserve. If nothing cracked, say so plainly.
+2. HARM — only genuine "harm" regressions (IGNORE every "handicap"). What to AVOID. If \
+all regressions were handicap, state there is no strategy-level harm.
+3. RESIDUAL CHARACTERIZATION — the dominant pattern among still-failed tasks.
+4. RESIDUAL NATURE — "L1_solvable" (a DIFFERENT cognitive frame could still crack some \
+of these), "L0_tactical" (the thinking is fine; only tactical rules remain — L0's \
+job), or "capability_limit" (the model cannot do it regardless).
+5. NEXT DIRECTION HINT — a DIFFERENT cognitive mechanism for the next strategy, at \
+cognitive altitude (a way of thinking, never tactical rules). Leave tactical residual \
+to L0.
+6. NEXT ACTION — choose how the next round should proceed. The key signal is the
+OBJECTIVE counts plus your handicap-vs-harm split (deploy_net = lift - harm_regressions
+is the post-exploitation net; handicap regressions recover once L0 restores rules):
+   - "propose_new" — the cognitive frame is sound and worth banking / moving on. Choose \
+this when the strategy cracked residual (lift > 0) AND its regressions are mostly \
+HANDICAP (deploy_net >= 0) — its job is done, explore a DIFFERENT frame; OR when lift \
+== 0 and the core idea looks WRONG (a dead end to abandon).
+   - "refine_current" — the SAME idea should be improved next round. Choose this when \
+lift == 0 but the core idea looks SOUND and merely poorly operationalized (the agent \
+didn't follow it, or a key thinking move was under-specified); OR when lift > 0 but the \
+regressions are dominated by genuine HARM (deploy_net < 0 — the frame actively misleads) \
+and that harm looks removable while keeping the cracks. Never refine to add tactics.
+
+Output a JSON object:
+{
+  "active_ingredient": "<consistent cognitive behavior(s) to preserve — '' if nothing cracked>",
+  "harm": "<genuine strategy-level harm to avoid — '' if only handicap regressions>",
+  "residual_characterization": "<dominant residual failure pattern>",
+  "residual_nature": "L1_solvable | L0_tactical | capability_limit",
+  "next_direction_hint": "<a DIFFERENT cognitive mechanism (a way of thinking) — NEVER tactical rules>",
+  "next_action": "propose_new | refine_current",
+  "next_action_reason": "<one line: why, grounded in the objective lift>"
+}
 
 Output ONLY the JSON object — no prose, no fences."""
 
@@ -412,6 +622,20 @@ Output ONLY the JSON object — no prose, no fences."""
 # ══════════════════════════════════════════════════════════════════════════════
 # Core L1 cycle implementation
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _is_better_candidate(cand: dict, best: "dict | None") -> bool:
+    """Keep-best ranking among EFFECTIVE candidates: maximize net_lift, then (on a
+    tie) deploy_net = lift - harm_reg (the post-exploitation net lower bound — prefer
+    the candidate whose regressions are more recoverable handicap and less genuine
+    harm), then lift, then fewer regressions. Earliest wins ties (strict ``>`` never
+    replaces an equal). Caller guarantees the candidate is effective.
+    """
+    if best is None:
+        return True
+    return (cand["net_lift"], cand["deploy_net"], cand["lift"], -cand["regression"]) > (
+        best["net_lift"], best["deploy_net"], best["lift"], -best["regression"]
+    )
+
 
 def run_l1_cycle(
     node: "TreeNode",
@@ -428,186 +652,230 @@ def run_l1_cycle(
     train_groups: "list[TaskRolloutGroup]",
     out_dir: str,
 ) -> "ProposalOutcome":
-    """Run the full L1 hypothesis-test-verify cycle.
+    """Diverse-iterate L1 search — a CANDIDATE GENERATOR, not a gatekeeper.
 
-    This is the v2 replacement for the old ``run_proposal``/``run_refine``.
-    The cycle iterates up to ``cfg.max_l1_iterations`` times through:
-      Step 1 → Step 2 → Step 3 → Step 4 → Step 5 (decision)
+    Against the node's baseline (``train_groups`` = its post-exploitation full-skill
+    rollout), it fixes a residual + regression test set ONCE, then each round:
+    produces a COGNITIVE strategy (Step 2), tests it with EMPTY rules K times
+    (Step 3), categorizes it OBJECTIVELY vs the baseline (lift/regression, no LLM),
+    and runs a category-specific contrastive diagnosis (Step 4) that steers the next
+    round. The cycle stays at STRATEGY altitude — tactical residual is left to L0.
 
-    On success, returns an outcome with ``new_node`` set.  On exhausting all
-    iterations, archives the last failed direction and returns failure.
+    Each round runs in one of two modes, decided objectively from the prior round:
+      - a strategy that was EFFECTIVE (lift>0) is banked and the next round explores
+        a NEW, mechanism-different philosophy (diverse exploration);
+      - a strategy that cracked nothing (lift==0) is REFINED once (same idea, better
+        operationalization) if the diagnosis judges its core sound, else abandoned
+        for a new philosophy.
+
+    It stops when it has collected ``l1_target_effective`` (default 3) effective
+    strategies OR exhausts ``max_l1_iterations``, then returns the best effective one
+    (by ``net_lift``) for the tree to judge on val/test. If nothing cracked any
+    residual task, the last direction is archived.
     """
     cycle_dir = os.path.join(out_dir, node.node_id, "l1_cycle")
     os.makedirs(cycle_dir, exist_ok=True)
 
     max_iters = cfg.max_l1_iterations
-    iteration_ctx = _IterationContext(iteration_round=1)
     max_workers = getattr(cfg, "max_api_workers", 32)
+    iteration_ctx = _IterationContext(iteration_round=1)
 
-    # The Step-1 failure-trajectory analysis (1b) consumes the node's failed
-    # rollouts; the diagnostic/regression subsets are derived inside Step 3.
+    # ── Fixed test set + baseline map (computed ONCE; identical every round) ──
+    residual_items, regression_items, baseline_map = _select_l1_test_set(env, train_groups, cfg)
+    test_items = residual_items + regression_items
+    n_residual = len(residual_items)
+    residual_ids = [tid for tid, g in baseline_map.items() if g.is_persistent_fail()]
+    regression_ids = [tid for tid, g in baseline_map.items() if not g.is_persistent_fail()]
+    _save_json(os.path.join(cycle_dir, "test_set.json"), {
+        "operation": operation, "n_residual": n_residual,
+        "n_regression": len(regression_items),
+        "residual_task_ids": residual_ids, "regression_task_ids": regression_ids,
+    })
+    _log.info("L1 cycle for node %s: %d residual + %d regression tasks (baseline-derived)",
+              node.node_id, n_residual, len(regression_items))
+
+    if not test_items:
+        _save_json(os.path.join(cycle_dir, "final_outcome.json"),
+                   {"success": False, "operation": operation, "reason": "empty_test_set"})
+        return ProposalOutcome(
+            success=False, operation=operation,
+            reason="empty_test_set: no residual/regression tasks resolvable from train_groups",
+            n_iterations=0,
+        )
+
+    # ── One-time Step-1 grounding (1a/1b/1c cached + 1d directions) ──────────
+    # The node's post-exploitation state is fixed, so this is computed ONCE and
+    # fed to every round's Step 2 as the starting point; the LEDGER then steers.
     fail_results = [r for g in train_groups for r in g.rollouts if not getattr(r, "passed", False)]
+    grounding_dir = os.path.join(cycle_dir, "grounding")
+    analyses_1abc = _run_step1_analyses(
+        optimizer_client, node, train_groups, fail_results, cfg=cfg,
+        max_workers=max_workers, round_dir=grounding_dir,
+    )
+    grounding = _run_step1d(
+        optimizer_client, analyses_1abc, _IterationContext(), round_dir=grounding_dir,
+    )
 
     last_strategy = ""
+    best: dict | None = None  # best EFFECTIVE candidate {strategy_text, iteration, lift, regression, net_lift}
+    n_effective = 0           # number of rounds with lift>0 (effective strategies collected)
+    target_effective = int(getattr(cfg, "l1_target_effective", 3))
+    next_mode = "new"         # generation mode for the upcoming round (round 1 = NEW)
+    refine_target = ""        # strategy text to refine when next_mode == "refine"
 
     for iteration in range(1, max_iters + 1):
         round_dir = os.path.join(cycle_dir, f"round_{iteration:04d}")
         os.makedirs(round_dir, exist_ok=True)
-        _log.info("L1 cycle iteration %d/%d for node %s", iteration, max_iters, node.node_id)
+        mode = next_mode
+        _log.info("L1 round %d/%d (node %s) [mode=%s]", iteration, max_iters, node.node_id, mode)
 
-        restart_from = "step1"
-        if iteration > 1:
-            last_attempt = iteration_ctx.previous_attempts[-1] if iteration_ctx.previous_attempts else None
-            if last_attempt and last_attempt.diagnosis == "hypothesis_failure":
-                restart_from = "step1"
-            else:
-                restart_from = "step2"
-
-        # ── Step 1: Multi-dimensional analysis ──────────────────────────
-        if restart_from == "step1":
-            hypothesis = _run_step1(
-                optimizer_client, node, train_groups, fail_results, cfg=cfg,
-                max_workers=max_workers, round_dir=round_dir,
-            )
-        # else: reuse last hypothesis (unchanged since we're only revising strategy)
-
-        # ── Step 2: Strategy proposal + predictions ─────────────────────
-        step2_result = _run_step2(
-            optimizer_client, node, hypothesis, iteration_ctx, cfg=cfg,
-            round_dir=round_dir,
-        )
-        # A Step-2 failure (no parseable proposal or empty strategy) still records
-        # an attempt so the restart logic sees a non-empty history and the next
-        # Step 2 receives feedback that its prior output was unusable — otherwise
-        # the loop silently freezes the stale hypothesis and reproduces the failure.
-        def _record_step2_failure(detail: str) -> None:
-            iteration_ctx.previous_attempts.append(_PreviousAttempt(
-                round=iteration,
-                strategy_summary="(Step 2 produced no usable strategy proposal)",
-                diagnosis="step2_failure",
-                adherence_results=[],
-                improvement_results=[],
-                judge_diagnosis=detail,
-                judge_suggestion=(
-                    "Emit a single valid JSON object with all required fields "
-                    "(strategy_text, adherence_criteria, improvement_expectations); "
-                    "no prose, no markdown fences."
-                ),
-            ))
+        # ── Step 2: produce a cognitive strategy (NEW philosophy or REFINE) ──
+        step2 = _run_step2(optimizer_client, node, grounding, iteration_ctx,
+                           cfg=cfg, round_dir=round_dir,
+                           mode=mode, refine_target=refine_target)
+        if not step2 or not (step2.get("strategy_text") or "").strip():
+            note = "Step 2 produced no usable strategy proposal (empty or unparseable)."
+            _save_json(os.path.join(round_dir, "step2", "error.json"), {"error": note})
+            iteration_ctx.previous_attempts.append(
+                _PreviousAttempt(round=iteration, failure_note=note, was_refine=(mode == "refine")))
             iteration_ctx.iteration_round = iteration + 1
-
-        if not step2_result:
-            _save_json(os.path.join(round_dir, "step2", "error.json"),
-                       {"error": "Step 2 produced no usable output"})
-            _record_step2_failure("Step 2 output was missing or unparseable JSON.")
+            next_mode, refine_target = "new", ""  # never refine a missing strategy
             continue
 
-        # ``or ""`` guards against ``strategy_text: null`` (key present, value None).
-        strategy_text = step2_result.get("strategy_text") or ""
-        if not strategy_text.strip():
-            _record_step2_failure("Step 2 proposal had an empty strategy_text.")
-            continue
-
+        strategy_text = step2["strategy_text"]
         last_strategy = strategy_text
 
-        # ── Step 3: Focused testing ─────────────────────────────────────
-        test_results = _run_step3(
-            env, target_client, strategy_text, train_groups,
+        # ── Step 3: test candidate (strategy, EMPTY rules) K times ──────────
+        candidate_groups = _run_step3(
+            env, target_client, strategy_text, test_items,
             cfg=cfg, round_dir=round_dir, epoch=epoch, node_id=node.node_id,
         )
 
-        # ── Step 4: Two-layer verification ──────────────────────────────
-        diagnosis = _run_step4(
-            optimizer_client, step2_result, test_results,
-            cfg=cfg, max_workers=max_workers, round_dir=round_dir,
-        )
-
-        # ── Step 5: Iteration control ──────────────────────────────────
-        # ``or {}`` guards both a missing key and ``overall_diagnosis: null``.
-        overall = diagnosis.get("overall_diagnosis") or {}
-        if not isinstance(overall, dict):
-            overall = {}
-        strategy_effective = _coerce_bool(overall.get("strategy_effective", False))
-        primary_issue = overall.get("primary_issue", "none")
-
-        _save_json(os.path.join(round_dir, "step5_decision.json"), {
-            "strategy_effective": strategy_effective,
-            "primary_issue": primary_issue,
-            "iteration": iteration,
+        # ── Objective categorization vs baseline (pass@K, NO LLM) ───────────
+        cats = _categorize(candidate_groups, baseline_map)
+        _save_json(os.path.join(round_dir, "categorization.json"), {
+            k: cats[k] for k in (
+                "cracked", "still_failed", "regressed", "maintained",
+                "lift", "regression", "net_lift", "n_residual", "n_regression")
         })
 
-        if strategy_effective:
-            rules = "" if operation == "PROPOSAL" else _inherit_rules_for_refine(
-                optimizer_client, strategy_text, node.rules, cfg=cfg
-            )
-            new_node = _build_node(
-                node,
-                new_node_id=new_node_id,
-                branch_type=operation,
-                strategy=strategy_text,
-                rules=rules,
-                refine_count=(node.refine_count + 1 if operation == "REFINE"
-                              else node.refine_count),
-                epoch=epoch,
-            )
-            _save_json(os.path.join(cycle_dir, "final_outcome.json"), {
-                "success": True,
-                "operation": operation,
-                "n_iterations": iteration,
-                "new_node_id": new_node.node_id,
-            })
-            return ProposalOutcome(
-                success=True,
-                operation=operation,
-                new_node=new_node,
-                reason=f"strategy_verified: iteration {iteration}",
-                n_iterations=iteration,
-            )
-
-        # Build iteration feedback for the next round.
-        attempt = _PreviousAttempt(
-            round=iteration,
-            strategy_summary=strategy_text[:500],
-            diagnosis=primary_issue,
-            adherence_results=diagnosis.get("adherence_verdicts", []),
-            improvement_results=diagnosis.get("improvement_verdicts", []),
-            judge_diagnosis=overall.get("diagnosis_detail", ""),
-            judge_suggestion=overall.get("iteration_suggestion", ""),
+        # ── Step 4: category-specific contrastive diagnosis (steers next) ───
+        # Also yields the OBJECTIVE harm_reg / deploy_net (= lift - harm_reg, the
+        # post-exploitation net lower bound) used for keep-best tie-breaking.
+        diagnosis = _diagnose_round(
+            optimizer_client, strategy_text, cats, candidate_groups, baseline_map,
+            cfg=cfg, max_workers=max_workers, round_dir=round_dir,
         )
-        iteration_ctx.previous_attempts.append(attempt)
+        harm_reg = int((diagnosis or {}).get("harm_reg", 0) or 0)
+        deploy_net = int((diagnosis or {}).get("deploy_net", cats["lift"] - harm_reg))
+
+        # ── Keep-best — only EFFECTIVE candidates (lift>0 AND net_lift>=0) ──
+        # net_lift>=0 (on the handicapped test) is a guaranteed deploy-improvement.
+        # Among equal net_lift, deploy_net (lift - harm_reg) breaks the tie.
+        effective = cats["lift"] > 0 and cats["net_lift"] >= 0
+        if effective:
+            n_effective += 1
+            cand = {
+                "strategy_text": strategy_text, "iteration": iteration,
+                "lift": cats["lift"], "regression": cats["regression"],
+                "net_lift": cats["net_lift"], "harm_reg": harm_reg, "deploy_net": deploy_net,
+            }
+            if _is_better_candidate(cand, best):
+                best = cand
+        _log.info("L1 round %d [mode=%s]: lift +%d / regression -%d (harm %d) / net %+d / "
+                  "deploy_net %+d -> %s (effective so far: %d/%d)",
+                  iteration, mode, cats["lift"], cats["regression"], harm_reg,
+                  cats["net_lift"], deploy_net,
+                  "EFFECTIVE" if effective else "ineffective", n_effective, target_effective)
+
+        # ── Append this round to the cross-round ledger ─────────────────────
+        iteration_ctx.previous_attempts.append(_PreviousAttempt(
+            round=iteration,
+            philosophy=str(step2.get("philosophy", "") or ""),
+            mechanism_difference=str(step2.get("mechanism_difference", "") or ""),
+            strategy_name=_strategy_name(strategy_text),
+            strategy_summary=strategy_text[:500],
+            design_reasoning=str(step2.get("design_reasoning", "") or ""),
+            was_refine=(mode == "refine"),
+            lift=cats["lift"], regression=cats["regression"], net_lift=cats["net_lift"],
+            n_residual=cats["n_residual"], n_regression=cats["n_regression"],
+            cracked_task_ids=list(cats["cracked"]),
+            regressed_task_ids=list(cats["regressed"]),
+            still_failed_task_ids=list(cats["still_failed"]),
+            diagnosis=diagnosis,
+        ))
         iteration_ctx.iteration_round = iteration + 1
+        _save_json(os.path.join(round_dir, "iteration_context.json"), iteration_ctx.to_dict())
 
-        _save_json(os.path.join(round_dir, "iteration_context.json"),
-                   iteration_ctx.to_dict())
+        # ── Exit: collected enough effective strategies to choose from ──────
+        if n_effective >= target_effective:
+            _log.info("L1: collected %d effective strategies — stopping (will pick best)", n_effective)
+            break
 
-        _log.info("L1 iteration %d: %s — %s", iteration, primary_issue,
-                  overall.get("diagnosis_detail", "")[:200])
+        # ── Decide the NEXT round's generation mode ─────────────────────────
+        #   effective (lift>0)               -> NEW  (bank it; explore a different frame)
+        #   ineffective AND already a refine  -> NEW  (one refine per idea — abandon)
+        #   ineffective, first attempt        -> diagnosis next_action (refine_current|propose_new)
+        if effective or mode == "refine":
+            next_mode, refine_target = "new", ""
+        else:
+            na = str((diagnosis or {}).get("next_action", "") or "").strip().lower()
+            if na == "refine_current":
+                next_mode, refine_target = "refine", strategy_text
+            else:
+                next_mode, refine_target = "new", ""
 
-    # All iterations exhausted — archive the last failed direction.
+    n_done = iteration_ctx.iteration_round - 1
+
+    # ── Decide: best EFFECTIVE candidate -> tree node; else archive ─────────
+    if best is not None:
+        best_strat = best["strategy_text"]
+        # PROPOSAL deploys with a fresh tactical slate (empty rules); L0 exploitation
+        # then rebuilds rules tailored to the new strategy. (REFINE — which inherited
+        # the parent's rules — has been unified into PROPOSAL.)
+        new_node = _build_node(
+            node, new_node_id=new_node_id, branch_type=operation,
+            strategy=best_strat, rules="",
+            refine_count=node.refine_count, epoch=epoch,
+        )
+        _save_json(os.path.join(cycle_dir, "final_outcome.json"), {
+            "success": True, "operation": operation, "new_node_id": new_node.node_id,
+            "selected_round": best["iteration"], "lift": best["lift"],
+            "regression": best["regression"], "net_lift": best["net_lift"],
+            "harm_reg": best["harm_reg"], "deploy_net": best["deploy_net"],
+            "n_effective": n_effective, "n_iterations": n_done,
+        })
+        _log.info("L1 cycle SUCCESS: %d effective strategies found; best = round %d "
+                  "(lift +%d, regression -%d, net %+d, deploy_net %+d) -> node %s; "
+                  "tree val/test is the final judge",
+                  n_effective, best["iteration"], best["lift"], best["regression"],
+                  best["net_lift"], best["deploy_net"], new_node.node_id)
+        return ProposalOutcome(
+            success=True, operation=operation, new_node=new_node,
+            reason=(f"best_of_{n_effective}_effective: round {best['iteration']} "
+                    f"lift={best['lift']} net={best['net_lift']} deploy_net={best['deploy_net']}"),
+            n_iterations=n_done,
+        )
+
+    # No EFFECTIVE candidate (lift>0 AND net_lift>=0) across all rounds — archive.
+    last_diag = ((iteration_ctx.previous_attempts[-1].diagnosis or {})
+                 if iteration_ctx.previous_attempts else {})
     archived = _archive_failed_cycle(
-        archive,
-        strategy_snapshot=last_strategy,
-        origin=f"{operation.lower()}_l1_exhausted",
-        diagnosis_summary=(
-            iteration_ctx.previous_attempts[-1].judge_diagnosis
-            if iteration_ctx.previous_attempts else "no diagnosis"
-        ),
-        epoch=epoch,
-        source_node_id=node.node_id,
-        n_iterations=max_iters,
+        archive, strategy_snapshot=last_strategy,
+        origin=f"{operation.lower()}_l1_no_effective",
+        diagnosis_summary=(last_diag.get("residual_characterization", "") or "no effective strategy"),
+        epoch=epoch, source_node_id=node.node_id, n_iterations=n_done,
     )
     _save_json(os.path.join(cycle_dir, "final_outcome.json"), {
-        "success": False,
-        "operation": operation,
-        "n_iterations": max_iters,
-        "reason": "max_iterations_exhausted",
+        "success": False, "operation": operation, "n_iterations": n_done,
+        "reason": "no_effective_strategy (none reached lift>0 AND net_lift>=0)",
     })
+    _log.info("L1 cycle FAILED: no effective strategy (lift>0 AND net_lift>=0) in %d rounds — archived",
+              n_done)
     return ProposalOutcome(
-        success=False,
-        operation=operation,
-        archived=archived,
-        reason=f"max_iterations_exhausted: {max_iters} rounds without verification pass",
-        n_iterations=max_iters,
+        success=False, operation=operation, archived=archived,
+        reason=f"no_effective: {n_done} rounds, none reached lift>0 AND net_lift>=0",
+        n_iterations=n_done,
     )
 
 
@@ -615,7 +883,7 @@ def run_l1_cycle(
 # Step implementations
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _run_step1(
+def _run_step1_analyses(
     client: "LLMClient",
     node: "TreeNode",
     train_groups: "list[TaskRolloutGroup]",
@@ -625,9 +893,14 @@ def _run_step1(
     max_workers: int,
     round_dir: str,
 ) -> dict:
-    """Step 1: 1a/1b/1c parallel → 1d synthesis."""
-    from css.trajectory import format_trajectory
+    """Step 1 (1a/1b/1c) — the FIXED multi-dimensional analysis of the node's
+    post-exploitation state.
 
+    Its inputs (``node``, ``train_groups``, ``fail_results``) do NOT change during
+    the L1 cycle, so the three analyses produce the same result every round.
+    Therefore this is computed ONCE per cycle and cached; only the 1d synthesis
+    re-runs per hypothesis (folding in the growing ledger).
+    """
     step_dir = os.path.join(round_dir, "step1")
     os.makedirs(step_dir, exist_ok=True)
 
@@ -664,9 +937,26 @@ def _run_step1(
     for key, data in results_1abc.items():
         _save_json(os.path.join(step_dir, f"1{key}_analysis.json"), data)
 
-    # 1d: Hypothesis synthesis
-    hypothesis = _step1d(client, results_1abc)
-    _save_json(os.path.join(step_dir, "1d_hypothesis.json"), hypothesis)
+    return results_1abc
+
+
+def _run_step1d(
+    client: "LLMClient",
+    analyses_1abc: dict,
+    iteration_ctx: "_IterationContext",
+    *,
+    round_dir: str,
+) -> dict:
+    """Step 1d — synthesize the NEXT hypothesis from the (cached) fixed analyses
+    1a/1b/1c PLUS the cross-round ledger.
+
+    Re-run every time a fresh hypothesis is needed (round 1, or after a
+    ``hypothesis_failure``). Folding in the ledger is what lets a re-synthesis
+    build on what prior rounds tried — ruling out spent directions instead of
+    re-deriving the same one from the (unchanged) fixed analyses.
+    """
+    hypothesis = _step1d(client, analyses_1abc, iteration_ctx)
+    _save_json(os.path.join(round_dir, "step1", "1d_hypothesis.json"), hypothesis)
     return hypothesis
 
 
@@ -766,15 +1056,22 @@ def _step1c(client: "LLMClient", node: "TreeNode",
     return result if result is not None else {"raw_analysis": text}
 
 
-def _step1d(client: "LLMClient", analyses: dict) -> dict:
-    """1d — hypothesis synthesis from 1a/1b/1c."""
-    user_parts = []
+def _step1d(client: "LLMClient", analyses: dict,
+            iteration_ctx: "_IterationContext") -> dict:
+    """1d — synthesize the next hypothesis from the fixed analyses 1a/1b/1c PLUS
+    the cross-round ledger (so it builds on prior rounds, not re-derives)."""
+    user_parts = ["# A. FIXED ANALYSIS of the node's post-exploitation state"]
     if "1a" in analyses:
         user_parts.append("## 1. L0 Ceiling Analysis\n" + json.dumps(analyses["1a"], indent=2, ensure_ascii=False))
     if "1b" in analyses:
         user_parts.append("## 2. Trajectory Analysis\n" + json.dumps(analyses["1b"], indent=2, ensure_ascii=False))
     if "1c" in analyses:
         user_parts.append("## 3. Contrastive Limitation Analysis\n" + json.dumps(analyses["1c"], indent=2, ensure_ascii=False))
+
+    user_parts.append(
+        "# B. CYCLE LEDGER — what prior rounds of THIS cycle already tried "
+        "(authoritative on what is ruled out)\n" + iteration_ctx.render_ledger()
+    )
 
     user = "\n\n".join(user_parts)
     text = _safe_optimizer_call(client, _STEP1D_SYSTEM, user, max_tokens=4096)
@@ -789,26 +1086,61 @@ def _step1d(client: "LLMClient", analyses: dict) -> dict:
 def _run_step2(
     client: "LLMClient",
     node: "TreeNode",
-    hypothesis: dict,
+    grounding: dict,
     iteration_ctx: _IterationContext,
     *,
     cfg: "CSSConfig",
     round_dir: str,
+    mode: str = "new",
+    refine_target: str = "",
 ) -> dict | None:
-    """Step 2: Strategy proposal + behavioral predictions."""
+    """Step 2: produce a cognitive strategy in one of two modes.
+
+    ``mode="new"`` — propose a genuinely different cognitive mechanism (diverse
+    exploration). ``mode="refine"`` — improve ``refine_target`` (the prior round's
+    strategy that cracked nothing) keeping its core idea but fixing how it is
+    operationalized. ``grounding`` is the one-time Step-1 analysis; from round 2
+    the LEDGER is the authoritative steer (see :meth:`render_ledger`).
+    """
     step_dir = os.path.join(round_dir, "step2")
     os.makedirs(step_dir, exist_ok=True)
 
+    if mode == "refine":
+        mode_header = (
+            "## MODE = REFINE\n"
+            "The strategy below was tested and cracked NOTHING (lift 0), but its core "
+            "cognitive idea is judged sound. KEEP its core philosophy; improve its "
+            "OPERATIONALIZATION (per the latest diagnosis) so the agent actually follows "
+            "and benefits from it. Do NOT switch ideas; do NOT add tactical rules.\n\n"
+            "### Strategy to refine (the prior round's strategy)\n" + (refine_target or "(missing)")
+        )
+    else:
+        mode_header = (
+            "## MODE = NEW\n"
+            "Propose a strategy on a GENUINELY DIFFERENT cognitive mechanism from every "
+            "philosophy in the ledger (diverse exploration). Preserve the active ingredient, "
+            "avoid the harm, and pursue a different cognitive leverage point. Leave tactical "
+            "residual to L0."
+        )
+
     user_parts = [
-        "## Step 1d Hypothesis\n" + json.dumps(hypothesis, indent=2, ensure_ascii=False),
-        "## Current strategy.md (reference)\n" + (node.strategy or "(empty)").strip(),
-        "## Current rules.md (reference)\n" + (node.rules or "(empty)").strip()[:2000],
+        mode_header,
+        "## One-time grounding analysis (why L0 stalled + failure patterns + initial directions)\n"
+        + json.dumps(grounding, indent=2, ensure_ascii=False),
+        "## Current strategy.md of the node being branched (reference baseline)\n"
+        + (node.strategy or "(empty)").strip(),
     ]
 
     if iteration_ctx.previous_attempts:
         user_parts.append(
-            "## Iteration Context (CRITICAL — previous attempts and their diagnoses)\n"
-            + json.dumps(iteration_ctx.to_dict(), indent=2, ensure_ascii=False)
+            "## CYCLE LEDGER — every prior philosophy this cycle tried, its objective "
+            "lift/regression, and its diagnosis (active ingredient to PRESERVE, harm to "
+            "AVOID, residual; next_action). This is your authoritative steer.\n"
+            + iteration_ctx.render_ledger()
+        )
+    else:
+        user_parts.append(
+            "## CYCLE LEDGER\n(empty — this is the first philosophy; ground it in the analysis above)"
         )
 
     user = "\n\n".join(user_parts)
@@ -829,15 +1161,24 @@ def _run_step3(
     env,
     target_client: "LLMClient",
     strategy_text: str,
-    train_groups: "list[TaskRolloutGroup]",
+    test_items: "list[dict]",
     *,
     cfg: "CSSConfig",
     round_dir: str,
     epoch: int,
     node_id: str,
-) -> "list[TaskResult]":
-    """Step 3: Focused testing — rollout new strategy with empty rules."""
+) -> "list[TaskRolloutGroup]":
+    """Step 3: test the candidate — the NEW strategy with EMPTY rules — K times
+    on the FIXED residual + regression task set.
+
+    Empty rules is deliberate (see module docstring): it handicaps the candidate
+    so that any *crack* is a conservative signal that survives once L0 restores
+    rules. ``k_rollouts = cfg.k_rollouts`` gives the same pass@K resolution as the
+    baseline, so categorization is symmetric. Returns the candidate's rollouts
+    grouped by task (ready for :func:`_categorize`).
+    """
     from css.rollout.batch import batch_rollout
+    from css.data.rollout import group_rollouts
     from css.skill_document import SkillDocument
 
     step_dir = os.path.join(round_dir, "step3", "rollout")
@@ -846,116 +1187,183 @@ def _run_step3(
     candidate_doc = SkillDocument(skill_dir="", strategy=strategy_text, rules="")
     skill_text = candidate_doc.combined_skill_text()
 
-    diagnostic_items = _select_diagnostic_tasks(env, train_groups, cfg)
-
     results = batch_rollout(
         env,
-        diagnostic_items,
+        test_items,
         skill_text,
         target_client,
-        k_rollouts=1,
+        k_rollouts=cfg.k_rollouts,
         out_dir=step_dir,
         max_workers=cfg.max_api_workers,
         task_timeout=cfg.task_timeout_s,
         epoch=epoch,
         node_id=node_id,
     )
-    _log.info("Step 3: tested %d tasks, %d passed",
-              len(results), sum(1 for r in results if r.passed))
-    return results
+    groups = group_rollouts(results)
+    _log.info("Step 3: tested %d tasks x %d rollouts (%d task-passes)",
+              len(groups), cfg.k_rollouts,
+              sum(1 for g in groups if not g.is_persistent_fail()))
+    return groups
 
 
-def _run_step4(
+def _analyze_one(client: "LLMClient", system: str, user: str, *,
+                 task_id: str, label: str) -> dict:
+    """One Layer-1 per-task analysis call (parse + context-aware LLM repair).
+
+    Best-effort: returns ``{"raw": ...}`` on unrecoverable parse failure rather
+    than raising, so one bad analysis never sinks the whole diagnosis.
+    """
+    text = _safe_optimizer_call(client, system, user, max_tokens=4096)
+    res = _parse_json_safe(text, None)
+    if res is None:
+        repaired = repair_json_via_llm(client, system, user, text, stage=label)
+        if repaired is not None:
+            res = _parse_json_safe(repaired, None)
+    res = res if isinstance(res, dict) else {"raw": text}
+    res["task_id"] = str(task_id)
+    return res
+
+
+def _diagnose_round(
     client: "LLMClient",
-    proposal: dict,
-    test_results: "list[TaskResult]",
+    strategy_text: str,
+    categories: dict,
+    candidate_groups: "list[TaskRolloutGroup]",
+    baseline_map: "dict[str, TaskRolloutGroup]",
     *,
     cfg: "CSSConfig",
     max_workers: int,
     round_dir: str,
 ) -> dict:
-    """Step 4: two-layer verification."""
+    """Step 4: category-specific contrastive diagnosis (two layers).
+
+    Layer 1 (parallel, ONE task in depth each — never all trajectories at once):
+      - cracked     -> contrast (candidate SUCCESS × baseline FAILURE) -> active_ingredient
+      - regressed   -> contrast (baseline SUCCESS × candidate FAILURE) -> handicap|harm
+      - still_failed -> candidate FAILURE alone (no contrast) -> residual nature
+    Layer 2 synthesizes the per-task analyses into the round diagnosis
+    ``{active_ingredient, harm, residual_characterization, residual_nature,
+    next_direction_hint}`` that steers the next philosophy.
+
+    Selection is already done OBJECTIVELY (``categories``); this is purely to
+    enrich the feedback signal. Best-effort: a degraded call never blocks the cycle.
+    """
     from css.trajectory import format_trajectory
 
     step_dir = os.path.join(round_dir, "step4")
-    per_traj_dir = os.path.join(step_dir, "per_trajectory")
-    os.makedirs(per_traj_dir, exist_ok=True)
+    per_dir = os.path.join(step_dir, "per_task")
+    os.makedirs(per_dir, exist_ok=True)
 
-    adherence_criteria = proposal.get("adherence_criteria", [])
-    improvement_expectations = proposal.get("improvement_expectations", [])
-    criteria_text = json.dumps(adherence_criteria, indent=2, ensure_ascii=False)
-    expectations_text = json.dumps(improvement_expectations, indent=2, ensure_ascii=False)
+    cand_by_id = {str(g.task_id): g for g in candidate_groups}
+    per_cat = int(getattr(cfg, "l1_diagnosis_per_category", 5))
+    tt = cfg.tool_trunc
+    strat = (strategy_text or "")[:2500]
 
-    # Layer 1: per-trajectory Judge (parallel)
-    per_traj_verdicts = []
+    def _traj(r) -> str:
+        # System prompt = the strategy, already shown once at the top; drop it.
+        return format_trajectory(r.messages, tool_trunc=tt, include_system=False)
 
-    def _judge_one(result: "TaskResult") -> dict:
-        traj_text = format_trajectory(result.messages, tool_trunc=cfg.tool_trunc)
-        user = (
-            f"## Strategy adherence criteria\n{criteria_text}\n\n"
-            f"## Improvement expectations\n{expectations_text}\n\n"
-            f"## Trajectory (task {result.task_id}, outcome: "
-            f"{'PASS' if result.passed else 'FAIL'})\n\n{traj_text}"
-        )
-        text = _safe_optimizer_call(
-            client, _STEP4_PER_TRAJ_SYSTEM, user, max_tokens=4096
-        )
-        verdict = _parse_json_safe(text, None)
-        if verdict is None:
-            repaired = repair_json_via_llm(
-                client, _STEP4_PER_TRAJ_SYSTEM, user, text, stage="step4_judge"
-            )
-            if repaired is not None:
-                verdict = _parse_json_safe(repaired, None)
-        if verdict is None:
-            verdict = {"task_id": result.task_id, "raw": text}
-        verdict["task_id"] = str(result.task_id)
-        verdict["outcome"] = "pass" if result.passed else "fail"
-        return verdict
+    # ── Build Layer-1 jobs: one task each, the right trajectories per category ──
+    jobs: list[tuple] = []  # (category, system_prompt, user_prompt, task_id, label)
+    for tid in categories.get("cracked", [])[:per_cat]:
+        cg, bg = cand_by_id.get(tid), baseline_map.get(tid)
+        succ = cg.successes[0] if cg and cg.successes else None
+        fail = bg.failures[0] if bg and bg.failures else None
+        if succ and fail:
+            user = "\n\n".join([
+                f"## Strategy under test\n{strat}",
+                f"## CANDIDATE trajectory (new strategy, NO rules) — SUCCEEDED (task {tid})\n{_traj(succ)}",
+                f"## BASELINE trajectory (prior strategy + full rules) — FAILED (task {tid})\n{_traj(fail)}",
+            ])
+            jobs.append(("cracked", _CRACKED_ANALYZER_SYSTEM, user, tid, "diag_cracked"))
+    # Classify ALL regressed tasks (not just a sample): the handicap-vs-harm split
+    # feeds the OBJECTIVE harm_reg count, which drives deploy_net (= lift - harm_reg,
+    # the post-exploitation net lower bound) used for keep-best tie-breaking.
+    for tid in categories.get("regressed", []):
+        cg, bg = cand_by_id.get(tid), baseline_map.get(tid)
+        succ = bg.successes[0] if bg and bg.successes else None
+        fail = cg.failures[0] if cg and cg.failures else None
+        if succ and fail:
+            user = "\n\n".join([
+                f"## Strategy under test\n{strat}",
+                f"## BASELINE trajectory (prior strategy + full rules) — SUCCEEDED (task {tid})\n{_traj(succ)}",
+                f"## CANDIDATE trajectory (new strategy, NO rules) — FAILED (task {tid})\n{_traj(fail)}",
+            ])
+            jobs.append(("regressed", _REGRESSED_ANALYZER_SYSTEM, user, tid, "diag_regressed"))
+    for tid in categories.get("still_failed", [])[:per_cat]:
+        cg = cand_by_id.get(tid)
+        fail = cg.failures[0] if cg and cg.failures else None
+        if fail:
+            user = "\n\n".join([
+                f"## Strategy under test\n{strat}",
+                f"## CANDIDATE trajectory (new strategy, NO rules) — FAILED (task {tid})\n{_traj(fail)}",
+            ])
+            jobs.append(("still_failed", _STILLFAILED_ANALYZER_SYSTEM, user, tid, "diag_still"))
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_judge_one, r): r for r in test_results}
-        for fut in as_completed(futures):
-            try:
-                verdict = fut.result()
-                per_traj_verdicts.append(verdict)
+    # ── Run Layer 1 in parallel ──────────────────────────────────────────
+    layer1: dict[str, list] = {"cracked": [], "regressed": [], "still_failed": []}
+    if jobs:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futs = {
+                pool.submit(_analyze_one, client, sysp, usr, task_id=tid, label=label): cat
+                for (cat, sysp, usr, tid, label) in jobs
+            }
+            for fut in as_completed(futs):
+                cat = futs[fut]
+                try:
+                    res = fut.result()
+                except Exception as exc:  # noqa: BLE001 — degrade, never block the cycle
+                    _log.warning("Layer-1 %s analyzer failed: %s", cat, exc)
+                    continue
+                layer1[cat].append(res)
                 _save_json(
-                    os.path.join(per_traj_dir, f"task_{verdict.get('task_id', 'unknown')}.json"),
-                    verdict
+                    os.path.join(per_dir, f"{cat}_task_{res.get('task_id', 'x')}.json"), res
                 )
-            except Exception as exc:
-                _log.warning("Per-trajectory judge failed: %s", exc)
 
-    # Layer 2: aggregate diagnosis
-    aggregate_user_parts = [
-        "## Strategy proposal\n" + json.dumps({
-            "strategy_text": (proposal.get("strategy_text") or "")[:2000],
-            "adherence_criteria": adherence_criteria,
-            "improvement_expectations": improvement_expectations,
-        }, indent=2, ensure_ascii=False),
-        "## Per-trajectory verdicts\n" + json.dumps(per_traj_verdicts, indent=2, ensure_ascii=False),
-    ]
-    aggregate_user = "\n\n".join(aggregate_user_parts)
-    agg_text = _safe_optimizer_call(
-        client, _STEP4_AGGREGATE_SYSTEM, aggregate_user, max_tokens=4096
-    )
-    diagnosis = _parse_json_safe(agg_text, None)
+    # ── Objective harm count (from the per-task regressed classifications) ──
+    # harm_reg = regressed tasks the strategy GENUINELY broke (cognitive misdirection
+    # that persists at deploy), as opposed to handicap (missing rule; recovers once L0
+    # restores rules). deploy_net = lift - harm_reg is the post-exploitation net lower
+    # bound; the cycle uses it to tie-break keep-best among equal-net_lift candidates.
+    lift_n = int(categories.get("lift", 0) or 0)
+    n_regressed = len(categories.get("regressed", []))
+    harm_reg = sum(1 for x in layer1["regressed"]
+                   if str(x.get("failure_cause", "")).strip().lower() == "harm")
+    deploy_net = lift_n - harm_reg
+
+    # ── Layer 2: synthesize the per-task analyses into the round diagnosis ──
+    agg_user = "\n\n".join([
+        "## Objective counts\n" + json.dumps({
+            "lift": categories.get("lift", 0),
+            "regression": categories.get("regression", 0),
+            "net_lift": categories.get("net_lift", 0),
+            "harm_regressions": harm_reg,
+            "handicap_regressions": n_regressed - harm_reg,
+            "deploy_net_lower_bound": deploy_net,
+            "n_residual": categories.get("n_residual", 0),
+            "n_still_failed": len(categories.get("still_failed", [])),
+        }, indent=2),
+        "## CRACKED per-task analyses (the active ingredient that worked)\n"
+        + json.dumps(layer1["cracked"], indent=2, ensure_ascii=False),
+        "## REGRESSED per-task analyses (each classified handicap vs harm)\n"
+        + json.dumps(layer1["regressed"], indent=2, ensure_ascii=False),
+        "## STILL-FAILED per-task analyses (residual nature)\n"
+        + json.dumps(layer1["still_failed"], indent=2, ensure_ascii=False),
+    ])
+    text = _safe_optimizer_call(client, _DIAGNOSE_AGGREGATE_SYSTEM, agg_user, max_tokens=4096)
+    diagnosis = _parse_json_safe(text, None)
     if diagnosis is None:
         repaired = repair_json_via_llm(
-            client, _STEP4_AGGREGATE_SYSTEM, aggregate_user, agg_text, stage="step4_agg"
+            client, _DIAGNOSE_AGGREGATE_SYSTEM, agg_user, text, stage="diag_aggregate"
         )
         if repaired is not None:
             diagnosis = _parse_json_safe(repaired, None)
-    if diagnosis is None:
-        diagnosis = {
-            "overall_diagnosis": {
-                "strategy_effective": False,
-                "primary_issue": "hypothesis_failure",
-                "diagnosis_detail": "Failed to parse aggregate verdict",
-                "iteration_suggestion": "Retry with different approach",
-            }
-        }
-    _save_json(os.path.join(step_dir, "aggregated_verdict.json"), diagnosis)
+    diagnosis = diagnosis if isinstance(diagnosis, dict) else {}
+    # Objective counts (NOT LLM) attached for the loop's keep-best tie-break.
+    diagnosis["harm_reg"] = harm_reg
+    diagnosis["deploy_net"] = deploy_net
+    _save_json(os.path.join(step_dir, "diagnosis.json"),
+               {"layer1": layer1, "aggregate": diagnosis})
     return diagnosis
 
 
@@ -997,12 +1405,31 @@ def _select_representative_failures(
     return [r for _, r in scored[:k]]
 
 
-def _select_diagnostic_tasks(
+def _select_l1_test_set(
     env,
     train_groups: "list[TaskRolloutGroup]",
     cfg: "CSSConfig",
-) -> list[dict]:
-    """Select tasks for Step 3 focused testing."""
+) -> "tuple[list[dict], list[dict], dict[str, TaskRolloutGroup]]":
+    """Select the FIXED L1 test set + baseline map (computed ONCE per cycle).
+
+    The baseline is the node-being-branched's post-exploitation rollout
+    (``train_groups`` = its full skill: prior strategy + full rules). Against it:
+
+      residual  : up to ``cfg.l1_diagnostic_tasks`` tasks the baseline CANNOT
+                  solve (``is_persistent_fail`` = 0/K) — the only tasks a new
+                  strategy can *crack* (the lift set).
+      regression: up to ``cfg.l1_regression_tasks`` tasks the baseline solves
+                  robustly (K/K pass) — to detect strategy-induced *harm*.
+      baseline_map: task_id -> the baseline ``TaskRolloutGroup`` (rollouts +
+                  trajectories), for objective categorization and the per-task
+                  contrastive diagnosis.
+
+    All three are FIXED for the whole cycle so lift/regression are comparable
+    round-to-round (every candidate is tested on the identical task set).
+    ``baseline_map`` keys are exactly the resolvable tested tasks.
+
+    Returns ``(residual_items, regression_items, baseline_map)``.
+    """
     persistent_fail = [g for g in train_groups if g.is_persistent_fail()]
     # ``all([])`` is True, so guard against zero-rollout groups (all rollouts
     # errored/timed out) being mis-selected as fully-passing regression tasks.
@@ -1011,31 +1438,81 @@ def _select_diagnostic_tasks(
         if g.rollouts and all(r.passed for r in g.rollouts)
     ]
 
-    n_diag = cfg.l1_diagnostic_tasks
-    n_regress = cfg.l1_regression_tasks
-
     train_index = _train_item_index(env)
+    residual_items: list[dict] = []
+    regression_items: list[dict] = []
+    baseline_map: dict[str, "TaskRolloutGroup"] = {}
 
-    items = []
-    seen = set()
-
-    for g in persistent_fail[:n_diag]:
-        tid = str(g.task_id)
-        if tid in train_index and tid not in seen:
-            items.append(train_index[tid])
-            seen.add(tid)
-        if len(items) >= n_diag:
+    for g in persistent_fail:
+        if len(residual_items) >= cfg.l1_diagnostic_tasks:
             break
-
-    for g in passing[:n_regress]:
         tid = str(g.task_id)
-        if tid in train_index and tid not in seen:
-            items.append(train_index[tid])
-            seen.add(tid)
-        if len(items) >= n_diag + n_regress:
-            break
+        if tid in train_index and tid not in baseline_map:
+            residual_items.append(train_index[tid])
+            baseline_map[tid] = g
 
-    return items
+    for g in passing:
+        if len(regression_items) >= cfg.l1_regression_tasks:
+            break
+        tid = str(g.task_id)
+        if tid in train_index and tid not in baseline_map:
+            regression_items.append(train_index[tid])
+            baseline_map[tid] = g
+
+    return residual_items, regression_items, baseline_map
+
+
+def _categorize(
+    candidate_groups: "list[TaskRolloutGroup]",
+    baseline_map: "dict[str, TaskRolloutGroup]",
+) -> dict:
+    """Objectively categorize each tested task by candidate-vs-baseline pass@K.
+
+    Symmetric on ``is_persistent_fail`` (0/K) — no LLM, no ground truth:
+
+      cracked     : baseline fails (0/K), candidate passes (>=1/K)  -> +lift
+      still_failed: baseline fails,       candidate fails
+      regressed   : baseline passes,      candidate fails (0/K)      -> +regression
+      maintained  : baseline passes,      candidate passes
+
+    A candidate task with NO rollouts (all errored/timed out) is treated as a
+    fail — NOT as ``is_persistent_fail`` (which is False for an empty group).
+
+    Returns category task-id lists plus ``lift``/``regression``/``net_lift`` and
+    the residual/regression-set sizes.
+    """
+    cand_by_id = {str(g.task_id): g for g in candidate_groups}
+    cats: dict[str, list] = {
+        "cracked": [], "still_failed": [], "regressed": [], "maintained": [],
+    }
+    n_residual = 0
+    n_regression = 0
+    for tid, base_g in baseline_map.items():
+        base_fail = base_g.is_persistent_fail()
+        if base_fail:
+            n_residual += 1
+        else:
+            n_regression += 1
+        cand_g = cand_by_id.get(tid)
+        cand_fail = True if (cand_g is None or not cand_g.rollouts) else cand_g.is_persistent_fail()
+        if base_fail and not cand_fail:
+            cats["cracked"].append(tid)
+        elif base_fail and cand_fail:
+            cats["still_failed"].append(tid)
+        elif (not base_fail) and cand_fail:
+            cats["regressed"].append(tid)
+        else:
+            cats["maintained"].append(tid)
+    lift = len(cats["cracked"])
+    regression = len(cats["regressed"])
+    return {
+        **cats,
+        "lift": lift,
+        "regression": regression,
+        "net_lift": lift - regression,
+        "n_residual": n_residual,
+        "n_regression": n_regression,
+    }
 
 
 def _train_item_index(env) -> dict:
@@ -1050,29 +1527,6 @@ def _train_item_index(env) -> dict:
     except Exception:
         pass
     return index
-
-
-def _inherit_rules_for_refine(
-    client: "LLMClient",
-    new_strategy: str,
-    old_rules: str,
-    *,
-    cfg: "CSSConfig",
-) -> str:
-    """For REFINE: semantically inherit non-conflicting rules.
-
-    On any failure of the semantic-inheritance LLM call, degrade to KEEPING the
-    parent rules verbatim rather than dropping them — a REFINE node must never be
-    strictly worse than its parent on tactical guidance because of a transient
-    optimizer error.
-    """
-    if not old_rules or not old_rules.strip():
-        return ""
-    try:
-        from css.proposal.inheritance import proposal_inherit_rules
-        return proposal_inherit_rules(client, new_strategy, old_rules, cfg=cfg)
-    except Exception:
-        return old_rules
 
 
 def _build_node(
@@ -1154,18 +1608,15 @@ def _safe_optimizer_call(
         return ""
 
 
-def _coerce_bool(value: Any) -> bool:
-    """Coerce an LLM-supplied truthiness value to a real bool.
-
-    LLMs frequently emit the STRING ``"false"`` (which is truthy in Python) where
-    a JSON boolean was requested. Treat the common textual forms explicitly so a
-    rejected verdict is never read as acceptance.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ("true", "yes", "1")
-    return bool(value)
+def _strategy_name(strategy_text: str) -> str:
+    """The strategy's display name — its first heading/line — for the ledger."""
+    for line in (strategy_text or "").splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            return s.lstrip("#").strip()[:120]
+        if s:
+            return s[:120]
+    return ""
 
 
 def _parse_json_safe(text: str, fallback: Any) -> Any:
@@ -1251,14 +1702,12 @@ def run_refine(
     train_groups: "list[TaskRolloutGroup]" = None,
     out_dir: str = "",
 ) -> "ProposalOutcome":
-    """Backward-compatible wrapper — delegates to run_l1_cycle."""
-    if env is not None and target_client is not None and train_groups is not None:
-        return run_l1_cycle(
-            node, library, archive, env, target_client, optimizer_client,
-            cfg=cfg, operation="REFINE", new_node_id=new_node_id,
-            epoch=epoch, train_groups=train_groups, out_dir=out_dir,
-        )
-    return ProposalOutcome(
-        success=False, operation="REFINE",
-        reason="missing_env: run_refine requires env, target_client, train_groups for v2 L1 cycle",
+    """DEPRECATED — REFINE has been unified into PROPOSAL (v3). Kept only for
+    backward-compatible imports; delegates straight to :func:`run_proposal`."""
+    return run_proposal(
+        node, l1_signals, library, archive, optimizer_client,
+        cfg=cfg, new_node_id=new_node_id, epoch=epoch,
+        success_results=success_results, persistent_fail_groups=persistent_fail_groups,
+        rollout_validate_fn=rollout_validate_fn, env=env, target_client=target_client,
+        train_groups=train_groups, out_dir=out_dir,
     )
