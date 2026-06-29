@@ -95,6 +95,7 @@ def evaluate_candidate(
     target_client: "LLMClient",
     cfg: "CSSConfig",
     out_dir: str,
+    k_override: int = 0,
 ) -> float:
     """Evaluate a candidate L0 ``rules`` body against the node's strategy.
 
@@ -131,12 +132,13 @@ def evaluate_candidate(
         strategy=node.strategy,
         rules=candidate_rules,
     )
+    k = k_override if k_override > 0 else cfg.k_rollouts
     return selection_set_rollout(
         env,
         candidate_doc,
         val_items,
         target_client,
-        k_rollouts=cfg.k_rollouts,
+        k_rollouts=k,
         out_dir=out_dir,
         max_workers=cfg.max_api_workers,
         task_timeout=cfg.task_timeout_s,
