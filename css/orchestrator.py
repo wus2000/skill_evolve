@@ -386,7 +386,7 @@ def _run_node_epoch(
     # (1) L0 EXPLOITATION: batch-step loop until saturation or hard cap.
     node.step_buffer.reset_saturation()
     l0_steps_before = node.n_steps
-    run_exploitation_epoch(
+    exploit_summary = run_exploitation_epoch(
         node,
         env,
         train_items,
@@ -459,14 +459,25 @@ def _run_node_epoch(
     _save_analysis_artifacts(out_dir, node, round_index, analysis)
 
     # (4) Validation eval with the node's BEST skill -> node.val_score + curve.
+    # Optimization: if exploitation produced a new best THIS round, its val gate
+    # already evaluated the best_rules on the full val set. Reuse those predictions
+    # (grouped_batch_rollout skips existing prediction files) instead of re-running
+    # 60×K=180 fresh rollouts. If no new best this round, the skill hasn't changed
+    # and node.val_score is already correct from the previous round.
     val_skill_text = _val_skill_text(node)
+    best_val_dir = getattr(exploit_summary, "best_val_out_dir", "")
+    if best_val_dir:
+        val_out_dir = best_val_dir
+        _log.info("Val eval reusing exploitation best-step predictions: %s", best_val_dir)
+    else:
+        val_out_dir = _node_round_dir(out_dir, node, round_index, "val")
     val_groups = grouped_batch_rollout(
         env,
         val_items,
         val_skill_text,
         target_client,
         k_rollouts=cfg.k_rollouts,
-        out_dir=_node_round_dir(out_dir, node, round_index, "val"),
+        out_dir=val_out_dir,
         max_workers=cfg.max_api_workers,
         task_timeout=cfg.task_timeout_s,
         epoch=round_index,
