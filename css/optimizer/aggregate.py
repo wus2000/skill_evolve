@@ -68,8 +68,8 @@ replace or be inserted into the document.
       "after_section": "### <heading of preceding section>",
       "content": "### <heading>\\n<well-structured markdown body>",
       "target_tasks": ["task_id_1", ...],
-      "rationale": "<problem addressed + expected improvement>",
-      "derivation": "<which raw edits contributed, how merged, what dropped>"
+      "rationale": "<2-4 sentences: what specific failure patterns or gaps this edit addresses, citing task IDs and failure modes observed in raw edits; what improvement is expected>",
+      "derivation": "<2-4 sentences: list ALL raw edit numbers that contributed (e.g. 'Raw edits 1,3,7,12'); explain how they were combined or refined; note any raw edits that were dropped and why>"
     }
   ]
 }
@@ -107,8 +107,12 @@ Field rules:
 5. RESOLVE CONTRADICTIONS. Conflicting raw edits → keep the version with
    more supporting patches. Explain in derivation.
 
-6. DERIVATION TRANSPARENCY. For each output edit, document: which raw edits
-   contributed, how combined/refined, what dropped and why.
+6. DERIVATION TRANSPARENCY. For EVERY output edit, the rationale and
+   derivation fields must be DETAILED (2-4 sentences each, not one-liners):
+   - rationale: cite the specific failure patterns and task IDs this edit
+     addresses; explain what concrete improvement is expected.
+   - derivation: list ALL contributing raw edit numbers by index; explain
+     how they were merged or refined; state what was dropped and why.
 
 7. QUALITY OVER QUANTITY. Fewer high-confidence edits beat many speculative
    ones. Drop weak/low-support raw edits rather than outputting noise."""
