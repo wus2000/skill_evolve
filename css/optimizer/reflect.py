@@ -411,6 +411,12 @@ def _edit_from_dict(d: dict, source_type: str) -> "Edit | None":
         source_type=source_type if source_type in ("failure", "success", "contrastive", "synthesized") else "failure",
         reason=str(d.get("reason", "") or d.get("rationale", "") or ""),
     )
+    # Parse source_tasks provenance from the LLM output.
+    source_tasks = d.get("source_tasks", [])
+    if not isinstance(source_tasks, list):
+        source_tasks = []
+    edit.source_tasks = [str(t) for t in source_tasks if t]
+
     # An edit that needs an anchor but has none, and is not an append, is junk.
     if edit.op in ("insert_after", "replace", "delete") and not edit.target:
         return None
@@ -905,8 +911,9 @@ rule_missing | rule_wrong | rule_ignored | data_exploration | code_error | other
 ## Output — only this JSON object (no fences, no prose)
 {
   "failure_summary": [{"type": "<one of the above>", "count": <int>, "description": "<one line>"}],
-  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the pattern this fixes + which trajectories show it>"}]
-}"""
+  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the pattern this fixes + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
+}
+"source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
 _SYSTEM_SUCCESS_PROPOSER = """\
 You optimize the tactical playbook (`rules.md`) of a frozen task agent. You are
@@ -923,8 +930,9 @@ two or more trajectories; ignore one-off lucky moves.
 ## Output — only this JSON object (no fences, no prose)
 {
   "success_patterns": [{"count": <int>, "description": "<one line>"}],
-  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the behaviour this codifies + which trajectories show it>"}]
-}"""
+  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the behaviour this codifies + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
+}
+"source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
 _SYSTEM_CONTRASTIVE_PROPOSER = """\
 You optimize the tactical playbook (`rules.md`) of a frozen task agent. You are
@@ -942,8 +950,9 @@ to success while the failing one(s) went wrong.
 ## Output — only this JSON object (no fences, no prose)
 {
   "divergence": "<one line: what the passing rollout did that the failing did not>",
-  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the divergence this codifies, citing both paths>"}]
-}"""
+  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the divergence this codifies, citing both paths>", "source_tasks": ["task_id_1", "task_id_2"]}]
+}
+"source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
 
 def _run_minibatch_proposer(
@@ -982,6 +991,14 @@ def _run_minibatch_proposer(
             "## rules.md section index (existing themes — do NOT duplicate these)\n"
             + section_index
         )
+    if rules and rules.strip():
+        n_sections = len([ln for ln in rules.split("\n") if ln.strip().startswith("### ")])
+        sections.append(
+            f"## rules.md maturity\n"
+            f"Sections: {n_sections} | Size: {len(rules)} chars\n"
+            f"Prefer REFINEMENTS within existing sections over new sections. "
+            f"Only propose a new section for genuinely UNCOVERED failure mechanisms."
+        )
     sections.append(
         f"## Edit budget\nProduce AT MOST L={budget} minimal single-theme edits. "
         "Fewer is better; empty list if already covered."
@@ -1012,6 +1029,13 @@ def _run_minibatch_proposer(
         edit = _edit_from_dict(d, source_type)
         if edit is not None:
             edits.append(edit)
+
+    # Fallback: if the LLM omitted source_tasks, attribute to the entire minibatch.
+    minibatch_task_ids = list({r.task_id for r in rollouts})
+    for edit in edits:
+        if not edit.source_tasks:
+            edit.source_tasks = list(minibatch_task_ids)
+
     return RawPatch(
         patch=Patch(edits=edits), source_type=source_type, batch_size=len(rollouts)
     )
