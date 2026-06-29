@@ -22,9 +22,63 @@ from typing import Any
 from css.data.edit import Edit
 
 # Gate outcome vocabulary (mirrors SkillOpt evaluation/gate.py GateAction).
-StepAction = str  # "accept_new_best" | "accept" | "reject"
+# Valid values: "accept_new_best" | "accept" | "reject" | "reject_no_survivor"
+StepAction = str
 
 ACCEPT_ACTIONS: frozenset[str] = frozenset({"accept", "accept_new_best", "epoch_reset"})
+
+
+@dataclass
+class EditVerification:
+    """Per-edit ablation verification result.
+
+    Records the outcome of testing one MergedEdit against its target tasks
+    using the binary solvability criterion. Full content is always preserved
+    (never truncated) for checkpoint/resume and history injection.
+    """
+
+    section_target: str
+    delta_type: str
+    content: str                     # Full section content, NEVER truncated
+    target_tasks: list[str] = field(default_factory=list)
+    passed: bool = False
+    task_results: dict = field(default_factory=dict)
+    # task_results schema: {task_id: {"inc_pr": float, "cand_pr": float,
+    #   "inc_solvable": bool, "cand_solvable": bool,
+    #   "status": "GAINED"|"LOST"|"RETAINED"|"STILL_UNSOLVED"}}
+    rationale: str = ""
+    derivation: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "section_target": self.section_target,
+            "delta_type": self.delta_type,
+            "content": self.content,
+            "target_tasks": list(self.target_tasks),
+            "passed": self.passed,
+            "task_results": dict(self.task_results),
+            "rationale": self.rationale,
+            "derivation": self.derivation,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "EditVerification":
+        raw_tasks = d.get("target_tasks", [])
+        if not isinstance(raw_tasks, list):
+            raw_tasks = []
+        raw_results = d.get("task_results", {})
+        if not isinstance(raw_results, dict):
+            raw_results = {}
+        return cls(
+            section_target=str(d.get("section_target", "")),
+            delta_type=str(d.get("delta_type", "")),
+            content=str(d.get("content", "")),
+            target_tasks=[str(t) for t in raw_tasks if t],
+            passed=bool(d.get("passed", False)),
+            task_results=raw_results,
+            rationale=str(d.get("rationale", "")),
+            derivation=str(d.get("derivation", "")),
+        )
 
 
 @dataclass
@@ -47,6 +101,11 @@ class StepBufferEntry:
     epoch: int = -1
     reasoning: str = ""
 
+    # Exploitation V2: per-edit ablation verification results
+    edit_verifications: list[EditVerification] = field(default_factory=list)
+    # Number of merged edits that passed ablation verification
+    n_survived: int = 0
+
     @property
     def accepted(self) -> bool:
         return self.action in ACCEPT_ACTIONS
@@ -57,6 +116,9 @@ class StepBufferEntry:
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepBufferEntry":
+        raw_verifications = d.get("edit_verifications", [])
+        if not isinstance(raw_verifications, list):
+            raw_verifications = []
         return cls(
             step=int(d.get("step", 0)),
             action=str(d.get("action", "reject")),
@@ -67,6 +129,10 @@ class StepBufferEntry:
             failure_patterns=list(d.get("failure_patterns", [])),
             epoch=int(d.get("epoch", -1)),
             reasoning=str(d.get("reasoning", "")),
+            edit_verifications=[
+                EditVerification.from_dict(ev) for ev in raw_verifications
+            ],
+            n_survived=int(d.get("n_survived", 0)),
         )
 
     def to_dict(self) -> dict:
@@ -85,6 +151,11 @@ class StepBufferEntry:
             d["failure_patterns"] = self.failure_patterns
         if self.reasoning:
             d["reasoning"] = self.reasoning
+        if self.edit_verifications:
+            d["edit_verifications"] = [
+                ev.to_dict() for ev in self.edit_verifications
+            ]
+            d["n_survived"] = self.n_survived
         return d
 
 
@@ -192,6 +263,26 @@ class StepBuffer:
         out: list[Edit] = []
         for e in self.recent(window):
             out.extend(e.rejected_edits)
+        return out
+
+    def recent_rejected_edits_v2(self, window: int) -> list[Edit]:
+        """Extract failed edits from edit_verifications as Edit objects.
+
+        Scans the last ``window`` step buffer entries and converts each
+        EditVerification where ``passed=False`` into an Edit (using
+        ``rewrite_section`` op) for reflect prompt compatibility.
+        """
+        out: list[Edit] = []
+        for entry in self.recent(window):
+            for ev in entry.edit_verifications:
+                if not ev.passed:
+                    out.append(Edit(
+                        op="rewrite_section",
+                        content=ev.content,
+                        target=ev.section_target,
+                        reason=ev.rationale,
+                        source_tasks=list(ev.target_tasks),
+                    ))
         return out
 
     @classmethod

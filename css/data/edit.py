@@ -74,9 +74,13 @@ class Edit:
     source_type: Literal["failure", "success"] | None = None
     merge_level: int | None = None
     reason: str = ""
+    source_tasks: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Edit":
+        raw_tasks = d.get("source_tasks", [])
+        if not isinstance(raw_tasks, list):
+            raw_tasks = []
         return cls(
             op=d.get("op", "append"),
             content=d.get("content", ""),
@@ -85,6 +89,7 @@ class Edit:
             source_type=d.get("source_type"),
             merge_level=d.get("merge_level"),
             reason=d.get("reason", ""),
+            source_tasks=[str(t) for t in raw_tasks if t],
         )
 
     def to_dict(self) -> dict:
@@ -99,6 +104,8 @@ class Edit:
             d["merge_level"] = self.merge_level
         if self.reason:
             d["reason"] = self.reason
+        if self.source_tasks:
+            d["source_tasks"] = list(self.source_tasks)
         return d
 
 
@@ -243,3 +250,47 @@ class RawPatch:
         if self.failure_summary:
             d["failure_summary"] = list(self.failure_summary)
         return d
+
+
+@dataclass
+class MergedEdit:
+    """One section-level edit unit produced by the merger.
+
+    Represents the COMPLETE target state of one ### section in rules.md.
+    Each MergedEdit targets a different section (independence guarantee
+    for ablation verification).
+    """
+
+    section_target: str          # "### Data Loading" -- exact heading
+    delta_type: str              # "new_section" | "section_rewrite" | "section_refinement"
+    after_section: str = ""      # For new_section: insert after this heading. "_end" / "_start" / exact heading.
+    content: str = ""            # Full section text (### heading + body). NEVER truncated.
+    target_tasks: list[str] = field(default_factory=list)  # Task IDs for ablation verification
+    rationale: str = ""          # Why this edit is needed (problem + expected improvement)
+    derivation: str = ""         # How synthesized from raw edits (audit trail)
+
+    def to_dict(self) -> dict:
+        return {
+            "section_target": self.section_target,
+            "delta_type": self.delta_type,
+            "after_section": self.after_section,
+            "content": self.content,
+            "target_tasks": list(self.target_tasks),
+            "rationale": self.rationale,
+            "derivation": self.derivation,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "MergedEdit":
+        raw_tasks = d.get("target_tasks", [])
+        if not isinstance(raw_tasks, list):
+            raw_tasks = []
+        return cls(
+            section_target=str(d.get("section_target", "")),
+            delta_type=str(d.get("delta_type", "section_rewrite")),
+            after_section=str(d.get("after_section", "")),
+            content=str(d.get("content", "")),
+            target_tasks=[str(t) for t in raw_tasks if t],
+            rationale=str(d.get("rationale", "")),
+            derivation=str(d.get("derivation", "")),
+        )
