@@ -43,7 +43,7 @@ from css.proposal.derivation import (
     retrospective_validate,
 )
 from css.proposal.inheritance import proposal_inherit_rules, refine_apply_cleanup
-from css.proposal.proposal import ProposalOutcome, run_proposal, run_refine
+from css.proposal.proposal import ProposalOutcome, run_proposal
 from css.proposal.refine import RefineProposal, derive_refine, is_cleanup_only
 from css.proposal.root_cause import RootCause, attribute_root_cause
 
@@ -641,10 +641,10 @@ def _proposal_node() -> TreeNode:
 
 import pytest
 
-# Tests below test the OLD single-shot run_proposal/run_refine interface.
-# The v2 L1 cycle replaces them with run_l1_cycle (tested separately).
+# Tests below test the OLD single-shot run_proposal interface (pre-v3 L1 cycle).
+# The v3 L1 cycle replaces them with run_l1_cycle (tested separately).
 # These tests are skipped until they are rewritten for the new interface.
-_V2_SKIP = pytest.mark.skip(reason="run_proposal/run_refine v2: old interface tests, pending rewrite")
+_V2_SKIP = pytest.mark.skip(reason="run_proposal v3: old interface tests, pending rewrite")
 
 
 @_V2_SKIP
@@ -776,67 +776,7 @@ def test_run_proposal_low_coverage_kills_cheaply():
     assert rollout_calls == []  # no rollout budget spent
 
 
-# ── 8. run_refine end-to-end ────────────────────────────────────────────────────
-
-
-@_V2_SKIP
-def test_run_refine_success_increments_refine_count():
-    lib, fail = _library()
-    client = _fresh_router()  # refine canned response gates clean
-    arch = NegativeArchive()
-    node = _proposal_node()  # refine_count = 1
-    out = run_refine(
-        node, [fail], lib, arch, client,
-        cfg=CSSConfig(), new_node_id="n0001", epoch=3,
-        success_results=[], persistent_fail_groups=[_fail_group()],
-        rollout_validate_fn=lambda strat, rules, pids: (0.5, 0.2),  # drop
-    )
-    assert out.success is True
-    assert out.operation == "REFINE"
-    assert out.new_node is not None
-    assert out.new_node.branch_type == "REFINE"
-    assert out.new_node.refine_count == 2  # parent (1) + 1
-    # Rules are FULL inherit + conflict cleanup: the conflicting rule was deleted.
-    assert "Lock the column mapping on first read." not in out.new_node.rules
-    assert "Always validate the final output range before saving." in out.new_node.rules
-
-
-@_V2_SKIP
-def test_run_refine_gate_fail_returns_escalate_reason():
-    lib, fail = _library()
-    # The refine response touches three subsections, but the parent here has only
-    # two — that is a structural change -> gate fails -> escalate reason.
-    client = _fresh_router(refine=_CANNED_REFINE_TOO_MANY)
-    out = run_refine(
-        _proposal_node(), [fail], lib, NegativeArchive(), client,
-        cfg=CSSConfig(), new_node_id="n0001", epoch=3,
-        success_results=[], persistent_fail_groups=[_fail_group()],
-        rollout_validate_fn=lambda *a: (0.5, 0.2),
-    )
-    assert out.success is False
-    assert out.operation == "REFINE"
-    assert "escalate" in out.reason  # caller would switch to PROPOSAL
-    assert out.new_node is None
-
-
-@_V2_SKIP
-def test_run_refine_rollout_fail_archives():
-    lib, fail = _library()
-    client = _fresh_router()
-    arch = NegativeArchive()
-    out = run_refine(
-        _proposal_node(), [fail], lib, arch, client,
-        cfg=CSSConfig(), new_node_id="n0001", epoch=3,
-        success_results=[], persistent_fail_groups=[_fail_group()],
-        rollout_validate_fn=lambda strat, rules, pids: (0.5, 0.5),  # no drop
-    )
-    assert out.success is False
-    assert out.archived is not None
-    assert out.archived.origin == "refine_failed_rollout"
-    assert len(arch.entries) == 1
-
-
-# ── 9. dataclass from_dict/to_dict round-trips ──────────────────────────────────
+# ── 8. dataclass from_dict/to_dict round-trips ──────────────────────────────────
 
 
 def test_root_cause_round_trip():
@@ -895,7 +835,7 @@ def test_proposal_outcome_to_dict():
     assert d["new_node"] is None and d["archived"] is None
 
 
-# ── 10. import smoke for all css.proposal.* modules ─────────────────────────────
+# ── 9. import smoke for all css.proposal.* modules ──────────────────────────────
 
 
 def test_import_smoke_no_heavy_backends():
@@ -918,7 +858,7 @@ def test_import_smoke_no_heavy_backends():
     assert all(
         fn is not None
         for fn in (attribute_root_cause, derive_strategy, derive_refine,
-                   proposal_inherit_rules, run_proposal, run_refine)
+                   proposal_inherit_rules, run_proposal)
     )
 
 

@@ -4,35 +4,20 @@ Runnable two ways:
     python -m css.tests.test_phase4      # standalone, prints PASS/FAIL summary
     pytest css/tests/test_phase4.py      # standard collection
 
-Every test is deterministic and stub-based — no network, no LLM API, no
+Every test is deterministic and stub-based -- no network, no LLM API, no
 SpreadsheetBench dataset, no faiss, and no sentence-transformers model download.
 
-  * Embeddings are produced by :class:`StubEmbedder` (a hash-seeded, L2-normalized
-    deterministic double); the real :class:`Qwen3Embedder` is never instantiated.
-  * The :class:`VectorIndex` runs its numpy exact-cosine fallback because faiss is
-    absent in this environment.
   * The optimizer LLM is replaced by :class:`StubLLMClient` whose ``optimizer_fn``
     returns canned observation / cluster / counterpart JSON.
-  * ``sklearn``'s DBSCAN is exercised for real (it is installed) on stub vectors
-    crafted so the cluster structure is unambiguous.
+  * Layer 2 uses label-based grouping (Jaccard + LLM synonym detection),
+    not embedding + DBSCAN.
 """
 from __future__ import annotations
 
 import json
 
-import numpy as np
-
 from css.analysis.cluster import (
     build_or_update_library,
-    dbscan_cluster,
-    embed_observations,
-    incremental_match,
-)
-from css.analysis.embedding import (
-    StubEmbedder,
-    VectorIndex,
-    build_index,
-    cosine_similarity,
 )
 from css.analysis.layer1 import (
     annotate_contrastive_pair,
@@ -146,66 +131,7 @@ def _refine_optimizer_fn(system: str, user: str) -> str:
     return "{}"
 
 
-# ── 1. embedding + vector index ────────────────────────────────────────────────
-
-
-def test_stub_embedder_deterministic_and_normalized():
-    e = StubEmbedder(dim=16)
-    assert e.dim == 16
-    v = e.embed(["hello world", "hello world", "a different thing"])
-    assert v.shape == (3, 16)
-    assert v.dtype == np.float32
-    # Same text -> identical vector.
-    assert np.allclose(v[0], v[1])
-    # Different text -> different vector.
-    assert not np.allclose(v[0], v[2])
-    # Every row is L2-normalized.
-    norms = np.linalg.norm(v, axis=1)
-    assert np.allclose(norms, 1.0, atol=1e-5)
-    # Empty input -> well-shaped empty matrix.
-    empty = e.embed([])
-    assert empty.shape == (0, 16)
-
-
-def _faiss_available() -> bool:
-    import importlib.util
-    return importlib.util.find_spec("faiss") is not None
-
-
-def test_vector_index_requires_faiss_or_works_with_it():
-    # Design (lead): VectorIndex is faiss-only — no numpy fallback. When faiss is
-    # absent it must raise a clear, actionable error rather than silently using a
-    # divergent backend. When present, it does exact cosine via IndexFlatIP.
-    if not _faiss_available():
-        raised = False
-        try:
-            build_index(16)
-        except ImportError as exc:
-            raised = True
-            assert "faiss" in str(exc).lower()
-        assert raised, "VectorIndex must raise ImportError when faiss is absent"
-        return
-
-    idx = build_index(16)
-    assert isinstance(idx, VectorIndex)
-    assert idx.backend == "faiss"
-    e = StubEmbedder(dim=16)
-    vecs = e.embed(["alpha pattern", "beta pattern", "gamma pattern"])
-    idx.add(vecs, ["alpha", "beta", "gamma"])
-    hits = idx.search(vecs[1], top_k=2)
-    assert len(hits) == 2
-    assert hits[0][0] == "beta"
-    assert hits[0][1] >= hits[1][1]  # cosine scores descending
-    assert hits[0][1] > 0.99
-
-
-def test_cosine_similarity_self_is_one():
-    e = StubEmbedder(dim=16)
-    v = e.embed(["some cognitive observation text"])[0]
-    assert abs(cosine_similarity(v, v) - 1.0) < 1e-4
-
-
-# ── 2. Layer 1: single-trajectory annotation ───────────────────────────────────
+# ── 1. Layer 1: single-trajectory annotation ─────────────────────────────────
 
 
 def test_annotate_trajectory_parses_open_ended_observations():
@@ -241,7 +167,7 @@ def test_annotate_trajectory_malformed_output_returns_empty():
     assert obs == []  # no crash, no observations
 
 
-# ── 3. Layer 1: contrastive pair ───────────────────────────────────────────────
+# ── 2. Layer 1: contrastive pair ──────────────────────────────────────────────
 
 
 def test_annotate_contrastive_pair_parses_divergence():
@@ -288,46 +214,10 @@ def test_run_layer1_stamps_node_and_epoch():
     assert len(divergences) == 1
 
 
-# ── 4. Layer 2a: embedding cache + DBSCAN ───────────────────────────────────────
+# ── 3. Layer 2: build/update library (label-based grouping) ──────────────────
 
 
-def test_embed_observations_caches_embedding():
-    e = StubEmbedder(dim=16)
-    obs = [_obs("o0", "t0", "A", "same text"), _obs("o1", "t1", "B", "other text")]
-    vecs = embed_observations(e, obs)
-    assert vecs.shape == (2, 16)
-    assert obs[0].embedding is not None
-    assert len(obs[0].embedding) == 16
-    # The cached vector matches the returned matrix row.
-    assert np.allclose(np.asarray(obs[0].embedding, dtype=np.float32), vecs[0])
-
-
-def test_dbscan_groups_duplicates_and_isolates_outlier():
-    e = StubEmbedder(dim=16)
-    # Two identical-text observations + one clearly different.
-    obs = [
-        _obs("o0", "t0", "A", "identical observation text"),
-        _obs("o1", "t1", "A", "identical observation text"),
-        _obs("o2", "t2", "Z", "a completely unrelated cognitive note"),
-    ]
-    vecs = embed_observations(e, obs)
-    labels = dbscan_cluster(vecs, eps=0.05, min_samples=2)
-    assert len(labels) == 3
-    # The two identical observations share a (non-noise) cluster.
-    assert labels[0] == labels[1] and labels[0] >= 0
-    # The lone outlier is labeled noise.
-    assert labels[2] == -1
-
-
-def test_dbscan_degenerate_inputs():
-    assert dbscan_cluster(np.zeros((0, 16), dtype=np.float32), eps=0.5, min_samples=2) == []
-    assert dbscan_cluster(np.ones((1, 16), dtype=np.float32), eps=0.5, min_samples=2) == [-1]
-
-
-# ── 5. Layer 2: build/update library + incremental match ───────────────────────
-
-
-def test_build_library_assigns_stable_ids_and_incremental_match_attaches():
+def test_build_library_assigns_stable_ids_and_label_match_attaches():
     cfg = CSSConfig(eps_dbscan=0.05, min_samples=2)
     client = StubLLMClient(optimizer_fn=_refine_optimizer_fn)
     lib = PatternLibrary()
@@ -355,57 +245,7 @@ def test_build_library_assigns_stable_ids_and_incremental_match_attaches():
     assert obs1[0].pattern_id == "p0000"
 
 
-def test_incremental_match_splits_matched_unmatched():
-    e = StubEmbedder(dim=16)
-    lib = PatternLibrary()
-    # Seed a pattern with a centroid from one observation's embedding.
-    seed = _obs("s0", "t0", "A", "anchored cognitive behavior text")
-    embed_observations(e, [seed])
-    rec = PatternRecord(
-        pattern_id="p0000",
-        name="anchor",
-        description="d",
-        cognitive_aspect="A",
-        polarity="failure",
-        observations=[seed],
-        centroid=list(seed.embedding),  # type: ignore[arg-type]
-    )
-    lib.add(rec)
-
-    near = _obs("n0", "t1", "A", "anchored cognitive behavior text")  # identical text
-    far = _obs("f0", "t2", "Z", "an entirely different thought process")
-    matched, unmatched = incremental_match(e, lib, [near, far], sim_threshold=0.6)
-    assert near in matched and far in unmatched
-    assert near.pattern_id == "p0000"
-
-
-def test_incremental_match_is_batch_order_independent():
-    # Guards the centroid-freeze fix: matching uses centroids frozen at call
-    # start, so the same batch matches identically regardless of order.
-    def _setup():
-        e = StubEmbedder(dim=16)
-        lib = PatternLibrary()
-        seed = _obs("s0", "t0", "A", "anchored cognitive behavior text")
-        embed_observations(e, [seed])
-        lib.add(PatternRecord(
-            pattern_id="p0000", name="anchor", cognitive_aspect="A",
-            polarity="failure", observations=[seed], centroid=list(seed.embedding),
-        ))
-        a = _obs("a0", "t1", "A", "anchored cognitive behavior text")
-        b = _obs("b0", "t2", "A", "anchored cognitive behavior text")
-        return e, lib, a, b
-
-    e1, lib1, a1, b1 = _setup()
-    m_fwd, _ = incremental_match(e1, lib1, [a1, b1], sim_threshold=0.6)
-    e2, lib2, a2, b2 = _setup()
-    m_rev, _ = incremental_match(e2, lib2, [b2, a2], sim_threshold=0.6)
-    # Both orders attach both observations to the same pattern.
-    assert {o.obs_id for o in m_fwd} == {"a0", "b0"}
-    assert {o.obs_id for o in m_rev} == {"a0", "b0"}
-    assert a1.pattern_id == b1.pattern_id == "p0000"
-
-
-# ── 6. Layer 3a: per-epoch occurrence recording ─────────────────────────────────
+# ── 4. Layer 3a: per-epoch occurrence recording ──────────────────────────────
 
 
 def test_record_epoch_occurrences_rate_and_trend():
@@ -447,7 +287,7 @@ def test_record_epoch_occurrences_rate_and_trend():
     assert rec.occurrence_trend(window=10) > 0
 
 
-# ── 7. Layer 3b: L1-signal detection (reuse Phase-1 predicate) ──────────────────
+# ── 5. Layer 3b: L1-signal detection (reuse Phase-1 predicate) ───────────────
 
 
 def _flat_history(rate: float, n: int, epochs_start: int = 0) -> list[OccurrencePoint]:
@@ -494,7 +334,7 @@ def test_detect_l1_signals_persistent_vs_decaying():
     assert detect_l1_signals(lib, cfg=cfg, l0_saturated=False) == []
 
 
-# ── 8. Pipeline: end-to-end node-epoch analysis ─────────────────────────────────
+# ── 6. Pipeline: end-to-end node-epoch analysis ─────────────────────────────────
 
 
 def test_run_analysis_epoch_end_to_end():
@@ -550,7 +390,7 @@ def test_run_analysis_epoch_end_to_end():
     assert res2.n_patterns == res.n_patterns
 
 
-# ── 9. Import smoke (no faiss / no model download) ──────────────────────────────
+# ── 7. Import smoke (no heavy backends) ──────────────────────────────────────
 
 
 def test_import_smoke_no_heavy_backends():
@@ -559,21 +399,15 @@ def test_import_smoke_no_heavy_backends():
 
     faiss_before = "faiss" in sys.modules
     for mod in (
-        "css.analysis.embedding",
         "css.analysis.layer1",
         "css.analysis.cluster",
         "css.analysis.longitudinal",
         "css.analysis.pipeline",
     ):
         importlib.import_module(mod)
-    # Importing the analysis stack must not NEWLY pull faiss (it may already
-    # be in sys.modules if a prior test constructed a VectorIndex).
+    # Importing the analysis stack must not NEWLY pull faiss.
     if not faiss_before:
         assert "faiss" not in sys.modules
-    # sentence_transformers may be importable, but no model is constructed via
-    # the StubEmbedder path used throughout these tests.
-    e = StubEmbedder(dim=8)
-    assert e.embed(["x"]).shape == (1, 8)
     # Keep referenced symbols live.
     assert all(
         fn is not None

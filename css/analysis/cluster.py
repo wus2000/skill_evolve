@@ -1,35 +1,27 @@
 """Layer 2 cross-trajectory clustering (analysis pipeline, Phase 4).
 
-Layer 1 produces a stream of :class:`Observation` records — one LLM-named
+Layer 1 produces a stream of :class:`Observation` records -- one LLM-named
 cognitive observation per (trajectory, finding). Layer 2 turns that stream into
 a longitudinally-stable :class:`PatternLibrary`:
 
-  * 2a  embed each observation (``what`` + named ``cognitive_aspect``) and
-        DBSCAN pre-group them. The clustering *unit* is the observation, not the
-        trajectory: the same trajectory can contribute observations to several
-        cognitive patterns, and one pattern is built from observations spanning
-        many trajectories.
+  * 2a  match new observations against existing patterns by cognitive_aspect
+        label similarity (Jaccard pre-group + LLM synonym detection via
+        :mod:`css.analysis.label_grouping`), then group the unmatched residue
+        by label canonicalization.
   * 2b  per-cluster LLM refinement: unify a single pattern *name* +
         *description* + *polarity* + *cognitive_aspect* from the member
-        observations. Noise points (DBSCAN label ``-1``) are dropped here — they
-        lack the cross-trajectory recurrence a pattern requires; they may match
-        an existing pattern on a later epoch via :func:`incremental_match`.
-  * 2c  cross-cluster failure↔success "counterpart" pairing: a failure pattern
+        observations.
+  * 2c  cross-cluster failure/success "counterpart" pairing: a failure pattern
         and the success pattern describing the *same* cognitive aspect are linked
         (``counterpart_id`` both ways). The success side is the constructive
-        target a later REFINE/PROPOSAL edit systematizes.
+        target a later PROPOSAL edit systematizes.
 
 Across epochs the library grows *incrementally*: new observations are first
-matched against existing pattern centroids by embedding retrieval
-(:func:`incremental_match`); only the unmatched residue is clustered afresh.
-This keeps ``pattern_id`` stable for a recurring pattern so Layer 3 can track its
-per-epoch occurrence rate.
+matched against existing patterns by label similarity; only the unmatched
+residue is grouped and refined afresh. This keeps ``pattern_id`` stable for a
+recurring pattern so Layer 3 can track its per-epoch occurrence rate.
 
-Heavy dependencies (sklearn / sentence-transformers / faiss) are imported lazily;
-this module imports cleanly with only numpy present, and all clustering is driven
-through the injected :class:`Embedder` (a :class:`StubEmbedder` in tests).
-
-Design references: ``design_final_en.md`` §4.3 Layer 2 and
+Design references: ``design_final_en.md`` section 4.3 Layer 2 and
 ``training_mechanism_v6.md`` D4 / D8.
 """
 from __future__ import annotations
@@ -45,7 +37,6 @@ from css.data.pattern import (
     PatternLibrary,
     PatternRecord,
 )
-from css.analysis.embedding import Embedder, cosine_similarity
 from css.model.json_repair import complete_optimizer_json
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -134,11 +125,6 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     return {}
 
 
-def _obs_text(obs: Observation) -> str:
-    """The text embedded/clustered for an observation: what + cognitive aspect."""
-    return f"{obs.what} {obs.cognitive_aspect}".strip()
-
-
 def _normalize_polarity(value: Any) -> str:
     v = str(value or "").strip().lower()
     if v in ("failure", "success", "neutral"):
@@ -162,140 +148,6 @@ def _vote_polarity(observations: list[Observation]) -> str:
     if counts["success"] > counts["failure"]:
         return "success"
     return "neutral"
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# 2a — embedding + DBSCAN pre-grouping
-# ──────────────────────────────────────────────────────────────────────────
-def embed_observations(
-    embedder: "Embedder", observations: list["Observation"]
-) -> "np.ndarray":
-    """Embed each observation's (``what`` + ``cognitive_aspect``) text.
-
-    The resulting unit vector is cached onto ``Observation.embedding`` (as a
-    plain ``list[float]`` for JSON round-trip) and the full ``(N, dim)`` matrix
-    is returned. An empty input yields a ``(0, dim)`` matrix.
-    """
-    from css.tracing import log_event
-
-    if len(observations) == 0:
-        return np.zeros((0, embedder.dim), dtype=np.float32)
-    texts = [_obs_text(o) for o in observations]
-    vectors = np.asarray(embedder.embed(texts), dtype=np.float32)
-    for obs, vec in zip(observations, vectors):
-        obs.embedding = [float(x) for x in vec]
-
-    norms = np.linalg.norm(vectors, axis=1)
-    log_event("embedding",
-              n_observations=len(observations),
-              dim=int(vectors.shape[1]),
-              norm_stats={"mean": round(float(norms.mean()), 4),
-                          "min": round(float(norms.min()), 4),
-                          "max": round(float(norms.max()), 4)},
-              sample_texts=texts[:5])
-    return vectors
-
-
-def _adaptive_eps(vectors: "np.ndarray", min_samples: int) -> float:
-    """Pick a cosine-distance ``eps`` via a k-distance elbow heuristic.
-
-    For each point we take its distance to the ``k``-th nearest neighbor
-    (``k = min_samples``), sort those ascending, and locate the elbow as the
-    point of maximum gap in the sorted curve. The eps is set just past that
-    knee. Falls back to a sane constant when there are too few points.
-    """
-    from css.tracing import log_event
-
-    n = vectors.shape[0]
-    if n <= min_samples:
-        return 0.5
-    # Cosine distance matrix on normalized rows: 1 - inner product.
-    sims = np.clip(vectors @ vectors.T, -1.0, 1.0)
-    dists = 1.0 - sims
-    np.fill_diagonal(dists, np.inf)
-    k = max(1, min(min_samples, n - 1))
-    # k-th nearest distance per point (k-1 index into the sorted neighbor list).
-    part = np.sort(dists, axis=1)[:, k - 1]
-    k_dist = np.sort(part)
-    k_dist = k_dist[np.isfinite(k_dist)]
-    if k_dist.size < 2:
-        return 0.5
-    gaps = np.diff(k_dist)
-    knee = int(np.argmax(gaps))
-    # eps midway across the largest gap (just past the dense regime).
-    eps = float((k_dist[knee] + k_dist[knee + 1]) / 2.0)
-    if eps <= 0.0:
-        eps = float(k_dist[knee]) or 0.5
-
-    # Sample k-distance curve for diagnostics (every 10th point + endpoints)
-    step = max(1, len(k_dist) // 30)
-    sampled_indices = list(range(0, len(k_dist), step))
-    if sampled_indices[-1] != len(k_dist) - 1:
-        sampled_indices.append(len(k_dist) - 1)
-
-    log_event("adaptive_eps",
-              n_points=n, k=k, knee_index=knee,
-              eps_chosen=round(eps, 4),
-              k_dist_at_knee=round(float(k_dist[knee]), 4),
-              k_dist_after_knee=round(float(k_dist[knee + 1]), 4),
-              max_gap=round(float(gaps[knee]), 4),
-              k_dist_range={"min": round(float(k_dist[0]), 4),
-                            "max": round(float(k_dist[-1]), 4),
-                            "median": round(float(np.median(k_dist)), 4)},
-              k_dist_sample=[round(float(k_dist[i]), 4) for i in sampled_indices])
-
-    return eps
-
-
-def dbscan_cluster(
-    vectors: "np.ndarray", *, eps: float, min_samples: int
-) -> list[int]:
-    """DBSCAN cluster labels for ``vectors`` (``-1`` = noise).
-
-    Operates in cosine space (``metric='cosine'``). When ``eps <= 0`` an
-    adaptive eps is derived from a k-distance elbow (``k = min_samples``). A
-    degenerate input (0 or 1 vectors) is handled without invoking sklearn.
-    """
-    from css.tracing import log_event
-
-    n = 0 if vectors is None else int(np.asarray(vectors).shape[0])
-    if n == 0:
-        return []
-    if n == 1:
-        return [-1]
-    vectors = np.asarray(vectors, dtype=np.float32)
-    use_eps = eps
-    adaptive = use_eps is None or use_eps <= 0.0
-    if adaptive:
-        use_eps = _adaptive_eps(vectors, min_samples)
-
-    from sklearn.cluster import DBSCAN  # lazy: sklearn is heavy
-
-    model = DBSCAN(eps=use_eps, min_samples=min_samples, metric="cosine")
-    labels = model.fit_predict(vectors)
-    labels_list = [int(x) for x in labels]
-
-    from collections import Counter
-    label_counts = Counter(labels_list)
-    n_clusters = sum(1 for k in label_counts if k >= 0)
-    n_noise = label_counts.get(-1, 0)
-    cluster_sizes = {k: v for k, v in sorted(label_counts.items()) if k >= 0}
-
-    sims = np.clip(vectors @ vectors.T, -1.0, 1.0)
-    np.fill_diagonal(sims, np.nan)
-    mean_sim = float(np.nanmean(sims))
-    min_sim = float(np.nanmin(sims))
-    max_sim = float(np.nanmax(sims))
-
-    log_event("dbscan",
-              n_points=n, eps=round(use_eps, 4), adaptive=adaptive,
-              min_samples=min_samples, n_clusters=n_clusters,
-              n_noise=n_noise, cluster_sizes=cluster_sizes,
-              sim_stats={"mean": round(mean_sim, 4),
-                         "min": round(min_sim, 4),
-                         "max": round(max_sim, 4)})
-
-    return labels_list
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -417,59 +269,6 @@ def _refine_one_cluster(
     )
 
 
-def refine_clusters(
-    client: "LLMClient",
-    observations: list["Observation"],
-    labels: list[int],
-) -> list["PatternRecord"]:
-    """Layer 2b: build one refined :class:`PatternRecord` per non-noise cluster.
-
-    Observations labeled ``-1`` (DBSCAN noise) are dropped — a cross-trajectory
-    pattern requires recurrence, and noise points may still be picked up by
-    :func:`incremental_match` on a later epoch. Pattern ids are *temporary*
-    (``tmp{cluster}``); the caller assigns stable ids via the library.
-    """
-    if len(observations) != len(labels):
-        raise ValueError(
-            f"#observations ({len(observations)}) != #labels ({len(labels)})"
-        )
-    groups: dict[int, list[Observation]] = {}
-    for obs, lab in zip(observations, labels):
-        if lab < 0:
-            continue
-        groups.setdefault(int(lab), []).append(obs)
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    items = [(lab, groups[lab]) for lab in sorted(groups)]
-
-    def _refine(item):
-        lab, members = item
-        return (lab, _refine_one_cluster(client, members, f"tmp{lab}"))
-
-    records: list[PatternRecord] = []
-    with ThreadPoolExecutor(max_workers=max(1, len(items))) as pool:
-        futures = {pool.submit(_refine, it): it[0] for it in items}
-        results_by_lab: dict[int, PatternRecord] = {}
-        for fut in as_completed(futures):
-            lab_key = futures[fut]
-            try:
-                lab, rec = fut.result()
-                results_by_lab[lab] = rec
-            except Exception:  # noqa: BLE001 — one bad cluster must not kill the epoch
-                # Deterministic fallback: build a PatternRecord from the cluster
-                # members without the LLM (mirrors _refine_one_cluster's fallbacks)
-                # so the cluster is still represented and occurrence tracking holds.
-                members = groups.get(lab_key, [])
-                if members:
-                    results_by_lab[lab_key] = _fallback_pattern_record(
-                        members, f"tmp{lab_key}"
-                    )
-    for lab in sorted(results_by_lab):
-        records.append(results_by_lab[lab])
-    return records
-
-
 def _fallback_pattern_record(
     members: list["Observation"], temp_id: str
 ) -> "PatternRecord":
@@ -494,32 +293,6 @@ def _fallback_pattern_record(
 # ──────────────────────────────────────────────────────────────────────────
 # 2c — failure ↔ success counterpart pairing
 # ──────────────────────────────────────────────────────────────────────────
-def _cosine_counterparts(patterns: list["PatternRecord"]) -> None:
-    """Fallback counterpart pairing by centroid cosine (used when no LLM pair)."""
-    failures = [p for p in patterns if p.polarity == "failure" and not p.counterpart_id]
-    successes = [p for p in patterns if p.polarity == "success" and not p.counterpart_id]
-    used_success: set[str] = set()
-    for f in failures:
-        if f.centroid is None:
-            continue
-        best: PatternRecord | None = None
-        best_sim = 0.5  # require a meaningful aspect overlap
-        for s in successes:
-            if s.pattern_id in used_success or s.centroid is None:
-                continue
-            sim = cosine_similarity(
-                np.asarray(f.centroid, dtype=np.float32),
-                np.asarray(s.centroid, dtype=np.float32),
-            )
-            if sim > best_sim:
-                best_sim = sim
-                best = s
-        if best is not None:
-            f.counterpart_id = best.pattern_id
-            best.counterpart_id = f.pattern_id
-            used_success.add(best.pattern_id)
-
-
 def pair_counterparts(
     client: "LLMClient", patterns: list["PatternRecord"]
 ) -> None:
@@ -589,82 +362,6 @@ def pair_counterparts(
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Incremental matching of new observations to existing patterns
-# ──────────────────────────────────────────────────────────────────────────
-def _recompute_centroid(record: "PatternRecord") -> None:
-    """Recompute the record centroid as the unit-mean of all member embeddings."""
-    record.centroid = _centroid(record.observations)
-
-
-def incremental_match(
-    embedder: "Embedder",
-    library: "PatternLibrary",
-    observations: list["Observation"],
-    *,
-    sim_threshold: float = 0.6,
-) -> tuple[list["Observation"], list["Observation"]]:
-    """Attach new observations to existing patterns by centroid retrieval.
-
-    All observations are matched against the patterns' centroids as FROZEN at the
-    start of the call, so the result is independent of observation order within a
-    batch (a later observation never matches a centroid already shifted by an
-    earlier attachment in the same call). Each touched record's centroid is
-    recomputed once at the end.
-
-    For each observation (embedded on demand if not already cached), find the
-    active pattern whose frozen centroid is most cosine-similar; if the best
-    similarity is ``>= sim_threshold`` attach it (set ``obs.pattern_id``, append
-    to the record), else leave it unmatched.
-
-    Returns ``(matched, unmatched)``. When the library has no centroid-bearing
-    active patterns, every observation is unmatched.
-    """
-    matched: list[Observation] = []
-    unmatched: list[Observation] = []
-    if not observations:
-        return matched, unmatched
-
-    # Ensure embeddings exist (cache onto observations).
-    missing = [o for o in observations if o.embedding is None]
-    if missing:
-        vecs = embedder.embed([_obs_text(o) for o in missing])
-        for o, v in zip(missing, vecs):
-            o.embedding = [float(x) for x in v]
-
-    candidates = [p for p in library.active() if p.centroid is not None]
-    if not candidates:
-        return matched, list(observations)
-
-    # Freeze the centroids once so batch matching is order-independent.
-    frozen = [
-        (rec, np.asarray(rec.centroid, dtype=np.float32)) for rec in candidates
-    ]
-    touched: dict[str, PatternRecord] = {}
-
-    for obs in observations:
-        ovec = np.asarray(obs.embedding, dtype=np.float32)
-        best: PatternRecord | None = None
-        best_sim = -1.0
-        for rec, cvec in frozen:
-            sim = cosine_similarity(ovec, cvec)
-            if sim > best_sim:
-                best_sim = sim
-                best = rec
-        if best is not None and best_sim >= sim_threshold:
-            obs.pattern_id = best.pattern_id
-            best.observations.append(obs)
-            touched[best.pattern_id] = best
-            matched.append(obs)
-        else:
-            unmatched.append(obs)
-
-    # Recompute each touched centroid exactly once, after all attachments.
-    for rec in touched.values():
-        _recompute_centroid(rec)
-    return matched, unmatched
-
-
-# ──────────────────────────────────────────────────────────────────────────
 # Full Layer 2 driver
 # ──────────────────────────────────────────────────────────────────────────
 def build_or_update_library(
@@ -675,25 +372,21 @@ def build_or_update_library(
     cfg: "CSSConfig",
     out_dir: str = "",
 ) -> "PatternLibrary":
-    """Full Layer 2: match existing → group residue → refine → add → pair.
+    """Full Layer 2: match existing -> group residue -> refine -> add -> pair.
 
-    Uses **label-based grouping** (Jaccard pre-group + LLM synonym detection
-    on cognitive_aspect labels) instead of embedding + DBSCAN. The embedding-
-    based approach fails for this data: all observations share the same domain
-    ("LLM agent cognitive behavior on spreadsheet tasks") so a general-purpose
-    embedding model cannot distinguish fine-grained semantic differences, and
-    any density-based clustering degenerates.
+    Uses label-based grouping (Jaccard pre-group + LLM synonym detection
+    on cognitive_aspect labels).
 
     Pipeline:
 
     1. Match new observations against existing patterns by cognitive_aspect
        label similarity (:func:`match_by_label`); attach matches.
     2. Group the unmatched residue by label canonicalization
-       (:func:`group_observations` — Jaccard + LLM synonym).
+       (:func:`group_observations` -- Jaccard + LLM synonym).
     3. LLM-refine each group into a :class:`PatternRecord` (reuses
        :func:`_refine_one_cluster`).
     4. Allocate stable ``pattern_id``, stamp observations, add to library.
-    5. Re-pair failure↔success counterparts.
+    5. Re-pair failure/success counterparts.
     """
     from css.tracing import log_event
     from css.analysis.label_grouping import (

@@ -36,7 +36,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from css.model.json_repair import repair_json_via_llm
 
@@ -1775,11 +1775,8 @@ def _parse_json_safe(text: str, fallback: Any) -> Any:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Backward-compatible wrappers (called from orchestrator._branch_pass)
+# Public entry point (called from orchestrator._run_branch_operation)
 # ══════════════════════════════════════════════════════════════════════════════
-
-# Keep the old type alias for backward compatibility with orchestrator.
-RolloutValidateFn = Callable[[str, str, "list[str]"], "tuple[float, float]"]
 
 
 def run_proposal(
@@ -1792,15 +1789,12 @@ def run_proposal(
     cfg: "CSSConfig",
     new_node_id: str,
     epoch: int,
-    success_results: "list[TaskResult]" = None,
-    persistent_fail_groups: "list[TaskRolloutGroup]" = None,
-    rollout_validate_fn: RolloutValidateFn = None,
     env=None,
     target_client: "LLMClient" = None,
     train_groups: "list[TaskRolloutGroup]" = None,
     out_dir: str = "",
 ) -> "ProposalOutcome":
-    """Backward-compatible wrapper — delegates to run_l1_cycle."""
+    """Delegate to :func:`run_l1_cycle` (the v3 diverse-iterate L1 search)."""
     if env is not None and target_client is not None and train_groups is not None:
         return run_l1_cycle(
             node, library, archive, env, target_client, optimizer_client,
@@ -1810,33 +1804,4 @@ def run_proposal(
     return ProposalOutcome(
         success=False, operation="PROPOSAL",
         reason="missing_env: run_proposal requires env, target_client, train_groups for v2 L1 cycle",
-    )
-
-
-def run_refine(
-    node: "TreeNode",
-    l1_signals: list,
-    library: "PatternLibrary",
-    archive: "NegativeArchive",
-    optimizer_client: "LLMClient",
-    *,
-    cfg: "CSSConfig",
-    new_node_id: str,
-    epoch: int,
-    success_results: "list[TaskResult]" = None,
-    persistent_fail_groups: "list[TaskRolloutGroup]" = None,
-    rollout_validate_fn: RolloutValidateFn = None,
-    env=None,
-    target_client: "LLMClient" = None,
-    train_groups: "list[TaskRolloutGroup]" = None,
-    out_dir: str = "",
-) -> "ProposalOutcome":
-    """DEPRECATED — REFINE has been unified into PROPOSAL (v3). Kept only for
-    backward-compatible imports; delegates straight to :func:`run_proposal`."""
-    return run_proposal(
-        node, l1_signals, library, archive, optimizer_client,
-        cfg=cfg, new_node_id=new_node_id, epoch=epoch,
-        success_results=success_results, persistent_fail_groups=persistent_fail_groups,
-        rollout_validate_fn=rollout_validate_fn, env=env, target_client=target_client,
-        train_groups=train_groups, out_dir=out_dir,
     )
