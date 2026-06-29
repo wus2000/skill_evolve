@@ -227,7 +227,12 @@ _LLM_APPLY_SYSTEM = """\
 You are a document editor. Your ONLY job is to apply the specified edit(s) to \
 the given rules.md document FAITHFULLY.
 
-Rules you MUST follow:
+rules.md is a tactical playbook read by a task-executing agent. The content \
+field of each edit contains EXACTLY the text that should appear in the document. \
+Your job is purely mechanical — place the edit content into the document at the \
+right position.
+
+Rules:
 1. Reproduce ALL edit content WORD-FOR-WORD — do NOT rephrase, summarize, \
 add to, or omit any part of the edit content.
 2. PRESERVE all existing rules.md content that is NOT being replaced by an edit.
@@ -235,8 +240,11 @@ add to, or omit any part of the edit content.
 in the document (after thematically related sections, or at the end if unsure).
 4. For "section_rewrite" / "section_refinement" edits: find the matching ### \
 section by its heading and replace it entirely with the edit's content.
-5. Output ONLY the complete updated rules.md text. No commentary, no markdown \
-fences, no explanations — JUST the document content."""
+5. Do NOT add any commentary, rationale, source tasks, or meta-information \
+that is not in the edit content.
+
+Output ONLY this JSON:
+{"rules_md": "<the complete updated rules.md text>"}"""
 
 
 def _format_edit_for_apply(edit: "MergedEdit") -> str:
@@ -250,29 +258,41 @@ def _format_edit_for_apply(edit: "MergedEdit") -> str:
     return "\n".join(lines)
 
 
-def _extract_text_from_response(text: str) -> str:
-    """Extract plain-text rules.md from an LLM response.
+def _extract_rules_md(text: str, fallback_rules: str, fallback_edit: "MergedEdit | None" = None) -> str:
+    """Extract rules.md text from the LLM apply JSON response.
 
-    When the optimizer uses json_mode, the response may be wrapped in a JSON
-    object (e.g. {"content": "...", ...} or {"generation": {"content": "..."}}).
-    This helper extracts the actual markdown text.
+    Expected format: {"rules_md": "<complete rules.md text>"}
+    Falls back to searching common keys, nested structures, and finally
+    deterministic apply if nothing parseable is found.
     """
     stripped = text.strip()
+    if not stripped:
+        if fallback_edit:
+            return apply_section_edit(fallback_rules, fallback_edit)
+        return fallback_rules
+
     if stripped.startswith("{"):
         try:
             obj = json.loads(stripped)
             if isinstance(obj, dict):
-                # Try common wrapper keys
-                for key in ("content", "rules_md", "rules", "output", "result"):
+                for key in ("rules_md", "content", "rules", "output", "result"):
                     if key in obj and isinstance(obj[key], str):
                         return obj[key].strip()
-                # Try nested generation.content (vLLM format)
-                gen = obj.get("generation")
-                if isinstance(gen, dict) and "content" in gen:
-                    return gen["content"].strip()
+                params = obj.get("params")
+                if isinstance(params, dict):
+                    for key in ("content", "rules_md"):
+                        if key in params and isinstance(params[key], str):
+                            return params[key].strip()
         except (json.JSONDecodeError, ValueError):
             pass
-    return stripped
+
+    if stripped.startswith("### ") or stripped.startswith("# "):
+        return stripped
+
+    _log.warning("LLM apply returned unparseable response; falling back to deterministic apply")
+    if fallback_edit:
+        return apply_section_edit(fallback_rules, fallback_edit)
+    return fallback_rules
 
 
 def llm_apply_edit(
@@ -296,7 +316,7 @@ def llm_apply_edit(
     )
 
     try:
-        text, _usage = client.complete_optimizer_text(
+        text, _usage = client.complete_optimizer(
             _LLM_APPLY_SYSTEM, user, max_tokens=max_tokens
         )
     except Exception:
@@ -308,7 +328,7 @@ def llm_apply_edit(
         _log.warning("LLM apply returned empty for edit %r; falling back", edit.section_target)
         return apply_section_edit(rules_md, edit)
 
-    return _extract_text_from_response(text)
+    return _extract_rules_md(text, rules_md, edit)
 
 
 def llm_apply_edits(
@@ -339,7 +359,7 @@ def llm_apply_edits(
     )
 
     try:
-        text, _usage = client.complete_optimizer_text(
+        text, _usage = client.complete_optimizer(
             _LLM_APPLY_SYSTEM, user, max_tokens=max_tokens
         )
     except Exception:
@@ -350,7 +370,7 @@ def llm_apply_edits(
         _log.warning("LLM collective apply returned empty; falling back")
         return apply_all_section_edits(rules_md, edits)
 
-    return _extract_text_from_response(text)
+    return _extract_rules_md(text, rules_md, edits[0] if edits else None)
 
 
 def size_guard(rules_md: str, max_chars: int = 40_000) -> str:
