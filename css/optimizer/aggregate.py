@@ -77,9 +77,10 @@ replace or be inserted into the document.
 Field rules:
 - section_target: for rewrite/refinement, the EXACT existing heading;
   for new_section, the heading you are creating.
-- after_section: REQUIRED for new_section — which existing ### section
-  this should appear after. Use "_end" for document end, "_start" for
-  before all sections.
+- after_section: REQUIRED for new_section — must be "_end" (document end),
+  "_start" (before all sections), or an EXISTING ### heading from the
+  section index. Do NOT reference a section created by another edit in
+  this output. For section_rewrite/section_refinement, omit this field.
 - content: COMPLETE section (### heading + body). For rewrite/refinement,
   include ALL existing content that should be KEPT plus your changes.
 - target_tasks: Union of source_tasks from all contributing raw edits.
@@ -93,8 +94,11 @@ Field rules:
    edits proposing the same improvement → merge them. Cross-source agreement
    is high confidence; note it in derivation.
 
-3. GAP-ALIGN. If a raw edit's topic is covered by an existing ### section →
-   produce section_rewrite/section_refinement, NEVER a duplicate new_section.
+3. GAP-ALIGN. Choose delta_type based on the section index above:
+   - If the section index is empty or the topic is NOT covered by any
+     existing section → use "new_section" with after_section="_end".
+   - If the topic IS covered by an existing ### section → use
+     "section_rewrite" or "section_refinement", NEVER a duplicate new_section.
 
 4. PRESERVE EXISTING CONTENT. For rewrite/refinement, output the COMPLETE
    section — existing bullets that should be kept + changes. You are writing
@@ -322,7 +326,7 @@ def _check_has_history(step_buffer: "StepBuffer") -> bool:
 
 # ── Post-validation ──────────────────────────────────────────────────────────
 
-def _validate_merged_edits(raw_edits: list[dict]) -> list[MergedEdit]:
+def _validate_merged_edits(raw_edits: list[dict], rules: str = "") -> list[MergedEdit]:
     """Validate and convert raw edit dicts into MergedEdit objects.
 
     Drops invalid edits with a log warning. Enforces:
@@ -330,7 +334,18 @@ def _validate_merged_edits(raw_edits: list[dict]) -> list[MergedEdit]:
       - ``delta_type`` is one of: new_section, section_rewrite, section_refinement
       - ``target_tasks`` is a non-empty list
       - No two edits target the same ``section_target``
+
+    Auto-corrects: if delta_type is section_rewrite/refinement but the
+    section_target heading does not exist in the current rules.md, silently
+    converts to new_section with after_section="_end".
     """
+    existing_headings: set[str] = set()
+    if rules:
+        for line in rules.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("### "):
+                existing_headings.add(stripped)
+
     valid: list[MergedEdit] = []
     seen_targets: set[str] = set()
 
@@ -354,6 +369,19 @@ def _validate_merged_edits(raw_edits: list[dict]) -> list[MergedEdit]:
                 i, delta_type, _VALID_DELTA_TYPES,
             )
             continue
+
+        # Auto-correct: rewrite/refinement targeting a non-existent section → new_section
+        section_target = str(d.get("section_target", ""))
+        if delta_type in ("section_rewrite", "section_refinement"):
+            if section_target not in existing_headings:
+                _log.info(
+                    "merger: auto-correcting edit %d — delta_type %r but "
+                    "section %r not in rules.md; converting to new_section",
+                    i, delta_type, section_target,
+                )
+                d["delta_type"] = "new_section"
+                d["after_section"] = "_end"
+                delta_type = "new_section"
 
         # Validate target_tasks is a non-empty list
         target_tasks = d.get("target_tasks", [])
@@ -445,7 +473,7 @@ def merger(
         return []
 
     # Post-validate
-    merged = _validate_merged_edits(raw_edits)
+    merged = _validate_merged_edits(raw_edits, rules=rules)
 
     _log.info(
         "merger: %d raw edits -> %d LLM outputs -> %d validated MergedEdits",

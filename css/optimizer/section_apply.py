@@ -250,6 +250,31 @@ def _format_edit_for_apply(edit: "MergedEdit") -> str:
     return "\n".join(lines)
 
 
+def _extract_text_from_response(text: str) -> str:
+    """Extract plain-text rules.md from an LLM response.
+
+    When the optimizer uses json_mode, the response may be wrapped in a JSON
+    object (e.g. {"content": "...", ...} or {"generation": {"content": "..."}}).
+    This helper extracts the actual markdown text.
+    """
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            obj = json.loads(stripped)
+            if isinstance(obj, dict):
+                # Try common wrapper keys
+                for key in ("content", "rules_md", "rules", "output", "result"):
+                    if key in obj and isinstance(obj[key], str):
+                        return obj[key].strip()
+                # Try nested generation.content (vLLM format)
+                gen = obj.get("generation")
+                if isinstance(gen, dict) and "content" in gen:
+                    return gen["content"].strip()
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return stripped
+
+
 def llm_apply_edit(
     client: "LLMClient",
     rules_md: str,
@@ -283,7 +308,7 @@ def llm_apply_edit(
         _log.warning("LLM apply returned empty for edit %r; falling back", edit.section_target)
         return apply_section_edit(rules_md, edit)
 
-    return text.strip()
+    return _extract_text_from_response(text)
 
 
 def llm_apply_edits(
@@ -325,7 +350,7 @@ def llm_apply_edits(
         _log.warning("LLM collective apply returned empty; falling back")
         return apply_all_section_edits(rules_md, edits)
 
-    return text.strip()
+    return _extract_text_from_response(text)
 
 
 def size_guard(rules_md: str, max_chars: int = 40_000) -> str:
