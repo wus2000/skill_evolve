@@ -55,8 +55,13 @@ testing.
 ## What you produce
 
 Each output edit is the COMPLETE TARGET CONTENT of one ### section in rules.md.
-Not a diff, not an op — the full section text (### heading + body) that should
-replace or be inserted into the document.
+rules.md is a tactical playbook that a SEPARATE task-executing agent reads as
+its operational instructions. The task agent has NO access to raw edits,
+optimization history, or any context from this pipeline — it only sees the
+final rules.md text. Therefore, every piece of content you write must be a
+DIRECT, ACTIONABLE instruction that helps the agent perform tasks correctly.
+Do not include any information that is only meaningful to the optimization
+process (rationale, source tasks, failure statistics, "why" explanations).
 
 ## Output format — JSON only, no fences, no prose
 {
@@ -81,13 +86,12 @@ Field rules:
   "_start" (before all sections), or an EXISTING ### heading from the
   section index. Do NOT reference a section created by another edit in
   this output. For section_rewrite/section_refinement, omit this field.
-- content: COMPLETE section (### heading + body). This text will be injected
-  DIRECTLY into the task agent's prompt as actionable rules. It must contain
-  ONLY operational instructions the agent should follow. Do NOT embed any
-  meta-information in the content — no rationale, no derivation, no source
-  task lists, no failure counts, no optimization context (e.g. no
-  "**Rationale**: ...", no "**Source Tasks**: ...", no "**Why**: ..." paragraphs).
-  All such context belongs in the separate rationale/derivation fields only.
+- content: COMPLETE section (### heading + body). This is what the task agent
+  will read as its rules — write it FROM THE AGENT'S PERSPECTIVE. Include
+  only what the agent needs to know to act correctly: procedures, patterns,
+  checks, constraints. Do NOT include anything the agent cannot act on:
+  no "**Rationale**:", no "**Source Tasks**:", no "**Why**:", no failure
+  statistics, no edit provenance. Those belong in rationale/derivation fields.
   For rewrite/refinement, include ALL existing content that should be KEPT
   plus your changes.
 - target_tasks: Union of source_tasks from all contributing raw edits.
