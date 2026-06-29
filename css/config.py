@@ -61,8 +61,8 @@ class CSSConfig:
     # ── L1 STRATEGY CYCLE (diverse-iterate + objective lift selection) ────
     max_l1_iterations: int = 8          # max diverse-iterate rounds (hard cap)
     l1_target_effective: int = 3        # stop once this many EFFECTIVE (lift>0) strategies collected
-    l1_diagnostic_tasks: int = 16       # R: residual tasks (baseline 0/K) — the lift set
-    l1_regression_tasks: int = 8        # G: robustly-passing tasks (baseline K/K) — harm guard
+    l1_diagnostic_tasks: int = 24       # R: residual tasks (baseline 0/K); 24 unless fewer available
+    l1_regression_tasks: int = 12      # G: robustly-passing tasks (baseline K/K) — harm guard
     l1_diagnosis_per_category: int = 5  # max per-task trajectory analyses per category (cracked/regressed/still)
 
     # ── Reflect mode ─────────────────────────────────────────────────────
