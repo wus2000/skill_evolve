@@ -356,29 +356,6 @@ def _check_has_history(step_buffer: "StepBuffer") -> bool:
     return False
 
 
-def _strip_meta_from_content(content: str) -> str:
-    """Remove optimizer meta-info that the merger may embed in section content.
-
-    The content field is agent-facing — it should contain only actionable rules.
-    Lines like "**Rationale**: ...", "**Derivation**: ...", "**Note**: This was
-    merged from ..." are optimizer context that must not reach the task agent.
-    """
-    lines = content.split("\n")
-    cleaned: list[str] = []
-    skip_rest = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("**Rationale**") or stripped.startswith("**Derivation**"):
-            skip_rest = True
-            continue
-        if skip_rest and not stripped:
-            continue
-        if skip_rest and stripped:
-            skip_rest = False
-        cleaned.append(line)
-    result = "\n".join(cleaned).rstrip() + "\n"
-    return result
-
 
 # ── Post-validation ──────────────────────────────────────────────────────────
 
@@ -416,9 +393,6 @@ def _validate_merged_edits(raw_edits: list[dict], rules: str = "") -> list[Merge
             )
             continue
 
-        # Strip embedded rationale/meta-info from content (agent-facing only)
-        content = _strip_meta_from_content(content)
-        d["content"] = content
 
         # Validate delta_type
         delta_type = str(d.get("delta_type", ""))
