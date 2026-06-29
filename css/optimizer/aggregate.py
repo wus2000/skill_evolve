@@ -309,7 +309,7 @@ def _build_merger_user_prompt(
     merger_inject_history = getattr(cfg, "merger_inject_history", True)
     has_history = _check_has_history(step_buffer) if merger_inject_history else False
     if has_history:
-        window = getattr(cfg, "W", 10)
+        window = getattr(cfg, "merger_history_window", 3)
         sections.append(
             "## Optimization history\n" + _format_merger_history(step_buffer, window)
         )
