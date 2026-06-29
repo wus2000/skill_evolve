@@ -112,11 +112,16 @@ Field rules:
    audit records. Write each thoroughly:
 
    rationale must answer:
-   - What SPECIFIC failure modes does this edit address? (e.g. "agent uses
-     pd.read_excel() without data_only=True, so formula cells return
-     strings instead of computed values, causing TypeError on 8/21 tasks")
-   - Which task IDs exhibited these failures? How many raw patches
-     independently identified this pattern? (consensus = confidence)
+   - What valuable INSIGHT was discovered from the trajectories? This may
+     be a recurring failure pattern (e.g. "agent uses pd.read_excel()
+     without data_only=True, causing TypeError on formula cells"), a
+     success pattern worth codifying (e.g. "passing rollouts consistently
+     verify sheet names match before writing — this practice prevents
+     silent data loss"), or a contrastive finding (e.g. "the key
+     difference between pass/fail on task X was checking file extension
+     before choosing the read method").
+   - Which task IDs and how many independent patches support this insight?
+     (cross-patch consensus = high confidence)
    - What concrete behavior change is expected after applying this edit?
 
    derivation must answer:
