@@ -84,9 +84,10 @@ Field rules:
 - content: COMPLETE section (### heading + body). This text will be injected
   DIRECTLY into the task agent's prompt as actionable rules. It must contain
   ONLY operational instructions the agent should follow. Do NOT embed any
-  meta-information such as rationale, derivation, failure counts, optimization
-  context, or explanations of why a rule was added (e.g. no "**Rationale**: ..."
-  paragraphs). Put all such context in the separate rationale/derivation fields.
+  meta-information in the content — no rationale, no derivation, no source
+  task lists, no failure counts, no optimization context (e.g. no
+  "**Rationale**: ...", no "**Source Tasks**: ...", no "**Why**: ..." paragraphs).
+  All such context belongs in the separate rationale/derivation fields only.
   For rewrite/refinement, include ALL existing content that should be KEPT
   plus your changes.
 - target_tasks: Union of source_tasks from all contributing raw edits.
