@@ -68,8 +68,8 @@ replace or be inserted into the document.
       "after_section": "### <heading of preceding section>",
       "content": "### <heading>\\n<well-structured markdown body>",
       "target_tasks": ["task_id_1", ...],
-      "rationale": "<2-4 sentences: what specific failure patterns or gaps this edit addresses, citing task IDs and failure modes observed in raw edits; what improvement is expected>",
-      "derivation": "<2-4 sentences: list ALL raw edit numbers that contributed (e.g. 'Raw edits 1,3,7,12'); explain how they were combined or refined; note any raw edits that were dropped and why>"
+      "rationale": "<DETAILED — see Principle 6>",
+      "derivation": "<DETAILED — see Principle 6>"
     }
   ]
 }
@@ -107,12 +107,29 @@ Field rules:
 5. RESOLVE CONTRADICTIONS. Conflicting raw edits → keep the version with
    more supporting patches. Explain in derivation.
 
-6. DERIVATION TRANSPARENCY. For EVERY output edit, the rationale and
-   derivation fields must be DETAILED (2-4 sentences each, not one-liners):
-   - rationale: cite the specific failure patterns and task IDs this edit
-     addresses; explain what concrete improvement is expected.
-   - derivation: list ALL contributing raw edit numbers by index; explain
-     how they were merged or refined; state what was dropped and why.
+6. DERIVATION TRANSPARENCY. The rationale and derivation fields carry
+   critical diagnostic value — they are NOT summaries, they are detailed
+   audit records. Write each thoroughly:
+
+   rationale must answer:
+   - What SPECIFIC failure modes does this edit address? (e.g. "agent uses
+     pd.read_excel() without data_only=True, so formula cells return
+     strings instead of computed values, causing TypeError on 8/21 tasks")
+   - Which task IDs exhibited these failures? How many raw patches
+     independently identified this pattern? (consensus = confidence)
+   - What concrete behavior change is expected after applying this edit?
+
+   derivation must answer:
+   - Which raw edit numbers contributed? (list ALL by index, e.g. "Raw
+     edits 1, 2, 5, 6, 9")
+   - For each contributing raw edit, what did it propose and what was kept
+     vs refined? (e.g. "Edit 2 proposed data_only=True with engine param
+     — kept its more precise formulation over edit 1's simpler version")
+   - Were any raw edits DROPPED? Which ones and why? (e.g. "Dropped edit
+     11 which proposed 'avoid formulas entirely' — conflicts with tasks
+     requiring formula output")
+   - How were overlapping proposals resolved? (e.g. "Edits 5, 6, 9 all
+     proposed type-checking rules — merged into one consolidated bullet")
 
 7. QUALITY OVER QUANTITY. Fewer high-confidence edits beat many speculative
    ones. Drop weak/low-support raw edits rather than outputting noise."""
