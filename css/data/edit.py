@@ -243,3 +243,50 @@ class RawPatch:
         if self.failure_summary:
             d["failure_summary"] = list(self.failure_summary)
         return d
+
+
+# ── V2 section-level edit unit (produced by the merger) ──────────────────────
+
+# Valid delta types for MergedEdit.
+MERGED_EDIT_DELTA_TYPES = ("new_section", "section_rewrite", "section_refinement")
+
+
+@dataclass
+class MergedEdit:
+    """One section-level edit unit produced by the merger.
+
+    Represents the COMPLETE target state of one ``###`` section in rules.md.
+    Each MergedEdit targets a different section (independence guarantee for
+    ablation verification).
+    """
+
+    section_target: str = ""       # "### Data Loading" -- exact heading
+    delta_type: str = ""           # "new_section" | "section_rewrite" | "section_refinement"
+    after_section: str = ""        # For new_section: insert after this heading
+    content: str = ""              # Full section text (### heading + body). NEVER truncated.
+    target_tasks: list[str] = field(default_factory=list)
+    rationale: str = ""            # Why this edit is needed
+    derivation: str = ""           # How synthesized from raw edits (audit trail)
+
+    def to_dict(self) -> dict:
+        return {
+            "section_target": self.section_target,
+            "delta_type": self.delta_type,
+            "after_section": self.after_section,
+            "content": self.content,
+            "target_tasks": self.target_tasks,
+            "rationale": self.rationale,
+            "derivation": self.derivation,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "MergedEdit":
+        return cls(
+            section_target=str(d.get("section_target", "")),
+            delta_type=str(d.get("delta_type", "section_rewrite")),
+            after_section=str(d.get("after_section", "")),
+            content=str(d.get("content", "")),
+            target_tasks=list(d.get("target_tasks", [])),
+            rationale=str(d.get("rationale", "")),
+            derivation=str(d.get("derivation", "")),
+        )
