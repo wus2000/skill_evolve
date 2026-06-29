@@ -362,6 +362,30 @@ class TracingLLMClient:
                 stage=self._current_stage, error=error,
             )
 
+    def complete_tool_call(
+        self, system: str, user: str, tool: dict, *, max_tokens: int = 16384
+    ) -> dict:
+        t0 = time.time()
+        error = ""
+        result: dict = {}
+        try:
+            result = self._inner.complete_tool_call(
+                system, user, tool, max_tokens=max_tokens
+            )
+            return result
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            log_llm_call(
+                "optimizer", "complete_tool_call",
+                system=system, user=user, response=str(result)[:2000],
+                duration_s=time.time() - t0,
+                model=self.optimizer_model,
+                max_tokens=max_tokens,
+                stage=self._current_stage, error=error,
+            )
+
     def complete_optimizer_text(
         self, system: str, user: str, *, max_tokens: int = 4096
     ) -> tuple[str, dict]:

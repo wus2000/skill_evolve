@@ -225,12 +225,12 @@ def apply_all_section_edits(rules_md: str, edits: list["MergedEdit"]) -> str:
 
 _LLM_APPLY_SYSTEM = """\
 You are a document editor. Your ONLY job is to apply the specified edit(s) to \
-the given rules.md document FAITHFULLY.
+the given rules.md document FAITHFULLY, then call write_rules_md with the result.
 
 rules.md is a tactical playbook read by a task-executing agent. The content \
 field of each edit contains EXACTLY the text that should appear in the document. \
 Your job is purely mechanical — place the edit content into the document at the \
-right position.
+right position, then call write_rules_md with the complete updated document.
 
 Rules:
 1. Reproduce ALL edit content WORD-FOR-WORD — do NOT rephrase, summarize, \
@@ -241,10 +241,30 @@ in the document (after thematically related sections, or at the end if unsure).
 4. For "section_rewrite" / "section_refinement" edits: find the matching ### \
 section by its heading and replace it entirely with the edit's content.
 5. Do NOT add any commentary, rationale, source tasks, or meta-information \
-that is not in the edit content.
+that is not in the edit content."""
 
-Output ONLY this JSON:
-{"rules_md": "<the complete updated rules.md text>"}"""
+_WRITE_RULES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "write_rules_md",
+        "description": (
+            "Write the complete updated rules.md content. "
+            "rules.md is read by a task-executing agent as its tactical playbook. "
+            "Content must contain ONLY actionable rules — no rationale, no source "
+            "task lists, no optimization metadata."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The complete rules.md text after applying all edits",
+                }
+            },
+            "required": ["content"],
+        },
+    },
+}
 
 
 def _format_edit_for_apply(edit: "MergedEdit") -> str:
@@ -257,42 +277,6 @@ def _format_edit_for_apply(edit: "MergedEdit") -> str:
     ]
     return "\n".join(lines)
 
-
-def _extract_rules_md(text: str, fallback_rules: str, fallback_edit: "MergedEdit | None" = None) -> str:
-    """Extract rules.md text from the LLM apply JSON response.
-
-    Expected format: {"rules_md": "<complete rules.md text>"}
-    Falls back to searching common keys, nested structures, and finally
-    deterministic apply if nothing parseable is found.
-    """
-    stripped = text.strip()
-    if not stripped:
-        if fallback_edit:
-            return apply_section_edit(fallback_rules, fallback_edit)
-        return fallback_rules
-
-    if stripped.startswith("{"):
-        try:
-            obj = json.loads(stripped)
-            if isinstance(obj, dict):
-                for key in ("rules_md", "content", "rules", "output", "result"):
-                    if key in obj and isinstance(obj[key], str):
-                        return obj[key].strip()
-                params = obj.get("params")
-                if isinstance(params, dict):
-                    for key in ("content", "rules_md"):
-                        if key in params and isinstance(params[key], str):
-                            return params[key].strip()
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    if stripped.startswith("### ") or stripped.startswith("# "):
-        return stripped
-
-    _log.warning("LLM apply returned unparseable response; falling back to deterministic apply")
-    if fallback_edit:
-        return apply_section_edit(fallback_rules, fallback_edit)
-    return fallback_rules
 
 
 def llm_apply_edit(
@@ -316,19 +300,20 @@ def llm_apply_edit(
     )
 
     try:
-        text, _usage = client.complete_optimizer(
-            _LLM_APPLY_SYSTEM, user, max_tokens=max_tokens
+        result = client.complete_tool_call(
+            _LLM_APPLY_SYSTEM, user, _WRITE_RULES_TOOL, max_tokens=max_tokens
         )
+        content = result.get("content", "")
     except Exception:
-        _log.exception("LLM apply failed for edit %r; falling back to deterministic apply",
+        _log.exception("LLM apply tool call failed for edit %r; falling back to deterministic apply",
                         edit.section_target)
         return apply_section_edit(rules_md, edit)
 
-    if not text or not text.strip():
-        _log.warning("LLM apply returned empty for edit %r; falling back", edit.section_target)
+    if not content or not content.strip():
+        _log.warning("LLM apply returned empty content for edit %r; falling back", edit.section_target)
         return apply_section_edit(rules_md, edit)
 
-    return _extract_rules_md(text, rules_md, edit)
+    return content.strip()
 
 
 def llm_apply_edits(
@@ -359,18 +344,19 @@ def llm_apply_edits(
     )
 
     try:
-        text, _usage = client.complete_optimizer(
-            _LLM_APPLY_SYSTEM, user, max_tokens=max_tokens
+        result = client.complete_tool_call(
+            _LLM_APPLY_SYSTEM, user, _WRITE_RULES_TOOL, max_tokens=max_tokens
         )
+        content = result.get("content", "")
     except Exception:
-        _log.exception("LLM collective apply failed; falling back to deterministic apply")
+        _log.exception("LLM collective apply tool call failed; falling back to deterministic apply")
         return apply_all_section_edits(rules_md, edits)
 
-    if not text or not text.strip():
-        _log.warning("LLM collective apply returned empty; falling back")
+    if not content or not content.strip():
+        _log.warning("LLM collective apply returned empty content; falling back")
         return apply_all_section_edits(rules_md, edits)
 
-    return _extract_rules_md(text, rules_md, edits[0] if edits else None)
+    return content.strip()
 
 
 def size_guard(rules_md: str, max_chars: int = 40_000) -> str:

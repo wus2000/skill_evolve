@@ -309,6 +309,14 @@ class OptimizerOnlyClient:
             _inject_firewall_messages(messages), max_tokens=max_tokens
         )
 
+    def complete_tool_call(
+        self, system: str, user: str, tool: dict, *, max_tokens: int = 16384
+    ) -> dict:
+        """Tool call through the optimizer path (GT firewall injected)."""
+        return self._inner.complete_tool_call(
+            _inject_firewall_system(system), user, tool, max_tokens=max_tokens
+        )
+
     def complete_optimizer_text(
         self, system: str, user: str, *, max_tokens: int = 4096
     ) -> tuple[str, dict]:
@@ -477,6 +485,38 @@ class OpenAICompatLLMClient:
             list(messages), self.optimizer_model, max_tokens, self.temperature,
             response_format=self._optimizer_response_format(),
         )
+
+    def complete_tool_call(
+        self, system: str, user: str, tool: dict, *, max_tokens: int = 16384
+    ) -> dict:
+        """Call the LLM with a tool definition, return the tool call arguments as a dict.
+
+        Uses forced tool_choice so the LLM MUST call the specified function.
+        Returns the parsed arguments dict. Raises on failure.
+        """
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        func_name = tool["function"]["name"]
+        payload: dict[str, Any] = {
+            "model": self.optimizer_model,
+            "messages": messages,
+            "max_tokens": min(max_tokens, self.max_tokens),
+            "temperature": self.temperature,
+            "tools": [tool],
+            "tool_choice": {"type": "function", "function": {"name": func_name}},
+        }
+        data = self._post(payload)
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError(f"Tool call returned no choices: {data}")
+        message = choices[0].get("message") or {}
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            args_str = tool_calls[0].get("function", {}).get("arguments", "{}")
+            return json.loads(args_str)
+        content = message.get("content") or ""
+        if content.strip().startswith("{"):
+            return json.loads(content)
+        raise RuntimeError(f"Tool call returned no tool_calls and no parseable content")
 
     def _optimizer_response_format(self) -> dict | None:
         return {"type": "json_object"} if self.optimizer_json_mode else None
