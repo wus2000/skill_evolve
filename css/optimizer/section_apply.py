@@ -1,8 +1,9 @@
-"""Deterministic section-level parse / apply / assemble for rules.md.
+"""Section-level parse / apply / assemble for rules.md.
 
-rules.md is structured as a sequence of ### sections. This module provides
-the mechanical operations for applying MergedEdit units (produced by the
-merger) to rules.md without any LLM involvement.
+rules.md is structured as a sequence of ### sections. This module provides:
+  * Deterministic parse/assemble utilities.
+  * LLM-based faithful apply — the primary path for applying MergedEdits.
+  * Deterministic apply — kept as fallback / reference.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from css.data.edit import MergedEdit
+    from css.model.client import LLMClient
 
 from css.markdown_utils import _fenced_spans, _in_spans
 
@@ -146,11 +148,12 @@ def _apply_new_section(rules_md: str, edit: "MergedEdit") -> str:
     if target_idx is None:
         _log.warning(
             "after_section heading %r not found for new_section %r; "
-            "returning rules_md unchanged",
+            "falling back to append at end",
             after,
             edit.section_target,
         )
-        return rules_md
+        separator = "\n" if rules_md and not rules_md.endswith("\n") else ""
+        return rules_md + separator + new_content
 
     # Reconstruct: everything up to and including target section,
     # then new content, then remaining sections
@@ -214,6 +217,115 @@ def apply_all_section_edits(rules_md: str, edits: list["MergedEdit"]) -> str:
     for edit in edits:
         result = apply_section_edit(result, edit)
     return result
+
+
+# ---------------------------------------------------------------------------
+# LLM-based apply — primary path
+# ---------------------------------------------------------------------------
+
+_LLM_APPLY_SYSTEM = """\
+You are a document editor. Your ONLY job is to apply the specified edit(s) to \
+the given rules.md document FAITHFULLY.
+
+Rules you MUST follow:
+1. Reproduce ALL edit content WORD-FOR-WORD — do NOT rephrase, summarize, \
+add to, or omit any part of the edit content.
+2. PRESERVE all existing rules.md content that is NOT being replaced by an edit.
+3. For "new_section" edits: insert the new ### section at a logical position \
+in the document (after thematically related sections, or at the end if unsure).
+4. For "section_rewrite" / "section_refinement" edits: find the matching ### \
+section by its heading and replace it entirely with the edit's content.
+5. Output ONLY the complete updated rules.md text. No commentary, no markdown \
+fences, no explanations — JUST the document content."""
+
+
+def _format_edit_for_apply(edit: "MergedEdit") -> str:
+    """Render one MergedEdit as a text block for the LLM apply prompt."""
+    lines = [
+        f"Type: {edit.delta_type}",
+        f"Section: {edit.section_target}",
+        "Content:",
+        edit.content,
+    ]
+    return "\n".join(lines)
+
+
+def llm_apply_edit(
+    client: "LLMClient",
+    rules_md: str,
+    edit: "MergedEdit",
+    *,
+    max_tokens: int = 16384,
+) -> str:
+    """Apply ONE MergedEdit to rules.md via LLM. For per-edit ablation.
+
+    Returns the complete updated rules.md text.
+    Falls back to deterministic apply_section_edit on LLM failure.
+    """
+    user = (
+        "## Current rules.md\n"
+        + (rules_md.strip() if rules_md and rules_md.strip() else "(empty)")
+        + "\n\n## Edit to apply\n"
+        + _format_edit_for_apply(edit)
+        + "\n\nApply this edit and output the complete updated rules.md."
+    )
+
+    try:
+        text, _usage = client.complete_optimizer(
+            _LLM_APPLY_SYSTEM, user, max_tokens=max_tokens
+        )
+    except Exception:
+        _log.exception("LLM apply failed for edit %r; falling back to deterministic apply",
+                        edit.section_target)
+        return apply_section_edit(rules_md, edit)
+
+    if not text or not text.strip():
+        _log.warning("LLM apply returned empty for edit %r; falling back", edit.section_target)
+        return apply_section_edit(rules_md, edit)
+
+    return text.strip()
+
+
+def llm_apply_edits(
+    client: "LLMClient",
+    rules_md: str,
+    edits: list["MergedEdit"],
+    *,
+    max_tokens: int = 16384,
+) -> str:
+    """Apply multiple MergedEdits to rules.md via LLM. For collective apply.
+
+    All edits are applied in a single LLM call to produce a coherent document.
+    Falls back to sequential deterministic apply on LLM failure.
+    """
+    if not edits:
+        return rules_md
+
+    edit_blocks = []
+    for i, edit in enumerate(edits):
+        edit_blocks.append(f"### Edit {i + 1}\n{_format_edit_for_apply(edit)}")
+
+    user = (
+        "## Current rules.md\n"
+        + (rules_md.strip() if rules_md and rules_md.strip() else "(empty)")
+        + f"\n\n## Edits to apply ({len(edits)} total)\n"
+        + "\n\n".join(edit_blocks)
+        + "\n\nApply ALL edits and output the complete updated rules.md."
+    )
+
+    try:
+        text, _usage = client.complete_optimizer(
+            _LLM_APPLY_SYSTEM, user, max_tokens=max_tokens
+        )
+    except Exception:
+        _log.exception("LLM collective apply failed; falling back to deterministic apply")
+        return apply_all_section_edits(rules_md, edits)
+
+    if not text or not text.strip():
+        _log.warning("LLM collective apply returned empty; falling back")
+        return apply_all_section_edits(rules_md, edits)
+
+    return text.strip()
 
 
 def size_guard(rules_md: str, max_chars: int = 40_000) -> str:
