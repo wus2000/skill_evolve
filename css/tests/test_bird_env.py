@@ -130,6 +130,26 @@ def test_bird_no_gold_in_trajectory(bird_item):
     assert "99" not in text
 
 
+def test_split_loads_with_per_split_db_root():
+    """The committed split loads; train/val resolve to train DBs, test to dev DBs."""
+    base = os.path.join(os.path.dirname(__file__), "..", "..",
+                        "data", "bird_split_filtered_seed42")
+    if not os.path.exists(base):
+        pytest.skip("bird split not present")
+    cfg = CSSConfig(
+        n_train=5, n_val=3, n_test=4, split_dir=base, data_root="/TRAIN_DB",
+        extra={"bird_test_db_root": "/DEV_DB"},
+    )
+    env = BirdEnv(cfg)
+    tr, va, te = env.train_items(), env.val_items(), env.test_items()
+    assert len(tr) == 5 and len(va) == 3 and len(te) == 4
+    assert tr[0]["db_path"].startswith("/TRAIN_DB/")
+    assert va[0]["db_path"].startswith("/TRAIN_DB/")
+    assert te[0]["db_path"].startswith("/DEV_DB/")
+    # Gold SQL is carried for evaluation (kept out of prompts; see prompt tests).
+    assert tr[0].get("SQL") and te[0].get("SQL")
+
+
 def test_bird_load_cached_result_roundtrip(bird_item):
     tmp, item = bird_item
     env, res = _run(tmp, item, "SELECT COUNT(*) FROM t")

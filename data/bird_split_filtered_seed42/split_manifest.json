@@ -1,0 +1,18 @@
+{
+  "source_train": "train-00000-of-00001.jsonl",
+  "source_test": "dev.json",
+  "method": "train+val: filtered train -> sort(db_id,question,SQL) -> random.Random(42).shuffle -> split 5:1 (train:val); test: BIRD dev verbatim",
+  "shuffle_seed": 42,
+  "val_ratio": 0.16666666666666666,
+  "counts": {
+    "train": 5501,
+    "val": 1100,
+    "test": 1534
+  },
+  "db_roots": {
+    "train": "BIRD train_databases (<db_id>/<db_id>.sqlite)",
+    "val": "BIRD train_databases (<db_id>/<db_id>.sqlite)",
+    "test": "BIRD dev_databases (<db_id>/<db_id>.sqlite)"
+  },
+  "note": "Items carry db_id, not db_path. train/val use the BIRD TRAIN databases; test uses the BIRD DEV databases — set the env's db_root (train/val) and test_db_root (test) accordingly."
+}

@@ -31,12 +31,22 @@ def _resolve_db_path(db_root: str, db_id: str) -> str:
 
 
 class BirdDataLoader:
-    """Loads Bird task items for a split and attaches ``id`` / ``db_path``."""
+    """Loads Bird task items for a split and attaches ``id`` / ``db_path``.
 
-    def __init__(self, split_dir: str, db_root: str) -> None:
+    ``db_root`` holds the databases for train/val; ``test_db_root`` (when given)
+    holds the databases for test — BIRD ships train and dev databases under
+    different roots (train_databases vs dev_databases). When ``test_db_root`` is
+    empty, ``db_root`` is used for every split.
+    """
+
+    def __init__(self, split_dir: str, db_root: str, test_db_root: str = "") -> None:
         self.split_dir = split_dir
         self.db_root = db_root
+        self.test_db_root = test_db_root or db_root
         self._cache: dict[str, list[dict]] = {}
+
+    def _db_root_for(self, split: str) -> str:
+        return self.test_db_root if split == "test" else self.db_root
 
     def load(self, split: str) -> list[dict]:
         if split in self._cache:
@@ -47,11 +57,12 @@ class BirdDataLoader:
         with open(items_path, encoding="utf-8") as f:
             raw_items = json.load(f)
 
+        db_root = self._db_root_for(split)
         items: list[dict] = []
         for i, raw in enumerate(raw_items):
             item = dict(raw)
-            item["id"] = str(item.get("question_id", item.get("id", i)))
-            item["db_path"] = _resolve_db_path(self.db_root, item.get("db_id", ""))
+            item["id"] = str(item.get("id", item.get("question_id", i)))
+            item["db_path"] = _resolve_db_path(db_root, item.get("db_id", ""))
             items.append(item)
         self._cache[split] = items
         return items

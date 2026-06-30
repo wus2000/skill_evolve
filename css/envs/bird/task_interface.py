@@ -45,11 +45,16 @@ class BirdEnv:
         cfg: "CSSConfig",
         *,
         db_root: str = "",
+        test_db_root: str = "",
         split_dir: str = "",
         items: dict | None = None,
     ) -> None:
         self.cfg = cfg
+        extra = getattr(cfg, "extra", {}) or {}
         self.db_root = db_root or cfg.data_root
+        # BIRD ships train and dev databases under different roots; test uses the
+        # dev databases. Falls back to db_root when unset.
+        self.test_db_root = test_db_root or str(extra.get("bird_test_db_root", "")) or self.db_root
         self.split_dir = split_dir or cfg.split_dir
         if items is None:
             self._items: dict[str, list[dict]] | None = None
@@ -70,7 +75,7 @@ class BirdEnv:
             return self._loader
         from css.envs.bird.dataloader import BirdDataLoader  # noqa: PLC0415
 
-        self._loader = BirdDataLoader(self.split_dir, self.db_root)
+        self._loader = BirdDataLoader(self.split_dir, self.db_root, self.test_db_root)
         return self._loader
 
     def _split(self, split: str) -> list[dict]:

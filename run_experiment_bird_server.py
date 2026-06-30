@@ -52,13 +52,16 @@ def main() -> None:
         # ── Environment ──────────────────────────────────────────────────
         env_name="bird",
 
-        # BIRD pre-made split is 764/157/613; subset to a sane first-run size
-        # (raise to the full counts for a final run). cfg.n_* slices each split.
-        n_train=200,
-        n_val=60,
+        # Split: filtered train (6601) shuffled seed=42 -> train/val 5:1
+        # (5501/1100); test = BIRD dev (1534). cfg.n_* slices each split, so the
+        # values below are a sane first-run subset — raise to 5501/1100/1534 for
+        # the full run.
+        n_train=300,
+        n_val=100,
         n_test=200,
-        split_dir=f"{DATA_BASE}/bird_split",
-        data_root=f"{DATA_BASE}/bird_raw/database",  # db_root: <db_id>/<db_id>.sqlite
+        split_dir=f"{DATA_BASE}/bird_split_filtered_seed42",
+        # train/val databases (BIRD train); test databases (BIRD dev) via extra.
+        data_root=f"{DATA_BASE}/bird_raw/train/train_databases",
 
         # LLM (remote OpenAI-compatible endpoint, reachable from this server)
         target_model="qwen3.6-35b-a3b",
@@ -88,6 +91,8 @@ def main() -> None:
             "enable_thinking": False,
             "timeout_seconds": 1800,
             "optimizer_json_mode": True,
+            # BIRD dev databases for the test split (train/val use data_root).
+            "bird_test_db_root": f"{DATA_BASE}/bird_raw/dev/dev_databases",
             # Bird task-agent knobs
             "bird_max_turns": 10,
             "bird_exec_timeout": 30.0,
