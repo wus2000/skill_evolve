@@ -1,0 +1,15 @@
+{
+  "source": "/home/wushang/workspace/data/spreadsheetbench_split_t2s_aligned",
+  "method": "union(400) -> sort(id) -> random.Random(42).shuffle -> split (140, 60, 200)",
+  "split_seed": 42,
+  "ratio": [
+    140,
+    60,
+    200
+  ],
+  "counts": {
+    "train": 140,
+    "val": 60,
+    "test": 200
+  }
+}

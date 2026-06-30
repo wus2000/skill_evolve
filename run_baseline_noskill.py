@@ -28,7 +28,7 @@ def main() -> None:
         n_train=140,
         n_val=60,
         n_test=200,
-        split_dir=f"{DATA_BASE}/spreadsheetbench_split_t2s_aligned",
+        split_dir=f"{DATA_BASE}/spreadsheetbench_split_shuffled_seed42",
         data_root=f"{DATA_BASE}/spreadsheet_raw/spreadsheetbench_verified_400",
         target_model="qwen3.6-35b-a3b",
         optimizer_model="qwen3.6-35b-a3b",
