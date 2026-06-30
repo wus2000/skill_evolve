@@ -59,7 +59,10 @@ def main() -> None:
         n_train=300,
         n_val=100,
         n_test=200,
-        split_dir=f"{DATA_BASE}/bird_split_filtered_seed42",
+        # Split items (db_id/question/SQL) are version-controlled in the repo;
+        # the SQLite databases live under the server's bird_raw (not in git).
+        split_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "data", "bird_split_filtered_seed42"),
         # train/val databases (BIRD train); test databases (BIRD dev) via extra.
         data_root=f"{DATA_BASE}/bird_raw/train/train_databases",
 
@@ -68,7 +71,7 @@ def main() -> None:
         optimizer_model="qwen3.6-35b-a3b",
 
         # Runtime
-        max_api_workers=512,
+        max_api_workers=320,
         concurrency_limit=1,
         task_timeout_s=600,    # SQL rollouts are fast; 10 min is generous headroom
         max_turns=10,          # mirrors bird_max_turns below (generic field, kept consistent)

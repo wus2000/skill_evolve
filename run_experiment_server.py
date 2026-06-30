@@ -67,7 +67,7 @@ def main() -> None:
         optimizer_model="qwen3.6-35b-a3b",
 
         # Runtime
-        max_api_workers=512,
+        max_api_workers=320,
         concurrency_limit=1,   # ONE tree node per round — new PROPOSAL nodes get inf UCB
                                # (n_steps=0) so they are always selected first for exploitation.
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
