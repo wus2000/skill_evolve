@@ -11,7 +11,9 @@ agent can never mutate the database, escape the query, or hang the run.
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -66,22 +68,102 @@ def get_schema(db_path: str, sample_rows: int = 2, max_cols_sample: int = 12) ->
         conn.close()
 
 
-# ── Read-only execution with a HARD (process-level) timeout ─────────────────
+# ── Read-only execution: HARD wall-clock timeout + output byte cap ──────────
 
-def _run_query(db_path: str, sql: str, timeout: float | None = None) -> list[tuple]:
-    """Run read-only SQL in an isolated subprocess; SIGKILL on timeout."""
+#: Hard cap on raw sqlite3 stdout bytes. BIRD result sets are tiny; this only
+#: trips on pathological queries (runaway cross-join / recursive CTE) and bounds
+#: peak memory regardless of how much output the query *would* have produced —
+#: the output is streamed and the engine is killed the instant the cap is passed,
+#: never materialised whole.
+_MAX_OUTPUT_BYTES = 16 * 1024 * 1024  # 16 MB
+
+
+class ResultTooLargeError(Exception):
+    """Raised when a query's output passes the byte cap (the engine is killed)."""
+
+
+def _kill_process_group(proc: "subprocess.Popen") -> None:
+    """SIGKILL the whole process group of ``proc``. Best-effort; never raises.
+
+    ``sqlite3`` is started with ``start_new_session=True`` so it leads its own
+    group; killing the group tears down the engine (and any hypothetical child)
+    immediately and uncatchably.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _run_query(
+    db_path: str,
+    sql: str,
+    timeout: float | None = None,
+    max_output_bytes: int = _MAX_OUTPUT_BYTES,
+) -> list[tuple]:
+    """Run read-only SQL in an isolated subprocess under two hard bounds.
+
+    1. WALL-CLOCK: the process group is SIGKILLed if it runs past ``timeout``.
+    2. OUTPUT SIZE: a reader thread streams stdout and SIGKILLs the process group
+       the instant cumulative output passes ``max_output_bytes`` — so a runaway
+       result set is bounded, never buffered whole into memory.
+
+    Raises ``subprocess.TimeoutExpired`` on timeout, :class:`ResultTooLargeError`
+    on overflow, ``sqlite3.OperationalError`` on a SQL error.
+    """
     clean_sql = _strip_sql_comments(sql).strip()
     if not clean_sql:
         raise sqlite3.OperationalError("empty SQL after comment removal")
-
     to = float(timeout) if timeout and float(timeout) > 0 else None
-    proc = subprocess.run(
+
+    proc = subprocess.Popen(
         ["sqlite3", "-readonly", "-json", db_path, clean_sql],
-        timeout=to, capture_output=True, text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
     )
-    if proc.returncode != 0:
-        raise sqlite3.OperationalError(proc.stderr or "sqlite3 error")
-    out = (proc.stdout or "").strip()
+    chunks: list[bytes] = []
+    state = {"total": 0, "over_cap": False}
+
+    def _drain() -> None:
+        try:
+            while True:
+                buf = proc.stdout.read(65536)
+                if not buf:
+                    break
+                chunks.append(buf)
+                state["total"] += len(buf)
+                if state["total"] > max_output_bytes:
+                    state["over_cap"] = True
+                    _kill_process_group(proc)
+                    break
+        except Exception:  # noqa: BLE001 - reader never propagates
+            pass
+
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+    try:
+        proc.wait(timeout=to)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc)
+        reader.join(timeout=5)
+        raise
+    reader.join(timeout=5)
+
+    if state["over_cap"]:
+        raise ResultTooLargeError(
+            f"result exceeded {max_output_bytes // (1024 * 1024)} MB and was stopped"
+        )
+    try:
+        stderr = proc.stderr.read().decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        stderr = ""
+    if proc.returncode not in (0, None):
+        raise sqlite3.OperationalError(stderr or "sqlite3 error")
+    out = b"".join(chunks).decode("utf-8", errors="replace").strip()
     if not out:
         return []
     return [tuple(row.values()) for row in json.loads(out)]
@@ -93,13 +175,31 @@ def execute_sql(
     timeout: float = 30.0,
     max_rows: int = 30,
 ) -> dict:
-    """Execute SQL read-only with a hard timeout. Returns a result dict.
+    """Execute SQL read-only with a hard timeout + output cap. Returns a dict.
 
     The query runs as-is. If the result set exceeds ``max_rows``, only the first
     ``max_rows`` are kept; the total count is always reported accurately.
+    Timeout / oversize / SQL errors come back as ``{"ok": False, "error": ...}``
+    with actionable guidance for the agent (never raised).
     """
     try:
         rows = _run_query(db_path, sql, timeout=timeout)
+    except ResultTooLargeError as e:
+        return {
+            "ok": False,
+            "error": (
+                f"{e}. Narrow the query: add a LIMIT, aggregate (COUNT/SUM/...), "
+                "or select fewer columns/rows."
+            ),
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error": (
+                f"query timed out after {timeout:g}s and was killed. Simplify it "
+                "(avoid large cross joins / unbounded recursion) or add a LIMIT."
+            ),
+        }
     except Exception as e:  # noqa: BLE001 - surfaced to the agent as an error obs
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {
