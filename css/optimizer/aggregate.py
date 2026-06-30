@@ -68,9 +68,9 @@ process (rationale, source tasks, failure statistics, "why" explanations).
   "reasoning": "<key consolidation decisions, 2-3 sentences>",
   "edits": [
     {
-      "section_target": "### <exact heading>",
+      "section_target": "### <for rewrite: existing heading; for new_section: the NEW heading matching content>",
       "delta_type": "new_section | section_rewrite | section_refinement",
-      "after_section": "### <heading of preceding section>",
+      "after_section": "### <only for new_section: existing heading to insert after, or _end/_start>",
       "content": "### <heading>\\n<well-structured markdown body>",
       "target_tasks": ["task_id_1", ...],
       "rationale": "<DETAILED — see Principle 6>",
@@ -79,22 +79,38 @@ process (rationale, source tasks, failure statistics, "why" explanations).
   ]
 }
 
-Field rules:
-- section_target: for rewrite/refinement, the EXACT existing heading;
-  for new_section, the heading you are creating.
-- after_section: REQUIRED for new_section — must be "_end" (document end),
-  "_start" (before all sections), or an EXISTING ### heading from the
-  section index. Do NOT reference a section created by another edit in
-  this output. For section_rewrite/section_refinement, omit this field.
-- content: COMPLETE section (### heading + body). This is what the task agent
-  will read as its rules — write it FROM THE AGENT'S PERSPECTIVE. Include
-  only what the agent needs to know to act correctly: procedures, patterns,
-  checks, constraints. Do NOT include anything the agent cannot act on:
-  no "**Rationale**:", no "**Source Tasks**:", no "**Why**:", no failure
-  statistics, no edit provenance. Those belong in rationale/derivation fields.
-  For rewrite/refinement, include ALL existing content that should be KEPT
-  plus your changes.
-- target_tasks: Union of source_tasks from all contributing raw edits.
+## Operations and field rules
+
+Three operations, each with distinct field semantics:
+
+**section_rewrite / section_refinement** — modify an EXISTING ### section:
+  - section_target: the EXACT existing ### heading being modified
+    (must match a heading in the section index above)
+  - after_section: OMIT (not needed — the section already exists in place)
+  - content: the COMPLETE replacement section (### heading + full body,
+    including ALL existing content that should be KEPT plus your changes)
+
+**new_section** — create an entirely NEW ### section:
+  - section_target: the NEW ### heading you are creating. It MUST match
+    the ### heading on the first line of your content. For example, if
+    your content starts with "### Handling Cumulative State", then
+    section_target must be "### Handling Cumulative State" — NOT the
+    name of an existing section you want to insert near.
+  - after_section: where to INSERT this new section — must be "_end"
+    (document end), "_start" (before all sections), or an EXISTING ###
+    heading from the section index. Do NOT reference a section created
+    by another edit in this output.
+  - content: the COMPLETE new section (### heading + full body)
+
+**All operations:**
+  - content: This is what the task agent will read as its rules — write it
+    FROM THE AGENT'S PERSPECTIVE. Include only what the agent needs to act
+    correctly: procedures, patterns, checks, constraints. Do NOT include
+    anything the agent cannot act on: no "**Rationale**:", no
+    "**Source Tasks**:", no "**Why**:", no failure statistics, no edit
+    provenance. Those belong in rationale/derivation fields.
+  - target_tasks: Union of source_tasks from all contributing raw edits.
+    Must be non-empty.
 
 ## Principles
 
