@@ -91,6 +91,7 @@ class Checkpoint:
     rng_state: Any = None
     rounds: list[dict] = field(default_factory=list)  # RoundResult metadata
     created_ts: float = 0.0
+    ledger: dict = field(default_factory=dict)        # TaskDifficultyLedger.to_dict()
 
     def to_dict(self) -> dict:
         return {
@@ -101,6 +102,7 @@ class Checkpoint:
             "rng_state": self.rng_state,
             "rounds": self.rounds,
             "created_ts": self.created_ts,
+            "ledger": self.ledger,
             # Embeddings are kept: the archive's recall and any restored pattern
             # state must survive the round-trip intact.
             "tree": self.tree.to_dict(include_embeddings=True),
@@ -119,6 +121,7 @@ class Checkpoint:
             rng_state=d.get("rng_state"),
             rounds=list(d.get("rounds", [])),
             created_ts=float(d.get("created_ts", 0.0)),
+            ledger=dict(d.get("ledger", {})),
         )
 
 

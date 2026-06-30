@@ -367,6 +367,7 @@ def _run_node_epoch(
     cfg: "CSSConfig",
     out_dir: str,
     round_index: int,
+    ledger=None,
 ) -> dict:
     """Run one epoch for a single node and return the per-node SYNC payload.
 
@@ -436,11 +437,20 @@ def _run_node_epoch(
     # Done AFTER exploitation so analysis sees on-policy trajectories that
     # reflect what problems remain unsolved by the optimized rules.
     post_skill_text = _val_skill_text(node)
-    # Bound the analysis rollout to a subset for large datasets (0 / >= len => all).
-    # Uniform here; the global task ledger makes this difficulty-weighted downstream.
-    from css.data.task_ledger import uniform_subset
-    analysis_items = uniform_subset(
-        train_items, getattr(cfg, "analysis_train_size", 0), seed=cfg.seed + round_index
+    # Bound the analysis rollout to a subset for large datasets (0 / >= len => all),
+    # biased by the GLOBAL difficulty ledger toward the most informative tasks
+    # (frontier/contrastive > recently-flipped > learnable-hard > mastered;
+    # proven-ceiling down-weighted). Falls back to uniform until the ledger has data.
+    from css.data.task_ledger import difficulty_weighted_subset
+    analysis_items = difficulty_weighted_subset(
+        train_items, getattr(cfg, "analysis_train_size", 0), ledger,
+        seed=cfg.seed + round_index,
+        fracs={
+            "frontier": getattr(cfg, "analysis_frac_frontier", 0.45),
+            "hard": getattr(cfg, "analysis_frac_hard", 0.30),
+            "flipped": getattr(cfg, "analysis_frac_flipped", 0.15),
+            "mastered": getattr(cfg, "analysis_frac_mastered", 0.10),
+        },
     )
     train_groups = grouped_batch_rollout(
         env,
@@ -454,6 +464,9 @@ def _run_node_epoch(
         epoch=round_index,
         node_id=node.node_id,
     )
+    # Refresh the global ledger with this round's best-skill train outcomes.
+    if ledger is not None:
+        ledger.update_from_groups(train_groups, round_index)
     epoch_results_flat = [r for g in train_groups for r in g.rollouts]
     node.train_score = float(aggregate_scores(epoch_results_flat).get("task_hard", 0.0))
 
@@ -774,6 +787,7 @@ def run_round(
     cfg: "CSSConfig",
     out_dir: str,
     round_index: int,
+    ledger=None,
 ) -> "RoundResult":
     """Run one orchestrator round: SELECT_BATCH -> per-node epochs -> SYNC.
 
@@ -810,6 +824,7 @@ def run_round(
             cfg=cfg,
             out_dir=out_dir,
             round_index=round_index,
+            ledger=ledger,
         )
 
     payloads: dict[str, dict] = {}
@@ -888,6 +903,7 @@ def run_css(
         save_checkpoint,
     )
     from css.coldstart import cold_start
+    from css.data.task_ledger import TaskDifficultyLedger
     from css.logging_viz import write_run_artifacts
     from css.model.client import OptimizerOnlyClient, TargetOnlyClient
     from css.tracing import TracingLLMClient, init_trace, log_event
@@ -922,6 +938,7 @@ def run_css(
         tree, archive = ckpt.tree, ckpt.archive
         baseline_score = ckpt.baseline_score
         start_round = ckpt.next_round
+        ledger = TaskDifficultyLedger.from_dict(ckpt.ledger)
         restore_rng_state(ckpt.rng_state)
         rounds = [_round_from_dict(r) for r in ckpt.rounds]
         _log.info("RESUMED from %s — stage=%s next_round=%d nodes=%d archive=%d baseline=%.3f",
@@ -932,12 +949,14 @@ def run_css(
     else:
         # ── FRESH: cold start, then checkpoint the seeded tree ──────────────
         random.seed(cfg.seed)
+        ledger = TaskDifficultyLedger(ceiling_rounds=getattr(cfg, "analysis_ceiling_rounds", 4))
         cs = cold_start(
             env,
             target_client,
             optimizer_client,
             cfg=cfg,
             out_dir=out_dir,
+            ledger=ledger,
         )
         tree, archive = cs.tree, cs.archive
         baseline_score = cs.baseline_score
@@ -965,6 +984,7 @@ def run_css(
             stage="coldstart", next_round=0, baseline_score=baseline_score,
             tree=tree, archive=archive, config_fingerprint=fp,
             rng_state=capture_rng_state(), rounds=[], created_ts=time.time(),
+            ledger=ledger.to_dict(),
         ), out_dir)
 
     terminated_reason = "max_rounds"
@@ -982,6 +1002,7 @@ def run_css(
             cfg=cfg,
             out_dir=out_dir,
             round_index=round_index,
+            ledger=ledger,
         )
         rounds.append(rnd)
 
@@ -1007,6 +1028,7 @@ def run_css(
             baseline_score=baseline_score, tree=tree, archive=archive,
             config_fingerprint=fp, rng_state=capture_rng_state(),
             rounds=[_round_to_dict(r) for r in rounds], created_ts=time.time(),
+            ledger=ledger.to_dict(),
         ), out_dir)
 
         non_saturated = any(

@@ -225,6 +225,7 @@ def cold_start(
     *,
     cfg: "CSSConfig",
     out_dir: str,
+    ledger=None,
 ) -> "ColdStartResult":
     """Phase 0 — derive the ROOT strategy from the bare LLM's weaknesses.
 
@@ -268,6 +269,9 @@ def cold_start(
         epoch=0,
         node_id=_COLD_START_NODE_ID,
     )
+    # Seed the global difficulty ledger with the bare-LLM (no-skill) solve map.
+    if ledger is not None:
+        ledger.update_from_groups(groups, 0)
     flat = [r for g in groups for r in g.rollouts]
     baseline_score = float(aggregate_scores(flat).get("task_hard", 0.0))
 
