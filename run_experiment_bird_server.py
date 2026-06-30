@@ -53,12 +53,11 @@ def main() -> None:
         env_name="bird",
 
         # Split: filtered train (6601) shuffled seed=42 -> train/val 5:1
-        # (5501/1100); test = BIRD dev (1534). cfg.n_* slices each split, so the
-        # values below are a sane first-run subset — raise to 5501/1100/1534 for
-        # the full run.
-        n_train=300,
-        n_val=100,
-        n_test=200,
+        # (5501/1100); test = BIRD dev (1534). FULL split loaded; the per-op
+        # subset knobs below keep each expensive stage tractable.
+        n_train=5501,
+        n_val=1100,
+        n_test=1534,
         # Split items (db_id/question/SQL) are version-controlled in the repo;
         # the SQLite databases live under the server's bird_raw (not in git).
         split_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -73,14 +72,23 @@ def main() -> None:
         # Runtime
         max_api_workers=320,
         concurrency_limit=1,
-        task_timeout_s=600,    # SQL rollouts are fast; 10 min is generous headroom
-        max_turns=10,          # mirrors bird_max_turns below (generic field, kept consistent)
+        task_timeout_s=1800,   # up to 30 agent turns/task -> generous 30-min ceiling
+        max_turns=30,          # mirrors bird_max_turns below (generic field, kept consistent)
+        k_rollouts=3,
 
+        # L0 exploitation
+        batch_size=128,        # train tasks per L0 step
+        minibatch_size=16,     # trajectories per reflect minibatch
         reflect_mode="plan_a",
 
+        # Dataset-size subsets for the full split (0 = use all):
+        coldstart_train_size=500,    # cold-start bare rollout
+        exploitation_val_size=550,   # RUN-FIXED val subset: baseline + L0 gate + val_score
+        analysis_train_size=1100,    # difficulty-weighted analysis rollout
+
         # L1 strategy cycle (v3)
-        l1_diagnostic_tasks=24,
-        l1_regression_tasks=12,
+        l1_diagnostic_tasks=64,
+        l1_regression_tasks=32,
 
         out_root=out_root,
 
@@ -97,8 +105,8 @@ def main() -> None:
             # BIRD dev databases for the test split (train/val use data_root).
             "bird_test_db_root": f"{DATA_BASE}/bird_raw/dev/dev_databases",
             # Bird task-agent knobs
-            "bird_max_turns": 10,
-            "bird_exec_timeout": 30.0,
+            "bird_max_turns": 30,
+            "bird_exec_timeout": 15.0,
             "bird_max_tokens": 8192,
             "bird_temperature": 0.0,
         },
