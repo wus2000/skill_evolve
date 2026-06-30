@@ -8,10 +8,18 @@ optimizer can tell how much was removed. We deliberately do NOT port SkillOpt's
 ``fmt_minibatch_trajectories`` 500/800/2000-char clips (reflect.py:72-90), which
 are lossy across every message type.
 
-A message is a ``{"role": ..., "content": ...}`` dict. ``content`` may be a
-string or a list of content parts; only string content is measured/elided —
-structured content is passed through verbatim (its textual length is not the
-single dimension D7 targets, and clipping it would corrupt structure).
+CANONICAL TRAJECTORY CONTRACT (the mechanism defines it; every env adapts to it).
+``TaskResult.messages`` is a list of ``{"role": str, "content": str}`` turns — a
+plain, readable transcript. The mechanism analyses trajectories ONLY in this
+shape; it does not know, and must not be taught, any env's native agent format.
+An env whose task-execution agent runs on a richer transport (e.g. OpenAI
+function-calling, where an assistant turn carries ``tool_calls`` and a tool
+result is a ``role: "tool"`` message) is responsible for FLATTENING that into
+this readable ``{role, content}`` form before returning it — render each action
+as text (``"Action: <name>\\n<args>"``) and each observation as its content.
+That adaptation lives in the env, never here. ``content`` may also be a list of
+content parts; only string content is measured/elided — structured content is
+passed through verbatim (clipping it would corrupt structure).
 """
 from __future__ import annotations
 

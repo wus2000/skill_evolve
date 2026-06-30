@@ -55,6 +55,23 @@ class LLMClient(Protocol):
         """Multi-turn target completion -> text."""
         ...
 
+    def complete_target_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        tool_choice: str = "auto",
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> dict:
+        """Multi-turn target completion with OpenAI function-calling.
+
+        Returns the raw assistant message: ``{"content": str | None,
+        "tool_calls": list | None}``. Used by env task-execution agents whose
+        ReAct loop is driven by native tool calls (e.g. Bird Text-to-SQL).
+        """
+        ...
+
     def complete_optimizer(
         self, system: str, user: str, *, max_tokens: int = 4096
     ) -> tuple[str, dict]:
@@ -143,6 +160,20 @@ class RouterLLMClient:
         )
         return text
 
+    def complete_target_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        tool_choice: str = "auto",
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> dict:
+        raise NotImplementedError(
+            "function-calling target is not supported on the SkillOpt router "
+            "backend; use the openai_compat backend for tool-using task agents"
+        )
+
     def complete_optimizer(
         self, system: str, user: str, *, max_tokens: int = 4096
     ) -> tuple[str, dict]:
@@ -183,9 +214,12 @@ class StubLLMClient:
         self,
         target_fn: Callable[[str, str], str] | None = None,
         optimizer_fn: Callable[[str, str], str] | None = None,
+        target_tools_fn: Callable[[list, list], dict] | None = None,
     ) -> None:
         self.target_fn = target_fn or (lambda system, user: "stub-target-response")
         self.optimizer_fn = optimizer_fn or (lambda system, user: "stub-optimizer-response")
+        # Drives complete_target_tools in tests: (messages, tools) -> assistant msg.
+        self.target_tools_fn = target_tools_fn
 
     def complete_target(
         self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
@@ -204,6 +238,21 @@ class StubLLMClient:
             str(m.get("content", "")) for m in messages if m.get("role") != "system"
         )
         return self.target_fn(system, user)
+
+    def complete_target_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        tool_choice: str = "auto",
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> dict:
+        del tool_choice, max_tokens, temperature
+        if self.target_tools_fn is not None:
+            return self.target_tools_fn(messages, tools)
+        # Generic default: a plain text turn with no tool call.
+        return {"content": "stub-target-tools-response", "tool_calls": None}
 
     def complete_optimizer(
         self, system: str, user: str, *, max_tokens: int = 4096
@@ -249,6 +298,23 @@ class TargetOnlyClient:
     ) -> str:
         return self._inner.complete_target_messages(
             messages, max_tokens=max_tokens, temperature=temperature
+        )
+
+    def complete_target_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        tool_choice: str = "auto",
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> dict:
+        return self._inner.complete_target_tools(
+            messages,
+            tools,
+            tool_choice=tool_choice,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
 
     def complete_optimizer(self, *args, **kwargs) -> tuple[str, dict]:
@@ -447,6 +513,41 @@ class OpenAICompatLLMClient:
     ) -> str:
         text, _ = self._call(list(messages), self.target_model, max_tokens, temperature)
         return text
+
+    def complete_target_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        tool_choice: str = "auto",
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> dict:
+        """Target-path multi-turn completion with native OpenAI function-calling.
+
+        Returns the raw assistant message ``{"content", "tool_calls"}`` so an
+        env's task-execution agent can drive a tool-call ReAct loop. No
+        ground-truth firewall is applied (this is the frozen task agent, not the
+        optimizer).
+        """
+        payload: dict[str, Any] = {
+            "model": self.target_model,
+            "messages": list(messages),
+            "max_tokens": min(max_tokens, self.max_tokens),
+            "temperature": temperature,
+            "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
+            "tools": tools,
+            "tool_choice": tool_choice,
+        }
+        data = self._post(payload)
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError(f"OpenAI-compat API returned no choices: {data}")
+        message = choices[0].get("message") or {}
+        return {
+            "content": message.get("content"),
+            "tool_calls": message.get("tool_calls"),
+        }
 
     def complete_optimizer(
         self, system: str, user: str, *, max_tokens: int = 4096
