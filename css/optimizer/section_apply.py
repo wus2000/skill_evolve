@@ -284,7 +284,7 @@ def llm_apply_edit(
     rules_md: str,
     edit: "MergedEdit",
     *,
-    max_tokens: int = 16384,
+    max_tokens: int = 32768,
 ) -> str:
     """Apply ONE MergedEdit to rules.md via LLM. For per-edit ablation.
 
@@ -321,7 +321,7 @@ def llm_apply_edits(
     rules_md: str,
     edits: list["MergedEdit"],
     *,
-    max_tokens: int = 16384,
+    max_tokens: int = 32768,
 ) -> str:
     """Apply multiple MergedEdits to rules.md via LLM. For collective apply.
 
