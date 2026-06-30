@@ -951,15 +951,12 @@ def run_l1_cycle(
 
     n_done = iteration_ctx.iteration_round - 1
 
-    # ── Decide: deploy the best candidate ────────────────────────────────
-    # Priority: (1) best effective candidate, (2) best overall with lift>0
-    # (regression may be recoverable by L0), (3) archive only if no candidate
-    # achieved any lift at all.
-    selected = best  # effective candidate (lift>0 AND net_lift>=0)
-    selection_reason = "effective"
-    if selected is None and best_overall is not None and best_overall.get("lift", 0) > 0:
-        selected = best_overall
-        selection_reason = "fallback_lift_positive"
+    # ── Decide: ALWAYS deploy the best candidate ─────────────────────────
+    # Priority: (1) best effective candidate (lift>0 AND net_lift>=0),
+    # (2) best overall by same ranking (net_lift, deploy_net, lift, -regression).
+    # There is no failure case — we always deploy and let L0 exploitation try.
+    selected = best if best is not None else best_overall
+    selection_reason = "effective" if best is not None else "fallback_best_overall"
 
     if selected is not None:
         best_strat = selected["strategy_text"]
@@ -976,7 +973,7 @@ def run_l1_cycle(
             "n_effective": n_effective, "n_iterations": n_done,
             "selection_reason": selection_reason,
         })
-        _log.info("L1 cycle SUCCESS (%s): best = round %d "
+        _log.info("L1 cycle DEPLOY (%s): best = round %d "
                   "(lift +%d, regression -%d, net %+d, deploy_net %+d) -> node %s; "
                   "tree val/test is the final judge",
                   selection_reason, selected["iteration"], selected["lift"],
@@ -990,18 +987,18 @@ def run_l1_cycle(
             n_iterations=n_done,
         )
 
-    # No candidate achieved any lift (all lift==0) — truly nothing to deploy.
+    # All rounds failed to produce any strategy (Step 2 errors) — archive.
     last_diag = ((iteration_ctx.previous_attempts[-1].diagnosis or {})
                  if iteration_ctx.previous_attempts else {})
     archived = _archive_failed_cycle(
         archive, strategy_snapshot=last_strategy,
-        origin=f"{operation.lower()}_l1_no_lift",
-        diagnosis_summary=(last_diag.get("residual_characterization", "") or "no candidate achieved any lift"),
+        origin=f"{operation.lower()}_l1_no_candidate",
+        diagnosis_summary=(last_diag.get("residual_characterization", "") or "all rounds failed to produce a strategy"),
         epoch=epoch, source_node_id=node.node_id, n_iterations=n_done,
     )
     _save_json(os.path.join(cycle_dir, "final_outcome.json"), {
         "success": False, "operation": operation, "n_iterations": n_done,
-        "reason": "no_lift: no candidate cracked any residual task across all rounds",
+        "reason": "no_candidate: all rounds failed to produce a usable strategy",
     })
     _log.info("L1 cycle FAILED: no effective strategy (lift>0 AND net_lift>=0) in %d rounds — archived",
               n_done)
