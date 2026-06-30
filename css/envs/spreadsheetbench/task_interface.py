@@ -206,8 +206,8 @@ class SpreadsheetBenchEnv:
             build_system_template,
             build_task_prompt,
         )
-        from css.react_agent import ReActAgent, AgentConfig  # noqa: PLC0415
-        from css.react_agent.bash_tool import create_bash_tool  # noqa: PLC0415
+        from css.envs.spreadsheetbench.agent import ReActAgent, AgentConfig  # noqa: PLC0415
+        from css.envs.spreadsheetbench.agent.bash_tool import create_bash_tool  # noqa: PLC0415
         import shutil  # noqa: PLC0415
 
         task_id = str(item["id"])
