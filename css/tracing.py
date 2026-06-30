@@ -337,6 +337,37 @@ class TracingLLMClient:
                 stage=self._current_stage, error=error,
             )
 
+    def complete_target_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        tool_choice: str = "auto",
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> dict:
+        t0 = time.time()
+        error = ""
+        result: dict = {}
+        try:
+            result = self._inner.complete_target_tools(
+                messages, tools, tool_choice=tool_choice,
+                max_tokens=max_tokens, temperature=temperature,
+            )
+            return result
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            log_llm_call(
+                "target", "complete_target_tools",
+                messages=messages, response=str(result),
+                duration_s=time.time() - t0,
+                model=self.target_model,
+                max_tokens=max_tokens, temperature=temperature,
+                stage=self._current_stage, error=error,
+            )
+
     def complete_optimizer(
         self, system: str, user: str, *, max_tokens: int = 4096
     ) -> tuple[str, dict]:

@@ -139,6 +139,20 @@ def test_bird_gold_only_in_eval_annotation(bird_item):
     assert POST_ROLLOUT_EVAL_MARKER in full
 
 
+def test_bird_run_one_through_tracing_wrapper(bird_item):
+    """Production (run_css) wraps the target client's inner in TracingLLMClient.
+    The Bird agent's complete_target_tools MUST survive that wrapper — regression
+    for the AttributeError where TracingLLMClient lacked the method."""
+    from css.tracing import TracingLLMClient, init_trace
+    tmp, item = bird_item
+    init_trace(tmp)
+    env = BirdEnv(CSSConfig(), items={"train": [item], "val": [], "test": []})
+    client = TargetOnlyClient(StubLLMClient(target_tools_fn=_ScriptedAgent("SELECT COUNT(*) FROM t")))
+    client._inner = TracingLLMClient(client._inner, role="target")  # mirror orchestrator
+    res = env.run_one(item, "", client, tmp, rollout_index=0)
+    assert res.hard == 1 and not res.fail_reason  # real EX, not an AttributeError
+
+
 def test_bird_eval_annotation_is_last_message(bird_item):
     tmp, item = bird_item
     _, res = _run(tmp, item, "SELECT COUNT(*) FROM t")

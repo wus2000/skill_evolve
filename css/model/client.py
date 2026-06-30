@@ -389,6 +389,9 @@ class OptimizerOnlyClient:
     def complete_target_messages(self, *args, **kwargs) -> str:
         raise RuntimeError("optimizer-only client cannot call target")
 
+    def complete_target_tools(self, *args, **kwargs) -> dict:
+        raise RuntimeError("optimizer-only client cannot call target")
+
 
 # ── OpenAI-compatible standalone client ──────────────────────────────────────
 
