@@ -9,6 +9,7 @@ build/
 .DS_Store
 .pytest_cache/
 .agentmail/
+.claude/
 
 related_works/
 analysis_reports/
@@ -23,3 +24,12 @@ OUTPUT_PATH
 
 # mechanism validation dumps
 mechanism_validation_*.md
+
+# experiment logs and analysis dumps (per-run, not source)
+experiment_log_*.md
+experiment_analysis_*.md
+layer1_annotation_trace_*.md
+sample_trajectories.md
+
+# design drafts superseded by docs/
+L1_mechanism_design_v2.md
