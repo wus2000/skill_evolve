@@ -19,7 +19,11 @@ from css.config import CSSConfig
 from css.envs.base import TaskEnv
 from css.envs.bird.task_interface import BirdEnv, _skill_hash
 from css.model.client import StubLLMClient, TargetOnlyClient
-from css.trajectory import format_trajectory
+from css.trajectory import (
+    POST_ROLLOUT_EVAL_MARKER,
+    POST_ROLLOUT_EVAL_ROLE,
+    format_trajectory,
+)
 
 
 def _make_db(path: str) -> None:
@@ -120,14 +124,34 @@ def test_bird_trajectory_is_canonical_and_renders_actions(bird_item):
     # (gold == predicted here; the no-gold guarantee is covered by the prompt test)
 
 
-def test_bird_no_gold_in_trajectory(bird_item):
+def test_bird_gold_only_in_eval_annotation(bird_item):
     tmp, item = bird_item
-    # Distinct gold so we can assert it never leaks into the agent transcript.
+    # Distinct gold so we can locate it precisely.
     item = dict(item, SQL="SELECT 99 AS hidden_gold_marker")
     _, res = _run(tmp, item, "SELECT x FROM t")
-    text = format_trajectory(res.messages)
-    assert "hidden_gold_marker" not in text
-    assert "99" not in text
+    # The agent's own turns (everything except the post-rollout eval annotation)
+    # must NOT contain the gold: the agent was firewalled from it during rollout.
+    agent_msgs = [m for m in res.messages if m["role"] != POST_ROLLOUT_EVAL_ROLE]
+    assert "hidden_gold_marker" not in format_trajectory(agent_msgs)
+    # The gold IS present, but ONLY in the trailing analysis-only eval annotation.
+    full = format_trajectory(res.messages)
+    assert "hidden_gold_marker" in full
+    assert POST_ROLLOUT_EVAL_MARKER in full
+
+
+def test_bird_eval_annotation_is_last_message(bird_item):
+    tmp, item = bird_item
+    _, res = _run(tmp, item, "SELECT COUNT(*) FROM t")
+    last = res.messages[-1]
+    assert last["role"] == POST_ROLLOUT_EVAL_ROLE
+    assert POST_ROLLOUT_EVAL_MARKER in last["content"]
+    assert "Gold SQL:" in last["content"] and "SELECT COUNT(*) FROM t" in last["content"]
+    assert "EX=1" in last["content"]  # outcome surfaced
+    # Canonical contract still holds (every message {role, content:str}).
+    assert all(isinstance(m["role"], str) and isinstance(m["content"], str)
+               for m in res.messages)
+    # include_system=False keeps the trailing eval annotation (only drops a leading system).
+    assert POST_ROLLOUT_EVAL_MARKER in format_trajectory(res.messages, include_system=False)
 
 
 def test_split_loads_with_per_split_db_root():

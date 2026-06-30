@@ -13,6 +13,15 @@ The contract is intentionally minimal:
   * ``run_one`` executes ONE (task, rollout) under a skill document and returns
     a :class:`~css.data.rollout.TaskResult`. How it does so (which agent
     framework, which tools, which prompts) is entirely the env's business.
+
+Trajectory contract: the returned ``TaskResult.messages`` is a canonical
+``list[{role, content:str}]`` transcript (see :mod:`css.trajectory`). After
+scoring, ``run_one`` SHOULD append the post-rollout evaluation annotation
+(:func:`css.trajectory.eval_annotation_message`) as the LAST message — the
+outcome + ground-truth reference the optimizer's analysis needs to diagnose
+correctness. The task agent is firewalled from ground truth during rollout and
+never saw this message; the ground-truth firewall keeps optimizer OUTPUTS from
+depending on it.
 """
 from __future__ import annotations
 

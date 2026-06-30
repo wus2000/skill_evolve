@@ -100,6 +100,44 @@ def truncate_tool_results(messages: list[dict], tool_trunc: int) -> list[dict]:
     return out
 
 
+# ── Post-rollout evaluation annotation (the mechanism<->env contract) ───────
+# Trajectory analysis must reason about CORRECTNESS, which needs the evaluation
+# outcome and the ground-truth reference. The task-execution agent is firewalled
+# from ground truth DURING rollout; but AFTER evaluation each env appends ONE
+# annotation message carrying the outcome + ground truth, for the optimizer's
+# analysis only. The agent never saw it; the GROUND_TRUTH_FIREWALL (injected into
+# every optimizer prompt) keeps optimizer OUTPUTS from depending on it.
+# SpreadsheetBench is the reference implementation (its trailing
+# "[POST-EXECUTION VERIFICATION]" message); new envs use
+# :func:`eval_annotation_message` for a uniform shape.
+#
+# The annotation uses a DISTINCT role ("evaluation"), NOT "system", so it is never
+# confused with the task agent's system prompt and is never dropped by
+# ``include_system=False`` (which only drops a LEADING system message).
+
+POST_ROLLOUT_EVAL_ROLE = "evaluation"
+POST_ROLLOUT_EVAL_MARKER = (
+    "[POST-ROLLOUT EVALUATION — analysis only; the task agent never saw this]"
+)
+
+
+def eval_annotation_message(*, outcome: str, ground_truth: str = "", detail: str = "") -> dict:
+    """Build the unified post-rollout eval+GT annotation appended to a trajectory.
+
+    Returns a canonical ``{role, content:str}`` message (role
+    :data:`POST_ROLLOUT_EVAL_ROLE`) that the env appends as the LAST message of
+    ``TaskResult.messages``. ``outcome`` is the scored result (e.g. "EX=1
+    (pass)"); ``ground_truth`` is the expected answer the env exposes for analysis
+    (e.g. a gold SQL); ``detail`` is any extra note (e.g. a fail reason).
+    """
+    body = f"{POST_ROLLOUT_EVAL_MARKER}\n\nOutcome: {outcome}"
+    if detail:
+        body += f"\n{detail}"
+    if ground_truth:
+        body += f"\n\nGround truth (expected answer — analysis only):\n{ground_truth}"
+    return {"role": POST_ROLLOUT_EVAL_ROLE, "content": body}
+
+
 def format_trajectory(
     messages: list[dict], *, tool_trunc: int = 4000, include_system: bool = True
 ) -> str:

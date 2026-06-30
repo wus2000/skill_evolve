@@ -143,6 +143,18 @@ class BirdEnv:
         )
 
         hard = int(agent_out["hard"])
+        # Append the unified post-rollout eval+GT annotation for analysis. The
+        # agent never saw this (it was firewalled from gold during rollout); the
+        # optimizer's analysis needs the outcome + gold SQL to diagnose why a
+        # query was wrong. The GROUND_TRUTH_FIREWALL keeps optimizer outputs from
+        # depending on it.
+        from css.trajectory import eval_annotation_message  # noqa: PLC0415
+        conversation = list(agent_out["conversation"])
+        conversation.append(eval_annotation_message(
+            outcome=f"EX={hard} ({'pass' if hard else 'fail'}), soft={float(agent_out['soft']):.3f}",
+            ground_truth=f"Gold SQL:\n{agent_out['gold_sql']}",
+            detail=str(agent_out["fail_reason"] or ""),
+        ))
         result: dict[str, Any] = {
             "id": task_id,
             "task_description": task_description,
@@ -153,7 +165,7 @@ class BirdEnv:
             "n_pass": hard,
             "n_turns": int(agent_out["n_turns"]),
             "fail_reason": str(agent_out["fail_reason"]),
-            "conversation": agent_out["conversation"],
+            "conversation": conversation,
             "skill_hash": _skill_hash(skill_text),
             # Env-specific overflow (absorbed into TaskResult.extras):
             "predicted_sql": agent_out["predicted_sql"],
