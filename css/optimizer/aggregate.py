@@ -479,6 +479,46 @@ def _validate_merged_edits(raw_edits: list[dict], rules: str = "") -> list[Merge
     return valid
 
 
+# ── Missing-required-field detector (schema-repair hook) ─────────────────────
+
+def _merger_required_missing(edits: list[dict]) -> list[str]:
+    """Hard-required fields whose absence makes ``_validate_merged_edits`` drop
+    an edit (with no fallback).
+
+    Used as the ``required=`` hook of :func:`complete_optimizer_json`: when the
+    merger LLM produces an otherwise-valid edit but OMITS one of these, a
+    feedback-driven repair is triggered instead of silently dropping the edit
+    (the failure mode that collapsed a whole step to ``merged_edits == []``).
+
+    Scope is deliberately narrow — ONLY fields whose absence/emptiness causes a
+    drop with no fallback. Conditional/optional fields are excluded on purpose:
+    ``after_section`` (only for new_section, and auto-defaulted), and
+    ``reasoning``/``rationale``/``derivation`` (never validated). Presence /
+    non-empty only — value-validity (delta_type enum, ``### `` prefix) stays a
+    downstream drop, not a repair.
+    """
+    out: list[str] = []
+    for i, d in enumerate(edits):
+        if not isinstance(d, dict):
+            continue
+        sec = str(d.get("section_target") or "").strip()
+        tag = f"edits[{i}]" + (f" (section {sec!r})" if sec else "")
+        if not sec:
+            out.append(f"edits[{i}] is missing required 'section_target'")
+        if not str(d.get("delta_type") or "").strip():
+            out.append(f"{tag} is missing required 'delta_type'")
+        if not str(d.get("content") or "").strip():
+            out.append(f"{tag} is missing required 'content'")
+        tt = d.get("target_tasks")
+        if not (isinstance(tt, list) and len(tt) > 0):
+            out.append(
+                f"{tag} is missing required non-empty 'target_tasks' — set it to "
+                "the union of the source_tasks of the raw edits this section "
+                "consolidates"
+            )
+    return out
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def merger(
@@ -523,6 +563,7 @@ def merger(
             system,
             user,
             parse=_parse_merger_output,
+            required=_merger_required_missing,
             max_tokens=8192,
             stage="merger",
         )
