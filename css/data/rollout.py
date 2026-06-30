@@ -46,7 +46,7 @@ class TaskResult:
     n_turns: int = 0
 
     # ── Task metadata (carried for analysis / prompt construction) ────────
-    task_type: str = ""                # e.g. "cell_level" | "sheet_level"
+    task_type: str = ""                # generic task-category label, env-defined
     task_description: str = ""
     instruction_type: str = ""
 
@@ -58,15 +58,9 @@ class TaskResult:
     # typically {"prompt_tokens", "completion_tokens", "total_tokens"}.
     token_usage: dict[str, int] = field(default_factory=dict)
 
-    # ── SpreadsheetBench-specific, promoted to first-class (lead Q5) ──────
-    # Every Phase 2-3 analysis stage reads these, so they are typed fields
-    # rather than extras lookups.
-    phase: str = ""                    # last pipeline phase reached (setup/llm/exec/eval/...)
-    spreadsheet_preview: str = ""      # workbook preview shown to the agent
-    target_system_prompt: str = ""     # the system prompt the task agent saw
-    target_user_prompt: str = ""       # the user prompt the task agent saw
-
-    # Env-specific overflow (e.g. predicted_answer, cases, error).
+    # Env-specific overflow: any keys the env's run_one emits beyond the generic
+    # contract above (e.g. a result preview, the task agent's prompts, predicted
+    # answers, executor diagnostics) are absorbed here automatically by from_dict.
     extras: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -90,8 +84,7 @@ class TaskResult:
             "task_id", "id", "rollout_index", "hard", "soft", "n_cases", "n_pass",
             "fail_reason", "messages", "conversation", "n_turns", "task_type",
             "task_description", "instruction_type", "epoch", "node_id",
-            "token_usage", "phase", "spreadsheet_preview",
-            "target_system_prompt", "target_user_prompt", "extras",
+            "token_usage", "extras",
         }
         extras = dict(d.get("extras", {}))
         # Absorb any unknown keys into extras for forward-compat.
@@ -120,10 +113,6 @@ class TaskResult:
             epoch=int(d.get("epoch", -1)),
             node_id=str(d.get("node_id", "")),
             token_usage=dict(d.get("token_usage", {})),
-            phase=str(d.get("phase", "")),
-            spreadsheet_preview=str(d.get("spreadsheet_preview", "")),
-            target_system_prompt=str(d.get("target_system_prompt", "")),
-            target_user_prompt=str(d.get("target_user_prompt", "")),
             extras=extras,
         )
 
@@ -142,7 +131,6 @@ class TaskResult:
         }
         for attr in (
             "fail_reason", "task_type", "task_description", "instruction_type",
-            "phase", "spreadsheet_preview", "target_system_prompt", "target_user_prompt",
         ):
             val = getattr(self, attr)
             if val:

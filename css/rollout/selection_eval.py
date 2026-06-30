@@ -34,7 +34,7 @@ if TYPE_CHECKING:  # avoid runtime coupling / heavy imports
     from css.config import CSSConfig
     from css.data.rollout import TaskResult
     from css.data.tree import TreeNode
-    from css.envs.spreadsheetbench.task_interface import TaskEnv
+    from css.envs.base import TaskEnv
     from css.model.client import LLMClient
 
 

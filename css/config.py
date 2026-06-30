@@ -100,9 +100,14 @@ class CSSConfig:
     target_model: str = "claude-sonnet-4-6"   # frozen task agent
     optimizer_model: str = "claude-sonnet-4-6" # L0/L1 optimizer + analysts
 
+    # ── Environment ──────────────────────────────────────────────────────
+    env_name: str = "spreadsheetbench"  # which TaskEnv to run; selects the env
+                                        # implementation + its data adapter via
+                                        # css.envs.registry.build_env
+
     # ── Paths ────────────────────────────────────────────────────────────
     out_root: str = "runs/css_default"
-    data_root: str = ""                 # SpreadsheetBench spreadsheet files root
+    data_root: str = ""                 # raw task data root (env-specific layout)
     split_dir: str = ""                 # existing train/val/test split dir
     data_path: str = ""                 # raw dataset for ratio splitting
 

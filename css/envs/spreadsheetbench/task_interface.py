@@ -42,7 +42,7 @@ import hashlib
 import json
 import os
 import traceback
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from css.config import CSSConfig
 from css.data.rollout import TaskResult
@@ -84,36 +84,6 @@ def hydrate_trajectory(result: dict, prediction_dir: str, task_id: str) -> dict:
     if isinstance(conversation, list):
         result["conversation"] = conversation
     return result
-
-
-# ── Task environment protocol ───────────────────────────────────────────────
-
-
-@runtime_checkable
-class TaskEnv(Protocol):
-    """The narrow surface CSS rollout code depends on.
-
-    Implementations supply task items per split and execute one (task, rollout)
-    under a given skill document, returning a :class:`TaskResult`.
-    """
-
-    def train_items(self) -> list[dict]: ...
-
-    def val_items(self) -> list[dict]: ...
-
-    def test_items(self) -> list[dict]: ...
-
-    def run_one(
-        self,
-        item: dict,
-        skill_text: str,
-        target_client: "LLMClient",  # noqa: F821 - structural; see css.model.client
-        out_dir: str,
-        *,
-        rollout_index: int = 0,
-        epoch: int = -1,
-        node_id: str = "",
-    ) -> TaskResult: ...
 
 
 # ── Concrete SpreadsheetBench environment ───────────────────────────────────

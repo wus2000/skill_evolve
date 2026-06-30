@@ -39,7 +39,7 @@ from css.data.rollout import TaskResult, group_rollouts
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from css.data.rollout import TaskRolloutGroup
-    from css.envs.spreadsheetbench.task_interface import TaskEnv
+    from css.envs.base import TaskEnv
     from css.model.client import LLMClient
 
 
