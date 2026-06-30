@@ -4,15 +4,19 @@ Schema extraction, sandboxed read-only SQL execution with a hard (process-level)
 timeout, and the official BIRD Execution-Accuracy (EX) comparison. Ported from
 the agent_skills Bird adapter; self-contained (only stdlib).
 
-The execution path is inherently sandboxed: every query runs through the
-``sqlite3 -readonly`` CLI in a separate process with a hard timeout, so the task
-agent can never mutate the database, escape the query, or hang the run.
+The execution path is inherently sandboxed: every query runs in a separate
+``python`` subprocess via the stdlib ``sqlite3`` module opened read-only
+(``mode=ro``), under a hard wall-clock timeout + output byte cap. The task agent
+can never mutate the database, escape the query, or hang the run. We do NOT
+depend on the ``sqlite3`` CLI binary (often absent on servers) — only a Python
+interpreter with the stdlib ``sqlite3`` module, which is always present.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 import signal
 import sqlite3
 import subprocess
@@ -82,12 +86,40 @@ class ResultTooLargeError(Exception):
     """Raised when a query's output passes the byte cap (the engine is killed)."""
 
 
+# Read-only query worker run as ``python -c``. Streams each row as one NDJSON
+# line so the parent can byte-cap + kill mid-stream. con.execute runs exactly ONE
+# statement (a multi-statement string raises -> rejected), and mode=ro forbids
+# writes. db_path/sql arrive as argv (no shell, so arbitrary SQL is safe).
+_SQLITE_WORKER = r"""
+import sys, json, sqlite3
+db, sql = sys.argv[1], sys.argv[2]
+try:
+    con = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
+except Exception:
+    con = sqlite3.connect(db)
+try:
+    cur = con.execute(sql)
+except Exception as e:
+    sys.stderr.write("%s: %s" % (type(e).__name__, e)); sys.exit(3)
+out = sys.stdout
+try:
+    while True:
+        rows = cur.fetchmany(1000)
+        if not rows:
+            break
+        out.write("".join(json.dumps(list(r)) + "\n" for r in rows))
+        out.flush()
+finally:
+    con.close()
+"""
+
+
 def _kill_process_group(proc: "subprocess.Popen") -> None:
     """SIGKILL the whole process group of ``proc``. Best-effort; never raises.
 
-    ``sqlite3`` is started with ``start_new_session=True`` so it leads its own
-    group; killing the group tears down the engine (and any hypothetical child)
-    immediately and uncatchably.
+    The worker is started with ``start_new_session=True`` so it leads its own
+    group; killing the group tears down the interpreter (and the SQLite engine in
+    it) immediately and uncatchably.
     """
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -120,7 +152,7 @@ def _run_query(
     to = float(timeout) if timeout and float(timeout) > 0 else None
 
     proc = subprocess.Popen(
-        ["sqlite3", "-readonly", "-json", db_path, clean_sql],
+        [sys.executable, "-c", _SQLITE_WORKER, db_path, clean_sql],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
@@ -163,10 +195,13 @@ def _run_query(
         stderr = ""
     if proc.returncode not in (0, None):
         raise sqlite3.OperationalError(stderr or "sqlite3 error")
-    out = b"".join(chunks).decode("utf-8", errors="replace").strip()
-    if not out:
-        return []
-    return [tuple(row.values()) for row in json.loads(out)]
+    out = b"".join(chunks).decode("utf-8", errors="replace")
+    rows: list[tuple] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line:
+            rows.append(tuple(json.loads(line)))
+    return rows
 
 
 def execute_sql(
