@@ -147,13 +147,13 @@ Three operations, each with distinct field semantics:
 
    rationale must answer:
    - What valuable INSIGHT was discovered from the trajectories? This may
-     be a recurring failure pattern (e.g. "agent uses pd.read_excel()
-     without data_only=True, causing TypeError on formula cells"), a
-     success pattern worth codifying (e.g. "passing rollouts consistently
-     verify sheet names match before writing — this practice prevents
-     silent data loss"), or a contrastive finding (e.g. "the key
-     difference between pass/fail on task X was checking file extension
-     before choosing the read method").
+     be a recurring failure pattern (e.g. "the agent acts on its first
+     interpretation of the input without validating it, causing a
+     downstream error"), a success pattern worth codifying (e.g. "passing
+     rollouts consistently verify an intermediate result before relying on
+     it — this prevents silent corruption"), or a contrastive finding
+     (e.g. "the key difference between pass/fail on task X was inspecting
+     the input's structure before choosing an approach").
    - Which task IDs and how many independent patches support this insight?
      (cross-patch consensus = high confidence)
    - What concrete behavior change is expected after applying this edit?
@@ -162,13 +162,13 @@ Three operations, each with distinct field semantics:
    - Which raw edit numbers contributed? (list ALL by index, e.g. "Raw
      edits 1, 2, 5, 6, 9")
    - For each contributing raw edit, what did it propose and what was kept
-     vs refined? (e.g. "Edit 2 proposed data_only=True with engine param
-     — kept its more precise formulation over edit 1's simpler version")
+     vs refined? (e.g. "Edit 2 proposed a more precise condition — kept its
+     formulation over edit 1's simpler version")
    - Were any raw edits DROPPED? Which ones and why? (e.g. "Dropped edit
-     11 which proposed 'avoid formulas entirely' — conflicts with tasks
-     requiring formula output")
+     11 which proposed a blanket prohibition — conflicts with tasks that
+     legitimately need that operation")
    - How were overlapping proposals resolved? (e.g. "Edits 5, 6, 9 all
-     proposed type-checking rules — merged into one consolidated bullet")
+     proposed validation rules — merged into one consolidated bullet")
 
 7. QUALITY OVER QUANTITY. Fewer high-confidence edits beat many speculative
    ones. Drop weak/low-support raw edits rather than outputting noise."""

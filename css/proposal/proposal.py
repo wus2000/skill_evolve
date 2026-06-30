@@ -366,12 +366,12 @@ THINKING). It does NOT learn tactical rules. The system has a strict division of
 labour: YOU produce the thinking frame; a SEPARATE L0 optimizer then adds tactical \
 rules (exact APIs, formats, idioms) on top of your strategy. Therefore:
   - GOOD (strategy): "Form a structural hypothesis about the data before acting."
-  - BAD (tactical rule — NEVER write this): "Compute values in Python and write \
-literals, not formula strings"; "preserve the header row"; "use exact date format".
-  - When the diagnosis says the residual is tactical (formula strings, formats, \
-headers, exact matching), that residual is L0's JOB. Do NOT try to fix it by encoding \
-tactics into your strategy. Leave it. Stay at the altitude of THINKING. A strategy \
-polluted with tactical rules is a failed strategy even if it happens to pass.
+  - BAD (tactical rule — NEVER write this): "call this specific API with these \
+arguments"; "use this exact output format"; "handle this particular edge case".
+  - When the diagnosis says the residual is tactical (a specific API or syntax, an \
+exact format, a particular edge case), that residual is L0's JOB. Do NOT try to fix it \
+by encoding tactics into your strategy. Leave it. Stay at the altitude of THINKING. A \
+strategy polluted with tactical rules is a failed strategy even if it happens to pass.
 
 You operate in one of two MODES (given at the top of the input):
 
@@ -484,10 +484,10 @@ removed. You MUST separate their effects.
 
 Classify the failure cause:
 - "handicap": the candidate pursued a SOUND approach but tripped on a concrete \
-TACTICAL detail the baseline's rules supplied (a specific openpyxl idiom, a known \
-edge case, an exact range). This is EXPECTED and NOT the strategy's fault — once \
-this strategy is deployed, the L0 optimizer re-adds tactical rules and this failure \
-very likely disappears.
+TACTICAL detail the baseline's rules supplied (a specific API idiom, a known \
+edge case, an exact format or range). This is EXPECTED and NOT the strategy's fault — \
+once this strategy is deployed, the L0 optimizer re-adds tactical rules and this \
+failure very likely disappears.
 - "harm": the new strategy's COGNITIVE FRAME actively MISLED the agent — directed \
 its attention wrongly, imposed a wrong mental model, or induced a counter-productive \
 procedure the baseline never followed. This IS the strategy's fault and must be fixed.
@@ -531,7 +531,7 @@ could still fix it (L1-addressable).
    - "tactical": the approach is sound but the agent trips on a concrete, recurring \
 tactical/syntactic detail a specific RULE would fix (L0-addressable; expected to \
 improve once rules are restored).
-   - "perception": the agent misreads the task instruction or the spreadsheet \
+   - "perception": the agent misreads the task instruction or the input \
 structure before reasoning even begins.
    - "capability": the task needs an operation or precision the model simply cannot \
 produce, regardless of strategy or rules.
@@ -561,13 +561,13 @@ ALTITUDE — THIS IS THE MOST IMPORTANT CONSTRAINT. L1 searches COGNITIVE STRATE
 (how the agent THINKS), NOT tactical rules (what exact API call / format to use). The \
 two-layer system has a strict division of labour: L1 finds the thinking frame; a \
 SEPARATE L0 optimizer then adds the tactical rules on top. So:
-- A residual that is tactical (e.g. "writes a formula string instead of a computed \
-value", "wrong date format", "didn't preserve the header row") is L0's job. It is the \
+- A residual that is tactical (e.g. "uses the wrong API call or argument", "wrong \
+output format", "skips a required structural detail") is L0's job. It is the \
 EXPECTED, normal leftover of any cognitive frame — NOT a failure of L1, and NOT \
 something the next strategy should try to fix by encoding tactics.
 - Your "next_direction_hint" MUST stay at cognitive altitude: a DIFFERENT WAY OF \
-THINKING. It must NEVER be a list of tactical rules (do-compute-literals, \
-preserve-headers, exact-match-format). If you catch yourself prescribing rules, you \
+THINKING. It must NEVER be a list of tactical rules (use-this-API, this-exact-format, \
+handle-this-edge-case). If you catch yourself prescribing rules, you \
 are at the wrong altitude — re-express as a thinking habit or re-frame, or redirect to \
 a different cognitive leverage point entirely.
 

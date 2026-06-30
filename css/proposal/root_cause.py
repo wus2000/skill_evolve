@@ -145,8 +145,9 @@ drills from the surface behavior down to the hidden assumption in the strategy. 
 Each level must be a strictly deeper "why" than the one above it:
 
   1. behavioral — what the agent OBSERVABLY did, across the trajectories. Concrete \
-     actions/decisions, not interpretation. (e.g. "committed to the first column \
-     mapping it saw and never re-checked it against the header row.")
+     actions/decisions, not interpretation. (e.g. "committed to its first \
+     interpretation of the input and never re-checked it against the available \
+     evidence.")
   2. process — WHY it did that, read from the agent's OWN reasoning (its THOUGHT \
      text). The internal logic that produced the behavior. (e.g. "it treated the \
      first plausible reading as settled and moved on to execution.")

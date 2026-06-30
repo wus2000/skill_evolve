@@ -310,8 +310,8 @@ exists, refine inside it with a refinement op.
 - `target` is a SEMANTIC pointer for the apply tool: give the section heading, or
   describe and approximately quote the spot. It is resolved by meaning, so be
   clear — you need not copy exact text. (Omit `target` for add_section / append.)
-- Generalizable tactics only; never hardcode task-specific values (file paths,
-  cell addresses, expected values, entity names).
+- Generalizable tactics only; never hardcode task-specific values (literal
+  values, identifiers, or paths specific to a single task).
 - Direct and actionable: address the agent ("When you …, do …"), mechanically
   followable — not commentary.
 - Section headings MUST be descriptive names WITHOUT numeric prefixes.
