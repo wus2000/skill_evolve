@@ -728,6 +728,7 @@ def run_l1_cycle(
 
     last_strategy = ""
     best: dict | None = None  # best EFFECTIVE candidate {strategy_text, iteration, lift, regression, net_lift}
+    best_overall: dict | None = None  # best candidate regardless of effectiveness (fallback)
     n_effective = 0           # number of rounds with lift>0 (effective strategies collected)
     target_effective = int(getattr(cfg, "l1_target_effective", 3))
     next_mode = "new"         # generation mode for the upcoming round (round 1 = NEW)
@@ -890,19 +891,21 @@ def run_l1_cycle(
         harm_reg = int((diagnosis or {}).get("harm_reg", 0) or 0)
         deploy_net = int((diagnosis or {}).get("deploy_net", cats["lift"] - harm_reg))
 
-        # ── Keep-best — only EFFECTIVE candidates (lift>0 AND net_lift>=0) ──
-        # net_lift>=0 (on the handicapped test) is a guaranteed deploy-improvement.
-        # Among equal net_lift, deploy_net (lift - harm_reg) breaks the tie.
+        # ── Keep-best tracking ──
+        # Track ALL candidates for fallback deployment, plus strictly
+        # EFFECTIVE ones (lift>0 AND net_lift>=0) for primary selection.
+        cand = {
+            "strategy_text": strategy_text, "iteration": iteration,
+            "lift": cats["lift"], "regression": cats["regression"],
+            "net_lift": cats["net_lift"], "harm_reg": harm_reg, "deploy_net": deploy_net,
+        }
         effective = cats["lift"] > 0 and cats["net_lift"] >= 0
         if effective:
             n_effective += 1
-            cand = {
-                "strategy_text": strategy_text, "iteration": iteration,
-                "lift": cats["lift"], "regression": cats["regression"],
-                "net_lift": cats["net_lift"], "harm_reg": harm_reg, "deploy_net": deploy_net,
-            }
             if _is_better_candidate(cand, best):
                 best = cand
+        if _is_better_candidate(cand, best_overall):
+            best_overall = cand
         _log.info("L1 round %d [mode=%s]: lift +%d / regression -%d (harm %d) / net %+d / "
                   "deploy_net %+d -> %s (effective so far: %d/%d)",
                   iteration, mode, cats["lift"], cats["regression"], harm_reg,
@@ -948,12 +951,18 @@ def run_l1_cycle(
 
     n_done = iteration_ctx.iteration_round - 1
 
-    # ── Decide: best EFFECTIVE candidate -> tree node; else archive ─────────
-    if best is not None:
-        best_strat = best["strategy_text"]
-        # PROPOSAL deploys with a fresh tactical slate (empty rules); L0 exploitation
-        # then rebuilds rules tailored to the new strategy. (REFINE — which inherited
-        # the parent's rules — has been unified into PROPOSAL.)
+    # ── Decide: deploy the best candidate ────────────────────────────────
+    # Priority: (1) best effective candidate, (2) best overall with lift>0
+    # (regression may be recoverable by L0), (3) archive only if no candidate
+    # achieved any lift at all.
+    selected = best  # effective candidate (lift>0 AND net_lift>=0)
+    selection_reason = "effective"
+    if selected is None and best_overall is not None and best_overall.get("lift", 0) > 0:
+        selected = best_overall
+        selection_reason = "fallback_lift_positive"
+
+    if selected is not None:
+        best_strat = selected["strategy_text"]
         new_node = _build_node(
             node, new_node_id=new_node_id, branch_type=operation,
             strategy=best_strat, rules="",
@@ -961,35 +970,38 @@ def run_l1_cycle(
         )
         _save_json(os.path.join(cycle_dir, "final_outcome.json"), {
             "success": True, "operation": operation, "new_node_id": new_node.node_id,
-            "selected_round": best["iteration"], "lift": best["lift"],
-            "regression": best["regression"], "net_lift": best["net_lift"],
-            "harm_reg": best["harm_reg"], "deploy_net": best["deploy_net"],
+            "selected_round": selected["iteration"], "lift": selected["lift"],
+            "regression": selected["regression"], "net_lift": selected["net_lift"],
+            "harm_reg": selected.get("harm_reg", 0), "deploy_net": selected.get("deploy_net", 0),
             "n_effective": n_effective, "n_iterations": n_done,
+            "selection_reason": selection_reason,
         })
-        _log.info("L1 cycle SUCCESS: %d effective strategies found; best = round %d "
+        _log.info("L1 cycle SUCCESS (%s): best = round %d "
                   "(lift +%d, regression -%d, net %+d, deploy_net %+d) -> node %s; "
                   "tree val/test is the final judge",
-                  n_effective, best["iteration"], best["lift"], best["regression"],
-                  best["net_lift"], best["deploy_net"], new_node.node_id)
+                  selection_reason, selected["iteration"], selected["lift"],
+                  selected["regression"], selected["net_lift"],
+                  selected.get("deploy_net", 0), new_node.node_id)
         return ProposalOutcome(
             success=True, operation=operation, new_node=new_node,
-            reason=(f"best_of_{n_effective}_effective: round {best['iteration']} "
-                    f"lift={best['lift']} net={best['net_lift']} deploy_net={best['deploy_net']}"),
+            reason=(f"{selection_reason}: round {selected['iteration']} "
+                    f"lift={selected['lift']} net={selected['net_lift']} "
+                    f"deploy_net={selected.get('deploy_net', 0)}"),
             n_iterations=n_done,
         )
 
-    # No EFFECTIVE candidate (lift>0 AND net_lift>=0) across all rounds — archive.
+    # No candidate achieved any lift (all lift==0) — truly nothing to deploy.
     last_diag = ((iteration_ctx.previous_attempts[-1].diagnosis or {})
                  if iteration_ctx.previous_attempts else {})
     archived = _archive_failed_cycle(
         archive, strategy_snapshot=last_strategy,
-        origin=f"{operation.lower()}_l1_no_effective",
-        diagnosis_summary=(last_diag.get("residual_characterization", "") or "no effective strategy"),
+        origin=f"{operation.lower()}_l1_no_lift",
+        diagnosis_summary=(last_diag.get("residual_characterization", "") or "no candidate achieved any lift"),
         epoch=epoch, source_node_id=node.node_id, n_iterations=n_done,
     )
     _save_json(os.path.join(cycle_dir, "final_outcome.json"), {
         "success": False, "operation": operation, "n_iterations": n_done,
-        "reason": "no_effective_strategy (none reached lift>0 AND net_lift>=0)",
+        "reason": "no_lift: no candidate cracked any residual task across all rounds",
     })
     _log.info("L1 cycle FAILED: no effective strategy (lift>0 AND net_lift>=0) in %d rounds — archived",
               n_done)
