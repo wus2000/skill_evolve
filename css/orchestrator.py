@@ -409,6 +409,10 @@ def _run_node_epoch(
               consecutive_rejects=node.step_buffer.consecutive_rejects(),
               rules_len=len(node.rules or ""))
 
+    # Save skill snapshot immediately after exploitation so the best rules
+    # are persisted even if the round is interrupted during L1 PROPOSAL.
+    _save_skill_snapshot(out_dir, node, round_index)
+
     # (2) Post-exploitation train rollout with the BEST skill.
     # Done AFTER exploitation so analysis sees on-policy trajectories that
     # reflect what problems remain unsolved by the optimized rules.
