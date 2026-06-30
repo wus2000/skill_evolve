@@ -75,8 +75,20 @@ class BirdEnv:
 
     def _split(self, split: str) -> list[dict]:
         if self._items is not None:
-            return list(self._items.get(split, []))
-        return list(self._ensure_loader().load(split))
+            items = list(self._items.get(split, []))
+        else:
+            items = list(self._ensure_loader().load(split))
+        # Slice the pre-made split to the configured size (0 / negative = all),
+        # so cfg.n_train/n_val/n_test control the Bird experiment size the same
+        # way they do for SpreadsheetBench.
+        limit = {
+            "train": getattr(self.cfg, "n_train", 0),
+            "val": getattr(self.cfg, "n_val", 0),
+            "test": getattr(self.cfg, "n_test", 0),
+        }.get(split, 0)
+        if isinstance(limit, int) and limit > 0:
+            items = items[:limit]
+        return items
 
     def train_items(self) -> list[dict]:
         return self._split("train")
