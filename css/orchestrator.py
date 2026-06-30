@@ -305,9 +305,24 @@ def _persistent_fail_groups(groups: list["TaskRolloutGroup"]) -> list["TaskRollo
 # ──────────────────────────────────────────────────────────────────────────
 # Per-node epoch (the body run for each selected node)
 # ──────────────────────────────────────────────────────────────────────────
+def _run_val_subset(env, cfg: "CSSConfig") -> list[dict]:
+    """The RUN-FIXED val subset used for every node's baseline + L0 gate + val_score.
+
+    Same tasks for ALL nodes (deterministic, seeded by ``cfg.seed``) so node
+    val_scores stay directly comparable for SELECT / PRUNE, and so the gate's
+    best-step predictions can be reused by the final val eval. ``0`` or a knob
+    ``>= len(val)`` selects the whole val set.
+    """
+    from css.data.task_ledger import uniform_subset
+    return uniform_subset(
+        list(env.val_items()), getattr(cfg, "exploitation_val_size", 0), seed=cfg.seed
+    )
+
+
 def _measure_initial_val(
     node: "TreeNode", env, target_client: "LLMClient", *,
     cfg: "CSSConfig", out_dir: str, round_index: int,
+    val_items: "list[dict] | None" = None,
 ) -> float:
     """Measure the node's INITIAL skill (strategy + initial rules) on the val set,
     BEFORE any exploitation, and set it as the node's baseline + gate incumbent.
@@ -316,12 +331,14 @@ def _measure_initial_val(
     L0 gate compares its first edit against — never 0 or a train floor) and
     ``node.baseline_val_score`` (the floor exploitation is measured FROM). Called
     once per node (cold-start root + each newly-branched node's first epoch).
+    ``val_items`` (the run-fixed val subset) is passed in so the baseline is on
+    the SAME tasks the gate uses; it defaults to the full val set.
     """
     from css.rollout.batch import grouped_batch_rollout
     from css.data.rollout import aggregate_scores
     from css.skill_document import SkillDocument
 
-    val_items = list(env.val_items())
+    val_items = list(val_items) if val_items is not None else list(env.val_items())
     skill = SkillDocument(skill_dir="", strategy=node.strategy or "",
                           rules=node.rules or "").combined_skill_text()
     groups = grouped_batch_rollout(
@@ -366,7 +383,8 @@ def _run_node_epoch(
     from css.tracing import log_event
 
     train_items = list(env.train_items())
-    val_items = list(env.val_items())
+    # Run-fixed val subset for baseline + L0 gate + val_score (same tasks every node).
+    val_items = _run_val_subset(env, cfg)
 
     _log.info("Epoch start — round=%d node=%s train=%d val=%d steps=%d",
               round_index, node.node_id, len(train_items), len(val_items), node.n_steps)
@@ -381,7 +399,8 @@ def _run_node_epoch(
     # floor. Already set for the cold-start root (measured at cold-start).
     if node.baseline_val_score < 0:
         _measure_initial_val(node, env, target_client,
-                             cfg=cfg, out_dir=out_dir, round_index=round_index)
+                             cfg=cfg, out_dir=out_dir, round_index=round_index,
+                             val_items=val_items)
 
     # (1) L0 EXPLOITATION: batch-step loop until saturation or hard cap.
     node.step_buffer.reset_saturation()
@@ -417,9 +436,15 @@ def _run_node_epoch(
     # Done AFTER exploitation so analysis sees on-policy trajectories that
     # reflect what problems remain unsolved by the optimized rules.
     post_skill_text = _val_skill_text(node)
+    # Bound the analysis rollout to a subset for large datasets (0 / >= len => all).
+    # Uniform here; the global task ledger makes this difficulty-weighted downstream.
+    from css.data.task_ledger import uniform_subset
+    analysis_items = uniform_subset(
+        train_items, getattr(cfg, "analysis_train_size", 0), seed=cfg.seed + round_index
+    )
     train_groups = grouped_batch_rollout(
         env,
-        train_items,
+        analysis_items,
         post_skill_text,
         target_client,
         k_rollouts=cfg.k_rollouts,
@@ -924,7 +949,8 @@ def run_css(
         root = tree.get(tree.root_id) if tree.root_id else None
         if root:
             _save_skill_snapshot(out_dir, root, 0)
-            _measure_initial_val(root, env, target_client, cfg=cfg, out_dir=out_dir, round_index=0)
+            _measure_initial_val(root, env, target_client, cfg=cfg, out_dir=out_dir,
+                                 round_index=0, val_items=_run_val_subset(env, cfg))
         _log.info("Cold start done — baseline(strategy@val)=%.3f bare_floor(train)=%.3f "
                   "patterns=%d root=%s strategy=%d chars",
                   root.val_score if root else 0.0, cs.baseline_score, cs.n_patterns,

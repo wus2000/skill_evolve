@@ -60,6 +60,23 @@ class CSSConfig:
     merger_history_window: int = 3       # Max recent steps of edit verification history shown to merger
     rules_max_chars: int = 60_000       # Soft cap for rules.md (log warning, no truncation)
 
+    # ── Dataset-size subsets (knob >= split size OR <= 0  =>  use the WHOLE set;
+    #    only when 0 < knob < split size is the set subsampled). Lets a large
+    #    dataset be loaded in full (n_train/n_val/n_test) while keeping each
+    #    expensive operation cheap. ─────────────────────────────────────────
+    coldstart_train_size: int = 0       # cold-start bare-rollout train subset (uniform)
+    exploitation_val_size: int = 0      # RUN-FIXED val subset: baseline + L0 gate + node val_score
+                                        # (same tasks for every node so val_scores stay comparable)
+    analysis_train_size: int = 0        # post-exploitation analysis train-rollout subset
+    # Difficulty-weighted analysis sampling proportions (used once the global task
+    # ledger has data; uniform fallback otherwise). Normalized; need not sum to 1.
+    analysis_frac_frontier: float = 0.45  # mixed (0<solve_rate<1): contrastive-pair gold
+    analysis_frac_hard: float = 0.30      # learnable-hard (solve_rate~0, ever-solved / not stuck)
+    analysis_frac_flipped: float = 0.15   # recently cracked or regressed (freshest signal)
+    analysis_frac_mastered: float = 0.10  # solved (regression watch)
+    analysis_ceiling_rounds: int = 4      # unsolved for >= this many rounds => likely
+                                          # capability ceiling; down-weighted in analysis
+
     # ── L1 STRATEGY CYCLE (diverse-iterate + objective lift selection) ────
     max_l1_iterations: int = 8          # max diverse-iterate rounds (hard cap)
     l1_target_effective: int = 3        # stop once this many EFFECTIVE (lift>0) strategies collected

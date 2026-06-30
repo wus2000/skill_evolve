@@ -249,7 +249,13 @@ def cold_start(
     os.makedirs(cold_dir, exist_ok=True)
 
     # ── 1. Bare rollout: the frozen target model with NO skill ──────────────
-    train_items = list(env.train_items())
+    # Subset the train set for the cold-start rollout when configured (large
+    # datasets: a full bare rollout of every task is wasteful before search even
+    # begins). Deterministic; 0 / >= len => the whole train set.
+    from css.data.task_ledger import uniform_subset
+    train_items = uniform_subset(
+        list(env.train_items()), getattr(cfg, "coldstart_train_size", 0), seed=cfg.seed
+    )
     groups = grouped_batch_rollout(
         env,
         train_items,
