@@ -109,10 +109,13 @@ Three operations, each with distinct field semantics:
     anything the agent cannot act on: no "**Rationale**:", no
     "**Source Tasks**:", no "**Why**:", no failure statistics, no edit
     provenance. Those belong in rationale/derivation fields.
-  - Section headings (###) must be DESCRIPTIVE NAMES without numeric
-    prefixes. Use "### Input Parsing and Data Inspection", NOT
-    "### 2. Input Parsing and Data Inspection". Numbered headings break
-    when sections are added or removed during optimization.
+  - **CRITICAL — NO NUMBERED HEADINGS.** Section headings (###) must be
+    DESCRIPTIVE NAMES without numeric prefixes. Write
+    "### Input Parsing and Data Inspection", NEVER
+    "### 2. Input Parsing and Data Inspection". Raw edits from upstream may
+    contain numbered headings copied from strategy.md — you MUST strip those
+    numbers when consolidating. Numbered headings break when sections are
+    added or removed during optimization.
   - target_tasks: Union of source_tasks from all contributing raw edits.
     Must be non-empty.
 

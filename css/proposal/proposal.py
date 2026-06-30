@@ -786,18 +786,20 @@ def run_l1_cycle(
                     _full_strat = _load_json(_step2_path).get("strategy_text", _full_strat)
                 except Exception:
                     pass
+            harm_a = int((a.diagnosis or {}).get("harm_reg", 0) or 0)
+            deploy_a = int((a.diagnosis or {}).get("deploy_net", a.lift - harm_a))
+            cand_a = {
+                "strategy_text": _full_strat,
+                "iteration": a.round, "lift": a.lift,
+                "regression": a.regression, "net_lift": a.net_lift,
+                "harm_reg": harm_a, "deploy_net": deploy_a,
+            }
             if effective_a:
                 n_effective += 1
-                harm_a = int((a.diagnosis or {}).get("harm_reg", 0) or 0)
-                deploy_a = int((a.diagnosis or {}).get("deploy_net", a.lift - harm_a))
-                cand_a = {
-                    "strategy_text": _full_strat,
-                    "iteration": a.round, "lift": a.lift,
-                    "regression": a.regression, "net_lift": a.net_lift,
-                    "harm_reg": harm_a, "deploy_net": deploy_a,
-                }
                 if _is_better_candidate(cand_a, best):
                     best = cand_a
+            if _is_better_candidate(cand_a, best_overall):
+                best_overall = cand_a
             last_strategy = _full_strat or last_strategy
 
         # Derive next_mode from the last completed round
@@ -1430,13 +1432,26 @@ def _diagnose_round(
             ])
             jobs.append(("still_failed", _STILLFAILED_ANALYZER_SYSTEM, user, tid, "diag_still"))
 
-    # ── Run Layer 1 in parallel ──────────────────────────────────────────
+    # ── Run Layer 1 in parallel (with per-task checkpoint) ────────────────
     layer1: dict[str, list] = {"cracked": [], "regressed": [], "still_failed": []}
-    if jobs:
+    remaining_jobs: list[tuple] = []
+    for (cat, sysp, usr, tid, label) in jobs:
+        per_task_path = os.path.join(per_dir, f"{cat}_task_{tid}.json")
+        if os.path.exists(per_task_path):
+            cached = _load_json(per_task_path)
+            if isinstance(cached, dict):
+                layer1[cat].append(cached)
+                continue
+        remaining_jobs.append((cat, sysp, usr, tid, label))
+    if remaining_jobs:
+        n_cached = len(jobs) - len(remaining_jobs)
+        if n_cached:
+            _log.info("L1 Step 4: loaded %d/%d per-task analyses from checkpoint",
+                      n_cached, len(jobs))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futs = {
                 pool.submit(_analyze_one, client, sysp, usr, task_id=tid, label=label): cat
-                for (cat, sysp, usr, tid, label) in jobs
+                for (cat, sysp, usr, tid, label) in remaining_jobs
             }
             for fut in as_completed(futs):
                 cat = futs[fut]

@@ -29,6 +29,9 @@ Design references: ``design_final_en.md`` §4.3 Layer 1-3 and
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -46,6 +49,8 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from css.data.tree import TreeNode
     from css.model.client import LLMClient
     from css.rollout.contrastive import ContrastiveDivergence
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,6 +72,22 @@ class AnalysisResult:
     divergences: list["ContrastiveDivergence"] = field(default_factory=list)
 
 
+def _save_ckpt(path: str, data: dict) -> None:
+    """Atomic JSON write (tmp + os.replace) — crash-safe checkpoint."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _load_ckpt(path: str) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def run_analysis_epoch(
     client: "LLMClient",
     node: "TreeNode",
@@ -79,39 +100,66 @@ def run_analysis_epoch(
 ) -> "AnalysisResult":
     """Run Layers 1→3 for one node over one epoch's rollout groups.
 
-    Steps (per the Phase-4 contract):
-
-    1. **Layer 1** — annotate every rollout and every same-task contrastive
-       pair, stamping ``node.node_id`` / ``epoch`` / polarity onto each
-       observation.
-    2. **Layer 2** — fold the new observations into ``node.pattern_records``
-       (incremental match → cluster residue → refine → add → pair counterparts),
-       mutating the library in place.
-    3. **Layer 3** — record this epoch's per-pattern occurrence point
-       (``n_tasks = len(groups)``), then detect the L1 signals via the existing
-       :meth:`PatternLibrary.l1_signals` predicate.
-
-    Returns an :class:`AnalysisResult`; ``node.pattern_records`` is updated in
-    place as a side effect. When ``out_dir`` is given, the Layer-2 audit artifact
-    (``layer2_library.json``) and an ``analysis_result.json`` summary are written
-    there.
+    Each layer checkpoints its output so that a crash/resume skips completed
+    LLM work.  Checkpoint files live under ``out_dir/`` (the analysis subdir
+    for this node-round).
     """
     import time
+    from css.data.pattern import Observation, PatternLibrary
+    from css.rollout.contrastive import ContrastiveDivergence
 
     t_start = time.time()
 
-    # ── Layer 1: trajectories → observations + contrastive divergences ──────
-    observations, divergences = run_layer1(
-        client,
-        groups,
-        node_id=node.node_id,
-        epoch=epoch,
-        cfg=cfg,
-    )
+    # ── Checkpoint paths ───────────────────────────────────────────────────
+    layer1_ckpt = os.path.join(out_dir, "layer1_ckpt.json") if out_dir else ""
+    layer23_ckpt = os.path.join(out_dir, "layer23_ckpt.json") if out_dir else ""
+
+    # ── Try full resume (Layer 2+3 done) ───────────────────────────────────
+    saved_23 = _load_ckpt(layer23_ckpt) if layer23_ckpt else None
+    if saved_23 is not None:
+        node.pattern_records = PatternLibrary.from_dict(saved_23["pattern_records"])
+        signals = [
+            rec for rec in node.pattern_records
+            if rec.pattern_id in set(saved_23.get("l1_signal_ids", []))
+        ]
+        divergences = [
+            ContrastiveDivergence.from_dict(d) for d in saved_23.get("divergences", [])
+        ]
+        _log.info("Analysis: loaded full checkpoint (Layer 1-3) — "
+                  "%d observations, %d patterns, %d l1_signals",
+                  saved_23["n_observations"], len(node.pattern_records), len(signals))
+        return AnalysisResult(
+            epoch=epoch,
+            n_observations=saved_23["n_observations"],
+            n_patterns=len(node.pattern_records),
+            l1_signals=signals,
+            divergences=divergences,
+        )
+
+    # ── Layer 1: trajectories → observations + contrastive divergences ─────
+    saved_l1 = _load_ckpt(layer1_ckpt) if layer1_ckpt else None
+    if saved_l1 is not None:
+        observations = [Observation.from_dict(d) for d in saved_l1["observations"]]
+        divergences = [ContrastiveDivergence.from_dict(d) for d in saved_l1["divergences"]]
+        _log.info("Analysis: loaded Layer 1 from checkpoint — %d observations, %d divergences",
+                  len(observations), len(divergences))
+    else:
+        observations, divergences = run_layer1(
+            client,
+            groups,
+            node_id=node.node_id,
+            epoch=epoch,
+            cfg=cfg,
+        )
+        if layer1_ckpt:
+            _save_ckpt(layer1_ckpt, {
+                "observations": [o.to_dict() for o in observations],
+                "divergences": [d.to_dict() for d in divergences],
+            })
 
     n_patterns_before = len(node.pattern_records)
 
-    # ── Layer 2: observations → stable pattern library (mutates in place) ───
+    # ── Layer 2: observations → stable pattern library (mutates in place) ──
     build_or_update_library(
         client,
         node.pattern_records,
@@ -120,7 +168,7 @@ def run_analysis_epoch(
         out_dir=out_dir,
     )
 
-    # ── Layer 3: longitudinal occurrence + L1-signal detection ──────────────
+    # ── Layer 3: longitudinal occurrence + L1-signal detection ─────────────
     record_epoch_occurrences(
         node.pattern_records,
         observations,
@@ -132,6 +180,15 @@ def run_analysis_epoch(
         cfg=cfg,
         l0_saturated=l0_saturated,
     )
+
+    # ── Checkpoint Layer 2+3 result ────────────────────────────────────────
+    if layer23_ckpt:
+        _save_ckpt(layer23_ckpt, {
+            "pattern_records": node.pattern_records.to_dict(),
+            "l1_signal_ids": [s.pattern_id for s in signals],
+            "divergences": [d.to_dict() for d in divergences],
+            "n_observations": len(observations),
+        })
 
     result = AnalysisResult(
         epoch=epoch,

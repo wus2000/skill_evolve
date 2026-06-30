@@ -39,11 +39,6 @@ from css.optimizer.exploitation import (
     run_exploitation_epoch,
     run_l0_step,
 )
-from css.optimizer.reflect import (
-    build_l0_prompt,
-    run_minibatch_analyst,
-    split_minibatches,
-)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -208,116 +203,7 @@ def test_gate_reject():
     assert g.best_rules == "BEST" and g.best_score == 0.9 and g.best_step == 2
 
 
-# ── 3. reflect.split_minibatches ───────────────────────────────────────────────
-
-
-def test_split_minibatches_separates_and_chunks():
-    results = (
-        [_result("f", i, 0) for i in range(5)]
-        + [_result("s", i, 1) for i in range(3)]
-    )
-    fail_batches, succ_batches = split_minibatches(results, minibatch_size=2)
-
-    # 5 failures -> chunks of 2 -> [2, 2, 1]; 3 successes -> [2, 1].
-    assert [len(b) for b in fail_batches] == [2, 2, 1]
-    assert [len(b) for b in succ_batches] == [2, 1]
-    # Class purity.
-    assert all(not r.passed for b in fail_batches for r in b)
-    assert all(r.passed for b in succ_batches for r in b)
-
-
-# ── 4. reflect.build_l0_prompt ─────────────────────────────────────────────────
-
-
-def test_build_l0_prompt_contains_context_and_truncates():
-    strategy = "STRATEGY-MARKER decompose the problem first"
-    rules = "RULES-MARKER always read the sheet name"
-    big = "Z" * 20000
-    minibatch = [
-        _result(
-            "t1",
-            0,
-            0,
-            messages=[
-                {"role": "user", "content": "short user text VERBATIM-SHORT"},
-                {"role": "tool", "content": big},
-            ],
-        )
-    ]
-    # Seed the step buffer with a rejected edit so it must appear in the prompt.
-    sb = StepBuffer()
-    sb.append(
-        StepBufferEntry(
-            step=0,
-            action="reject",
-            score_before=0.5,
-            score_after=0.4,
-            rejected_edits=[
-                Edit(op="append", content="REJECTED-EDIT-CONTENT", reason="bad")
-            ],
-            failure_patterns=["FAILPATTERN-OFF-BY-ONE"],
-        )
-    )
-
-    system, user = build_l0_prompt(
-        strategy, rules, minibatch, sb, source_type="failure", tool_trunc=8000
-    )
-
-    # strategy injected and marked read-only.
-    assert "STRATEGY-MARKER" in user
-    assert "READ-ONLY" in user
-    # rules injected as the edit target.
-    assert "RULES-MARKER" in user
-    # formatted trajectory text present.
-    assert "VERBATIM-SHORT" in user
-    # rejected-edit content injected so repeats are discouraged.
-    assert "REJECTED-EDIT-CONTENT" in user
-    assert "FAILPATTERN-OFF-BY-ONE" in user
-    # System role tells the optimizer it edits rules.md only.
-    assert "rules.md" in system
-
-    # The 20000-char tool message is truncated in the prompt; short text verbatim.
-    assert big not in user
-    assert "...[truncated" in user
-    # Short content (well under tool_trunc) is preserved exactly.
-    assert "short user text VERBATIM-SHORT" in user
-
-
-# ── 5. reflect.run_minibatch_analyst ───────────────────────────────────────────
-
-
-def test_run_minibatch_analyst_parses_edit_list():
-    cfg = CSSConfig()
-    client = StubLLMClient(optimizer_fn=_edit_list_fn('[{"op":"append","content":"new rule"}]'))
-    minibatch = [_result("t1", 0, 0)]
-    rp = run_minibatch_analyst(
-        client, "strat", "rules", minibatch, StepBuffer(),
-        source_type="failure", cfg=cfg,
-    )
-    assert isinstance(rp, RawPatch)
-    assert rp.source_type == "failure"
-    assert rp.batch_size == 1
-    assert len(rp.patch.edits) == 1
-    e = rp.patch.edits[0]
-    assert e.op == "append"
-    assert e.content == "new rule"
-    assert e.source_type == "failure"
-
-
-def test_run_minibatch_analyst_parses_fenced_edit_list():
-    cfg = CSSConfig()
-    fenced = "```json\n[{\"op\":\"append\",\"content\":\"fenced rule\"}]\n```"
-    client = StubLLMClient(optimizer_fn=_edit_list_fn(fenced))
-    rp = run_minibatch_analyst(
-        client, "strat", "rules", [_result("t1", 0, 1)], StepBuffer(),
-        source_type="success", cfg=cfg,
-    )
-    assert len(rp.patch.edits) == 1
-    assert rp.patch.edits[0].content == "fenced rule"
-    assert rp.patch.edits[0].source_type == "success"
-
-
-# ── 6. aggregate ──────────────────────────────────────────────────────────────
+# ── 3. aggregate ──────────────────────────────────────────────────────────────
 
 
 @pytest.mark.skip(reason="V2: aggregate_patches/select_top_edits removed; merger replaces them")
