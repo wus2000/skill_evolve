@@ -254,31 +254,51 @@ class RawPatch:
 
 @dataclass
 class MergedEdit:
-    """One section-level edit unit produced by the merger.
+    """One edit unit produced by the merger — section-level OR point-level.
 
-    Represents the COMPLETE target state of one ### section in rules.md.
-    Each MergedEdit targets a different section (independence guarantee
-    for ablation verification).
+    **Section-level** (``delta_type`` in ``new_section``, ``section_rewrite``,
+    ``section_refinement``): represents the COMPLETE target state of one ``###``
+    section.
+
+    **Point-level** (``delta_type`` in ``point_edit``, ``point_add``,
+    ``point_remove``): a minimal, localized change within a section.  Multiple
+    point edits may target the same section as long as they modify
+    non-overlapping text (independence verified by the edit validator).
     """
 
-    section_target: str          # "### Data Loading" -- exact heading
-    delta_type: str              # "new_section" | "section_rewrite" | "section_refinement"
-    after_section: str = ""      # For new_section: insert after this heading. "_end" / "_start" / exact heading.
-    content: str = ""            # Full section text (### heading + body). NEVER truncated.
-    target_tasks: list[str] = field(default_factory=list)  # Task IDs for ablation verification
-    rationale: str = ""          # Why this edit is needed (problem + expected improvement)
-    derivation: str = ""         # How synthesized from raw edits (audit trail)
+    section_target: str          # "### Data Loading" -- the section this edit belongs to
+    delta_type: str              # section ops: "new_section" | "section_rewrite" | "section_refinement"
+                                 # point ops:   "point_edit" | "point_add" | "point_remove"
+    after_section: str = ""      # For new_section: insert after this heading.
+    content: str = ""            # Section ops: full section text (### heading + body).
+                                 # point_edit/point_add: the new/replacement text.
+                                 # point_remove: unused.
+    point_anchor: str = ""       # Point ops only — the text to locate in the section.
+                                 # point_edit: the text being replaced.
+                                 # point_add: insert new content after this text.
+                                 # point_remove: the text to delete.
+    target_tasks: list[str] = field(default_factory=list)
+    rationale: str = ""
+    derivation: str = ""
+
+    @property
+    def is_point(self) -> bool:
+        return self.delta_type in _POINT_DELTA_TYPES
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "section_target": self.section_target,
             "delta_type": self.delta_type,
-            "after_section": self.after_section,
             "content": self.content,
             "target_tasks": list(self.target_tasks),
             "rationale": self.rationale,
             "derivation": self.derivation,
         }
+        if self.after_section:
+            d["after_section"] = self.after_section
+        if self.point_anchor:
+            d["point_anchor"] = self.point_anchor
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "MergedEdit":
@@ -290,7 +310,12 @@ class MergedEdit:
             delta_type=str(d.get("delta_type", "section_rewrite")),
             after_section=str(d.get("after_section", "")),
             content=str(d.get("content", "")),
+            point_anchor=str(d.get("point_anchor", "")),
             target_tasks=[str(t) for t in raw_tasks if t],
             rationale=str(d.get("rationale", "")),
             derivation=str(d.get("derivation", "")),
         )
+
+
+SECTION_DELTA_TYPES = frozenset({"new_section", "section_rewrite", "section_refinement", "delete_section"})
+_POINT_DELTA_TYPES = frozenset({"point_edit", "point_add", "point_remove"})

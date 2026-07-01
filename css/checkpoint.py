@@ -49,7 +49,7 @@ _FINGERPRINT_FIELDS = (
     "target_model", "optimizer_model",
     "n_train", "n_val", "n_test", "split_dir", "data_root",
     "k_rollouts", "N", "W", "K", "seed",
-    "minibatch_size", "max_l0_steps_per_epoch", "reflect_mode",
+    "minibatch_size", "min_l0_epochs", "max_l0_epochs", "reflect_mode",
     "max_l1_iterations", "l1_diagnostic_tasks", "l1_regression_tasks",
 )
 

@@ -364,7 +364,7 @@ def test_run_exploitation_epoch_saturates_on_consecutive_rejects():
     except ImportError:
         pytest.skip("merger not yet implemented in aggregate.py")
 
-    cfg = CSSConfig(N=5, max_l0_steps_per_epoch=20, k_rollouts=1, max_api_workers=2,
+    cfg = CSSConfig(N=5, min_l0_epochs=0, max_l0_epochs=5, k_rollouts=1, max_api_workers=2,
                     minibatch_size=4, batch_size=4)
     train_items = [{"id": "t%d" % i} for i in range(20)]
     val_items = [{"id": "v1"}]
@@ -395,7 +395,7 @@ def test_run_exploitation_epoch_improving_not_saturated():
     except ImportError:
         pytest.skip("merger not yet implemented in aggregate.py")
 
-    cfg = CSSConfig(N=5, max_l0_steps_per_epoch=3, k_rollouts=1, max_api_workers=2,
+    cfg = CSSConfig(N=5, min_l0_epochs=0, max_l0_epochs=1, k_rollouts=1, max_api_workers=2,
                     minibatch_size=4, batch_size=4)
     train_items = [{"id": "t%d" % i} for i in range(12)]
     val_items = [{"id": "v%d" % i} for i in range(4)]

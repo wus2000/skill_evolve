@@ -92,7 +92,7 @@ def main() -> None:
             "llm_backend": "openai_compat",
             "base_url": "http://10.77.110.162:8888/v1",
             "api_key": "token-abc123",
-            "max_tokens": 32768,
+            "max_tokens": 16384,
             "temperature": 0.7,
             "enable_thinking": False,
             "timeout_seconds": 1800,   # 30 min per-HTTP-request timeout (avoid 300s timeout->retry waste under 512-way saturation)

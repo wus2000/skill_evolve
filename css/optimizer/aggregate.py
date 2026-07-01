@@ -32,7 +32,10 @@ _log = logging.getLogger(__name__)
 __all__ = ["merger"]
 
 # Valid delta_type values for post-validation.
-_VALID_DELTA_TYPES = frozenset({"new_section", "section_rewrite", "section_refinement"})
+_VALID_DELTA_TYPES = frozenset({
+    "new_section", "section_rewrite", "section_refinement", "delete_section",
+    "point_edit", "point_add", "point_remove",
+})
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -48,134 +51,162 @@ def _section_headings(rules: str) -> str:
 # ── System prompt builder ────────────────────────────────────────────────────
 
 _MERGER_PRINCIPLES_1_7 = """\
-You are the MERGER in a rules.md optimization pipeline. You consolidate
-independently-proposed raw edits into section-level edit units for ablation
-testing.
+You are the MERGER in a rules.md optimization pipeline. You organize raw
+edits into independently-verifiable edit units for ablation testing.
 
-## What you produce
+## Your core objective
 
-Each output edit is the COMPLETE TARGET CONTENT of one ### section in rules.md.
-rules.md is a tactical playbook that a SEPARATE task-executing agent reads as
-its operational instructions. The task agent has NO access to raw edits,
-optimization history, or any context from this pipeline — it only sees the
-final rules.md text. Therefore, every piece of content you write must be a
-DIRECT, ACTIONABLE instruction that helps the agent perform tasks correctly.
-Do not include any information that is only meaningful to the optimization
-process (rationale, source tasks, failure statistics, "why" explanations).
+Each output edit must be the SMALLEST independently-testable change. Every
+output edit will be ablation-tested in isolation — applied alone to the
+current rules.md, then evaluated via rollouts. If an edit bundles multiple
+independent improvements together, the ablation test cannot determine which
+improvement is effective. Improvements that could have been validated
+independently get lost when bundled into a single edit that fails testing.
+
+Therefore: ONE distinct improvement = ONE output edit. The number of output
+edits should reflect the number of genuinely distinct improvements found in
+the raw edits, NOT the number of sections in rules.md.
+
+rules.md is a tactical playbook read by a SEPARATE task-executing agent.
+Content must be DIRECT, ACTIONABLE instructions only (no rationale, source
+tasks, or optimization metadata).
+
+## Granularity decision — point edits are the DEFAULT
+
+**Point edits** (point_edit, point_add, point_remove) are the DEFAULT output
+type. Use them whenever a raw edit adds, modifies, or removes a localized
+piece of text within an existing section — regardless of how many point edits
+target the same section.
+
+**Section-level edits** (section_rewrite, new_section) are the EXCEPTION.
+Use section_rewrite ONLY when:
+  - The raw edits collectively reorganize the internal structure of a section
+    (reordering, splitting, merging its sub-parts), making localized point
+    edits impractical.
+  - A section is being created for the first time (new_section).
+
+When raw edits propose localized operations (inserting a new rule, refining
+the wording of a specific rule, removing a specific rule) within an existing
+section, each such operation MUST be a separate point edit — even if many of
+them target the same section. Do NOT collapse them into a section_rewrite.
 
 ## Output format — JSON only, no fences, no prose
 {
   "reasoning": "<key consolidation decisions, 2-3 sentences>",
   "edits": [
     {
-      "section_target": "### <for rewrite: existing heading; for new_section: the NEW heading matching content>",
-      "delta_type": "new_section | section_rewrite | section_refinement",
-      "after_section": "### <only for new_section: existing heading to insert after, or _end/_start>",
-      "content": "### <heading>\\n<well-structured markdown body>",
+      "section_target": "### <heading>",
+      "delta_type": "<operation type>",
+      "after_section": "<for new_section only>",
+      "content": "<see operation-specific rules>",
+      "point_anchor": "<for point ops only>",
       "target_tasks": ["task_id_1", ...],
-      "rationale": "<DETAILED — see Principle 6>",
-      "derivation": "<DETAILED — see Principle 6>"
+      "rationale": "<DETAILED — see Principle 5>",
+      "derivation": "<DETAILED — see Principle 5>"
     }
   ]
 }
 
-## Operations and field rules
+## Operations
 
-Three operations, each with distinct field semantics:
+**point_edit** — replace specific text within a section:
+  - section_target: the ### heading of the section containing the target
+  - point_anchor: the text in the section to be replaced (verbatim from the
+    current rules.md)
+  - content: the replacement text
 
-**section_rewrite / section_refinement** — modify an EXISTING ### section:
-  - section_target: the EXACT existing ### heading being modified
-    (must match a heading in the section index above)
-  - after_section: OMIT (not needed — the section already exists in place)
-  - content: the COMPLETE replacement section (### heading + full body,
-    including ALL existing content that should be KEPT plus your changes)
+**point_add** — insert new text after a specific location:
+  - section_target: the ### heading of the section
+  - point_anchor: the text after which to insert (verbatim from the current
+    rules.md — typically an existing rule or bullet)
+  - content: the new text to insert
+
+**point_remove** — delete specific text from a section:
+  - section_target: the ### heading of the section
+  - point_anchor: the text to remove (verbatim from rules.md)
+  - content: (omit)
+
+**section_rewrite** — replace an EXISTING ### section entirely:
+  - section_target: the EXACT existing ### heading
+  - content: the COMPLETE replacement section (### heading + full body)
+  - Use ONLY when the section's internal structure must be reorganized.
 
 **new_section** — create an entirely NEW ### section:
-  - section_target: the NEW ### heading you are creating. It MUST match
-    the ### heading on the first line of your content. For example, if
-    your content starts with "### Handling Cumulative State", then
-    section_target must be "### Handling Cumulative State" — NOT the
-    name of an existing section you want to insert near.
-  - after_section: where to INSERT this new section — must be "_end"
-    (document end), "_start" (before all sections), or an EXISTING ###
-    heading from the section index. Do NOT reference a section created
-    by another edit in this output.
+  - section_target: the NEW heading, matching the first line of content
+  - after_section: "_end", "_start", or an EXISTING ### heading
   - content: the COMPLETE new section (### heading + full body)
 
-**All operations:**
-  - content: This is what the task agent will read as its rules — write it
-    FROM THE AGENT'S PERSPECTIVE. Include only what the agent needs to act
-    correctly: procedures, patterns, checks, constraints. Do NOT include
-    anything the agent cannot act on: no "**Rationale**:", no
-    "**Source Tasks**:", no "**Why**:", no failure statistics, no edit
-    provenance. Those belong in rationale/derivation fields.
-  - **CRITICAL — NO NUMBERED HEADINGS.** Section headings (###) must be
-    DESCRIPTIVE NAMES without numeric prefixes. Write
-    "### Input Parsing and Data Inspection", NEVER
-    "### 2. Input Parsing and Data Inspection". Raw edits from upstream may
-    contain numbered headings copied from strategy.md — you MUST strip those
-    numbers when consolidating. Numbered headings break when sections are
-    added or removed during optimization.
-  - target_tasks: Union of source_tasks from all contributing raw edits.
-    Must be non-empty.
+**delete_section** — remove an entire ### section:
+  - section_target: the EXACT existing ### heading to delete
+  - content: (omit)
+  - Use when a section is redundant, harmful, or its content has been
+    consolidated into another section.
+
+### Field rules for ALL operations:
+  - content: Written FROM THE AGENT'S PERSPECTIVE — only actionable
+    instructions. No "Rationale:", "Source Tasks:", or "Why:" blocks.
+  - **NO NUMBERED HEADINGS.** "### Input Parsing", not "### 2. Input Parsing".
+  - target_tasks: Union of source_tasks from contributing raw edits. Non-empty.
+  - point_anchor: Must be copied VERBATIM from the current rules.md text
+    shown above — not paraphrased, not abbreviated.
 
 ## Principles
 
-1. ONE EDIT PER SECTION. Multiple raw edits touching the same section MUST
-   be merged into one edit. Non-negotiable (enables independent ablation).
+1. MAXIMIZE INDEPENDENT VERIFIABILITY.
+   - Each distinct improvement in the raw edits should become its own output
+     edit whenever possible.
+   - Raw edits adding/modifying/removing different rules within the same
+     section → separate point edits, one per distinct change.
+   - Only merge raw edits that modify the SAME text or that contradict each
+     other. Everything else stays separate.
+   - Multiple point edits targeting the same section is expected and correct.
 
-2. GROUP BY CONTENT, NOT SOURCE TYPE. Failure-driven and success-driven raw
-   edits proposing the same improvement → merge them. Cross-source agreement
-   is high confidence; note it in derivation.
+   INDEPENDENCE REQUIREMENTS for same-section point edits:
+   - point_edit and point_remove edits MUST each target DISTINCT text — two
+     edits that modify or delete the same text are in conflict.
+   - Multiple point_add edits MAY share the same anchor. Insertions do not
+     modify or remove existing text, so they are independently verifiable
+     even when anchored at the same location. Use the most semantically
+     relevant existing rule as the anchor for each addition.
+   - Do NOT modify text that another point edit's anchor depends on.
+   - If unsure whether two point edits conflict, merge them into one.
 
-3. GAP-ALIGN. Choose delta_type based on the section index above:
-   - If the section index is empty or the topic is NOT covered by any
-     existing section → use "new_section" with after_section="_end".
-   - If the topic IS covered by an existing ### section → use
-     "section_rewrite" or "section_refinement", NEVER a duplicate new_section.
+2. CHOOSE THE RIGHT OPERATION.
+   - If a raw edit proposes to IMPROVE or REFINE an existing rule's wording,
+     scope, or precision → use point_edit (replace the existing rule text
+     with the improved version). Do NOT add a near-duplicate rule via
+     point_add while leaving the old, weaker version in place.
+   - If a raw edit proposes a genuinely NEW rule that does not overlap with
+     any existing rule → use point_add.
+   - If a raw edit proposes removing an obsolete or harmful rule → use
+     point_remove.
 
-4. PRESERVE EXISTING CONTENT. For rewrite/refinement, output the COMPLETE
-   section — existing bullets that should be kept + changes. You are writing
-   the replacement.
+3. GROUP BY CONTENT, NOT SOURCE TYPE. Failure-driven and success-driven raw
+   edits proposing the same improvement → merge into one edit.
+
+4. GAP-ALIGN. If the topic is NOT covered by any existing section →
+   new_section. If it IS covered → point edits (default) or section_rewrite
+   (only when structural reorganization is needed).
 
 5. RESOLVE CONTRADICTIONS. Conflicting raw edits → keep the version with
    more supporting patches. Explain in derivation.
 
-6. DERIVATION TRANSPARENCY. The rationale and derivation fields carry
-   critical diagnostic value — they are NOT summaries, they are detailed
-   audit records. Write each thoroughly:
+6. DERIVATION TRANSPARENCY. rationale and derivation are detailed audit
+   records:
 
-   rationale must answer:
-   - What valuable INSIGHT was discovered from the trajectories? This may
-     be a recurring failure pattern (e.g. "the agent acts on its first
-     interpretation of the input without validating it, causing a
-     downstream error"), a success pattern worth codifying (e.g. "passing
-     rollouts consistently verify an intermediate result before relying on
-     it — this prevents silent corruption"), or a contrastive finding
-     (e.g. "the key difference between pass/fail on task X was inspecting
-     the input's structure before choosing an approach").
-   - Which task IDs and how many independent patches support this insight?
-     (cross-patch consensus = high confidence)
-   - What concrete behavior change is expected after applying this edit?
+   rationale: What insight was discovered? Which task IDs support it? What
+   behavior change is expected?
 
-   derivation must answer:
-   - Which raw edit numbers contributed? (list ALL by index, e.g. "Raw
-     edits 1, 2, 5, 6, 9")
-   - For each contributing raw edit, what did it propose and what was kept
-     vs refined? (e.g. "Edit 2 proposed a more precise condition — kept its
-     formulation over edit 1's simpler version")
-   - Were any raw edits DROPPED? Which ones and why? (e.g. "Dropped edit
-     11 which proposed a blanket prohibition — conflicts with tasks that
-     legitimately need that operation")
-   - How were overlapping proposals resolved? (e.g. "Edits 5, 6, 9 all
-     proposed validation rules — merged into one consolidated bullet")
+   derivation: Which raw edit numbers contributed? What was kept vs dropped?
+   How were overlaps resolved?
 
-7. QUALITY OVER QUANTITY. Fewer high-confidence edits beat many speculative
-   ones. Drop weak/low-support raw edits rather than outputting noise."""
+7. QUALITY OVER QUANTITY. Drop weak/low-support raw edits rather than
+   outputting noise. But do NOT artificially reduce count by bundling
+   independent high-confidence improvements into one edit."""
 
 _PRINCIPLE_8_HISTORY = """
 
-8. LEARN FROM HISTORY. The optimization history below shows recent edit
+8. LEARN FROM HISTORY (when optimization history is provided below). The optimization history below shows recent edit
    verification results:
    - An edit that PASSED per-edit verification but the step was rejected at
      the final gate: the direction is sound but clashed with other edits.
@@ -337,9 +368,19 @@ def _build_merger_user_prompt(
             "## Optimization history\n" + _format_merger_history(step_buffer, window)
         )
 
-    # 5. Budget
-    max_edits = getattr(cfg, "max_edits_per_step", 6)
-    sections.append(f"## Budget\nProduce at most {max_edits} edit units.")
+    # 5. Guidance
+    sections.append(
+        "## Edit count\n"
+        "Many raw edits are redundant — multiple patches often propose the "
+        "same improvement in different wording. First de-duplicate: identify "
+        "the set of genuinely DISTINCT improvements across all raw edits. "
+        "Then produce one output edit per distinct improvement.\n\n"
+        "Do NOT artificially cap or inflate the count. Do NOT produce one "
+        "edit per raw edit — de-duplicate first. The typical range after "
+        "de-duplication is 5-25 edits depending on the diversity of the raw "
+        "input. If the raw edits are highly redundant, fewer is correct; if "
+        "they cover many independent topics, more is correct."
+    )
 
     return "\n\n".join(sections)
 
@@ -407,73 +448,64 @@ def _validate_merged_edits(raw_edits: list[dict], rules: str = "") -> list[Merge
             if stripped.startswith("### "):
                 existing_headings.add(stripped)
 
+    from css.data.edit import SECTION_DELTA_TYPES
+
     valid: list[MergedEdit] = []
-    seen_targets: set[str] = set()
+    seen_section_rewrites: set[str] = set()
 
     for i, d in enumerate(raw_edits):
-        # Validate content starts with ###
-        content = str(d.get("content", ""))
-        if not content.startswith("### "):
-            _log.warning(
-                "merger: dropping edit %d — content does not start with '### ' "
-                "(starts with %r)",
-                i, content[:30],
-            )
-            continue
-
-
-        # Validate delta_type
         delta_type = str(d.get("delta_type", ""))
         if delta_type not in _VALID_DELTA_TYPES:
             _log.warning(
-                "merger: dropping edit %d — invalid delta_type %r "
-                "(expected one of %s)",
-                i, delta_type, _VALID_DELTA_TYPES,
-            )
+                "merger: dropping edit %d — invalid delta_type %r", i, delta_type)
             continue
 
-        # Auto-correct: rewrite/refinement targeting a non-existent section → new_section
+        is_point = delta_type not in SECTION_DELTA_TYPES
         section_target = str(d.get("section_target", ""))
+
+        # Section-level (except delete): content must start with ###
+        content = str(d.get("content", ""))
+        if not is_point and delta_type != "delete_section" and not content.startswith("### "):
+            _log.warning(
+                "merger: dropping edit %d — section-level content does not "
+                "start with '### ' (starts with %r)", i, content[:30])
+            continue
+
+        # Auto-correct: rewrite/refinement targeting a non-existent section
         if delta_type in ("section_rewrite", "section_refinement"):
             if section_target not in existing_headings:
                 _log.info(
                     "merger: auto-correcting edit %d — delta_type %r but "
                     "section %r not in rules.md; converting to new_section",
-                    i, delta_type, section_target,
-                )
+                    i, delta_type, section_target)
                 d["delta_type"] = "new_section"
                 d["after_section"] = "_end"
                 delta_type = "new_section"
 
-        # Validate target_tasks is a non-empty list
+        # target_tasks must be non-empty
         target_tasks = d.get("target_tasks", [])
         if not isinstance(target_tasks, list) or not target_tasks:
             _log.warning(
-                "merger: dropping edit %d — target_tasks is empty or not a list",
-                i,
-            )
+                "merger: dropping edit %d — target_tasks is empty or not a list", i)
             continue
 
-        # Validate no duplicate section_target
-        section_target = str(d.get("section_target", ""))
-        if section_target in seen_targets:
-            _log.warning(
-                "merger: dropping edit %d — duplicate section_target %r",
-                i, section_target,
-            )
-            continue
-        seen_targets.add(section_target)
+        # Duplicate section_rewrite check (only for section-level ops)
+        if not is_point:
+            if section_target in seen_section_rewrites:
+                _log.warning(
+                    "merger: dropping edit %d — duplicate section-level "
+                    "edit for %r", i, section_target)
+                continue
+            seen_section_rewrites.add(section_target)
 
-        # Build MergedEdit via from_dict
+        # Build MergedEdit
         try:
             merged = MergedEdit.from_dict(d)
             valid.append(merged)
         except Exception:
             _log.warning(
-                "merger: dropping edit %d — MergedEdit.from_dict raised an error",
-                i,
-                exc_info=True,
-            )
+                "merger: dropping edit %d — MergedEdit.from_dict raised",
+                i, exc_info=True)
             continue
 
     return valid
@@ -497,23 +529,41 @@ def _merger_required_missing(edits: list[dict]) -> list[str]:
     non-empty only — value-validity (delta_type enum, ``### `` prefix) stays a
     downstream drop, not a repair.
     """
+    from css.data.edit import SECTION_DELTA_TYPES
+
     out: list[str] = []
     for i, d in enumerate(edits):
         if not isinstance(d, dict):
             continue
         sec = str(d.get("section_target") or "").strip()
+        dt = str(d.get("delta_type") or "").strip()
         tag = f"edits[{i}]" + (f" (section {sec!r})" if sec else "")
+        is_point = dt and dt not in SECTION_DELTA_TYPES
+
         if not sec:
             out.append(f"edits[{i}] is missing required 'section_target'")
-        if not str(d.get("delta_type") or "").strip():
+        if not dt:
             out.append(f"{tag} is missing required 'delta_type'")
-        if not str(d.get("content") or "").strip():
+
+        # Section ops require content; point ops require content (except point_remove)
+        content = str(d.get("content") or "").strip()
+        if not is_point and not content:
             out.append(f"{tag} is missing required 'content'")
+        if is_point and dt != "point_remove" and not content:
+            out.append(f"{tag} ({dt}) is missing required 'content'")
+
+        # Point ops require point_anchor
+        if is_point and not str(d.get("point_anchor") or "").strip():
+            out.append(
+                f"{tag} ({dt}) is missing required 'point_anchor' — set it to "
+                "the exact text in the section that this edit targets"
+            )
+
         tt = d.get("target_tasks")
         if not (isinstance(tt, list) and len(tt) > 0):
             out.append(
                 f"{tag} is missing required non-empty 'target_tasks' — set it to "
-                "the union of the source_tasks of the raw edits this section "
+                "the union of the source_tasks of the raw edits this "
                 "consolidates"
             )
     return out
@@ -564,7 +614,7 @@ def merger(
             user,
             parse=_parse_merger_output,
             required=_merger_required_missing,
-            max_tokens=8192,
+            max_tokens=16384,
             stage="merger",
         )
     except Exception:

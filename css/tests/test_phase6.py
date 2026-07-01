@@ -515,7 +515,7 @@ def test_run_round_advances_root():
 
     cfg = CSSConfig(
         k_rollouts=1, max_api_workers=1, concurrency_limit=1,
-        eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3,
+        eps_dbscan=0.05, min_samples=2, min_l0_epochs=0, max_l0_epochs=1, N=3,
     )
     env = _cold_env()
     client = _stub_client()
@@ -545,7 +545,7 @@ def test_run_round_deterministic():
 
     cfg = CSSConfig(
         k_rollouts=1, max_api_workers=1, concurrency_limit=1,
-        eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3,
+        eps_dbscan=0.05, min_samples=2, min_l0_epochs=0, max_l0_epochs=1, N=3,
     )
     client = _stub_client()
 
@@ -572,7 +572,7 @@ def test_run_css_end_to_end_and_artifacts():
 
     cfg = CSSConfig(
         k_rollouts=1, max_api_workers=1, concurrency_limit=2,
-        eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3, K=3,
+        eps_dbscan=0.05, min_samples=2, min_l0_epochs=0, max_l0_epochs=1, N=3, K=3,
     )
     env = _cold_env()
     client = _stub_client()
@@ -605,7 +605,7 @@ def test_run_css_writes_checkpoints_and_resumes():
 
     cfg = CSSConfig(
         k_rollouts=1, max_api_workers=1, concurrency_limit=2,
-        eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3, K=3,
+        eps_dbscan=0.05, min_samples=2, min_l0_epochs=0, max_l0_epochs=1, N=3, K=3,
     )
     env = _cold_env()
     client = _stub_client()
@@ -639,7 +639,7 @@ def test_run_css_resume_refuses_config_mismatch():
 
     cfg = CSSConfig(
         k_rollouts=1, max_api_workers=1, concurrency_limit=2,
-        eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3, K=3,
+        eps_dbscan=0.05, min_samples=2, min_l0_epochs=0, max_l0_epochs=1, N=3, K=3,
     )
     env = _cold_env()
     client = _stub_client()
@@ -648,7 +648,7 @@ def test_run_css_resume_refuses_config_mismatch():
         # A compute-affecting change (k_rollouts) must block resume.
         cfg2 = CSSConfig(
             k_rollouts=2, max_api_workers=1, concurrency_limit=2,
-            eps_dbscan=0.05, min_samples=2, max_l0_steps_per_epoch=2, N=3, K=3,
+            eps_dbscan=0.05, min_samples=2, min_l0_epochs=0, max_l0_epochs=1, N=3, K=3,
         )
         with pytest.raises(ValueError, match="fingerprint mismatch"):
             run_css(env, client, client, cfg=cfg2, out_dir=out_dir,

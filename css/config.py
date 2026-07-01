@@ -50,11 +50,12 @@ class CSSConfig:
 
     # ── L0 EXPLOITATION ──────────────────────────────────────────────────
     minibatch_size: int = 8             # trajectories per L0 minibatch
-    max_l0_steps_per_epoch: int = 20    # safety cap on L0 steps within an epoch
+    min_l0_epochs: int = 1             # full train-set passes before saturation check activates
+    max_l0_epochs: int = 100           # hard cap on train-set passes (effectively unlimited)
     batch_size: int = 40                # tasks per batch in batch-step architecture
     num_generators: int = 3             # deprecated (plan_a v1 N-generator stage); unused by per-minibatch plan_a
     l0_edit_budget: int = 3             # max edits each minibatch proposer may emit (L)
-    max_edits_per_step: int = 6         # max edits applied per step after the merge coordinator
+    max_edits_per_step: int = 0          # deprecated — merger now self-determines edit count
     exploitation_val_k: int = 1          # K for val gate in exploitation (1=fast; train K stays at k_rollouts)
     test_k_rollouts: int = 1             # K for test-set evaluation (bare baseline + per-round test)
     merger_inject_history: bool = True   # Inject per-edit verification history into merger prompt

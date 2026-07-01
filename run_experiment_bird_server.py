@@ -97,7 +97,7 @@ def main() -> None:
             "llm_backend": "openai_compat",
             "base_url": "http://10.77.110.162:8888/v1",
             "api_key": "token-abc123",
-            "max_tokens": 32768,
+            "max_tokens": 16384,
             "temperature": 0.7,
             "enable_thinking": False,
             "timeout_seconds": 1800,
@@ -107,7 +107,7 @@ def main() -> None:
             # Bird task-agent knobs
             "bird_max_turns": 30,
             "bird_exec_timeout": 15.0,
-            "bird_max_tokens": 8192,
+            "bird_max_tokens": 16384,
             "bird_temperature": 0.0,
         },
     )

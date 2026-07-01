@@ -87,19 +87,23 @@ def parse_rules_into_sections(rules_md: str) -> list[RulesSection]:
 def apply_section_edit(rules_md: str, edit: "MergedEdit") -> str:
     """Apply ONE MergedEdit to rules.md. Deterministic, no LLM.
 
+    Section ops:
     - new_section: insert edit.content after edit.after_section.
-      "_end" = append at document end.
-      "_start" = insert after preamble (before first ### section).
-      Otherwise: insert after the section whose heading matches exactly.
-    - section_rewrite / section_refinement: find the section whose heading
-      matches edit.section_target exactly, replace it with edit.content.
-    - Heading match is EXACT string ==.
-    - Mismatch (heading not found) -> log warning, return rules_md unchanged.
+    - section_rewrite / section_refinement: replace matching section.
+
+    Point ops (deterministic fallback — exact string match):
+    - point_edit: replace edit.point_anchor with edit.content.
+    - point_add: insert edit.content after edit.point_anchor.
+    - point_remove: delete edit.point_anchor.
     """
     if edit.delta_type == "new_section":
         return _apply_new_section(rules_md, edit)
+    elif edit.delta_type == "delete_section":
+        return _apply_section_delete(rules_md, edit)
     elif edit.delta_type in ("section_rewrite", "section_refinement"):
         return _apply_section_replace(rules_md, edit)
+    elif edit.delta_type in ("point_edit", "point_add", "point_remove"):
+        return _apply_point_edit(rules_md, edit)
     else:
         _log.warning(
             "Unknown delta_type %r for section_target %r; skipping",
@@ -107,6 +111,28 @@ def apply_section_edit(rules_md: str, edit: "MergedEdit") -> str:
             edit.section_target,
         )
         return rules_md
+
+
+def _apply_point_edit(rules_md: str, edit: "MergedEdit") -> str:
+    """Apply a point-level edit via exact string matching (deterministic fallback)."""
+    anchor = edit.point_anchor
+    if not anchor or anchor not in rules_md:
+        _log.warning(
+            "point_anchor %r not found in rules.md for %s on %s; returning unchanged",
+            anchor[:80] if anchor else "(empty)",
+            edit.delta_type,
+            edit.section_target,
+        )
+        return rules_md
+
+    if edit.delta_type == "point_edit":
+        return rules_md.replace(anchor, edit.content, 1)
+    elif edit.delta_type == "point_add":
+        return rules_md.replace(anchor, anchor + "\n" + edit.content, 1)
+    elif edit.delta_type == "point_remove":
+        result = rules_md.replace(anchor, "", 1)
+        return re.sub(r"\n{3,}", "\n\n", result)
+    return rules_md
 
 
 def _apply_new_section(rules_md: str, edit: "MergedEdit") -> str:
@@ -172,6 +198,26 @@ def _apply_new_section(rules_md: str, edit: "MergedEdit") -> str:
     return before_text + separator + new_content + after_text
 
 
+def _apply_section_delete(rules_md: str, edit: "MergedEdit") -> str:
+    """Remove an entire ### section (heading + body) from rules_md."""
+    sections = parse_rules_into_sections(rules_md)
+    target_idx = None
+    for i, sec in enumerate(sections):
+        if sec.heading == edit.section_target:
+            target_idx = i
+            break
+    if target_idx is None:
+        _log.warning(
+            "section_target heading %r not found for delete_section; "
+            "returning rules_md unchanged",
+            edit.section_target,
+        )
+        return rules_md
+    parts = [sec.content for i, sec in enumerate(sections) if i != target_idx]
+    result = "".join(parts)
+    return re.sub(r"\n{3,}", "\n\n", result)
+
+
 def _apply_section_replace(rules_md: str, edit: "MergedEdit") -> str:
     """Replace an existing section whose heading matches edit.section_target."""
     sections = parse_rules_into_sections(rules_md)
@@ -227,20 +273,34 @@ _LLM_APPLY_SYSTEM = """\
 You are a document editor. Your ONLY job is to apply the specified edit(s) to \
 the given rules.md document FAITHFULLY, then call write_rules_md with the result.
 
-rules.md is a tactical playbook read by a task-executing agent. The content \
-field of each edit contains EXACTLY the text that should appear in the document. \
-Your job is purely mechanical — place the edit content into the document at the \
-right position, then call write_rules_md with the complete updated document.
+rules.md is a tactical playbook read by a task-executing agent. Your job is \
+purely mechanical — apply each edit precisely, then output the complete document.
 
-Rules:
+## Edit types
+
+**Section-level edits:**
+- "new_section": insert the new ### section at a logical position in the \
+document (after thematically related sections, or at the end if unsure).
+- "section_rewrite" / "section_refinement": find the matching ### section by \
+its heading and replace it entirely with the edit's content field.
+- "delete_section": find the matching ### section by its heading and remove \
+it entirely (heading + all content under it).
+
+**Point-level edits** (localized changes within a section):
+- "point_edit": locate the point_anchor text within the target section and \
+replace it with the content field.
+- "point_add": locate the point_anchor text and insert the content field \
+immediately after it.
+- "point_remove": locate the point_anchor text and remove it.
+
+For point edits, the point_anchor may not be an exact string match — use \
+semantic understanding to locate the intended text in the target section.
+
+## Rules
 1. Reproduce ALL edit content WORD-FOR-WORD — do NOT rephrase, summarize, \
 add to, or omit any part of the edit content.
-2. PRESERVE all existing rules.md content that is NOT being replaced by an edit.
-3. For "new_section" edits: insert the new ### section at a logical position \
-in the document (after thematically related sections, or at the end if unsure).
-4. For "section_rewrite" / "section_refinement" edits: find the matching ### \
-section by its heading and replace it entirely with the edit's content.
-5. Do NOT add any commentary, rationale, source tasks, or meta-information \
+2. PRESERVE all existing rules.md content that is NOT being modified by an edit.
+3. Do NOT add any commentary, rationale, source tasks, or meta-information \
 that is not in the edit content."""
 
 _WRITE_RULES_TOOL = {
@@ -272,9 +332,12 @@ def _format_edit_for_apply(edit: "MergedEdit") -> str:
     lines = [
         f"Type: {edit.delta_type}",
         f"Section: {edit.section_target}",
-        "Content:",
-        edit.content,
     ]
+    if edit.point_anchor:
+        lines.append(f"Anchor: {edit.point_anchor}")
+    if edit.content:
+        lines.append("Content:")
+        lines.append(edit.content)
     return "\n".join(lines)
 
 
