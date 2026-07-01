@@ -104,6 +104,26 @@ class BirdEnv:
     def test_items(self) -> list[dict]:
         return self._split("test")
 
+    # ── Action space (for L1 paradigm design prompts) ─────────────────
+
+    def action_space_description(self) -> str:
+        extra = getattr(self.cfg, "extra", {}) or {}
+        max_turns = int(extra.get("bird_max_turns", 10))
+        return (
+            "The agent operates in a ReAct loop (Thought -> Action -> Observation, "
+            f"repeating up to {max_turns} turns). Two actions are available:\n"
+            "- execute_sql(sql): Run a read-only SQL query against the task's "
+            "SQLite database and observe the result rows. Can be called as many "
+            "times as needed for schema inspection, data exploration, intermediate "
+            "verification, or any other investigative query.\n"
+            "- submit_final_sql(sql): Submit the final answer query. This "
+            "terminates the task — no further actions are possible after "
+            "submission.\n"
+            "The agent sees the database schema and the natural-language question "
+            "at the start. It must produce a SQL query whose result set matches "
+            "the gold answer (evaluated by execution accuracy)."
+        )
+
     # ── Rollout ──────────────────────────────────────────────────────────
 
     def run_one(

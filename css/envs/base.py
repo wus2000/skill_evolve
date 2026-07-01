@@ -57,3 +57,18 @@ class TaskEnv(Protocol):
         epoch: int = -1,
         node_id: str = "",
     ) -> "TaskResult": ...
+
+    def action_space_description(self) -> str:
+        """Human-readable description of the agent's available actions and
+        the interaction loop structure.
+
+        Used by L1 paradigm design prompts so the optimizer understands what
+        behavioral building blocks the agent has.  The description should cover:
+        - The interaction pattern (e.g. ReAct: Thought -> Action -> Observation)
+        - Each available tool/action and what it does
+        - Any structural constraints (e.g. one action per turn, max turns)
+
+        Returns an empty string by default (graceful degradation for envs that
+        have not implemented it yet).
+        """
+        return ""

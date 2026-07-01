@@ -522,7 +522,7 @@ def test_skill_document_roundtrip_and_views():
         assert len(loaded.subsections()) == 3
 
         combined = loaded.combined_skill_text()
-        assert "# Cognitive Strategy" in combined and "# Tactical Rules" in combined
+        assert "# Task-Solving Approach" in combined and "# Tactical Rules" in combined
 
         # REFINE gate via the document method.
         child = STRATEGY_A.replace(
@@ -539,7 +539,7 @@ def test_skill_document_empty_rules_clean_combined():
         doc.save()
         combined = SkillDocument.load(doc.skill_dir).combined_skill_text()
         assert "# Tactical Rules" not in combined  # empty rules omitted
-        assert "# Cognitive Strategy" in combined
+        assert "# Task-Solving Approach" in combined
 
 
 # ── Reflect mode dispatch tests ──────────────────────────────────────────────

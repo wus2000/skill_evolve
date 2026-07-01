@@ -160,7 +160,7 @@ class SkillDocument:
         """
         parts: list[str] = []
         if self.strategy.strip():
-            parts.append("# Cognitive Strategy\n\n" + self.strategy.strip())
+            parts.append("# Task-Solving Approach\n\n" + self.strategy.strip())
         if self.rules.strip():
             parts.append("# Tactical Rules\n\n" + self.rules.strip())
         return "\n\n".join(parts)

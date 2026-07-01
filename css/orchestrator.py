@@ -737,6 +737,11 @@ def _run_branch_operation(
 
     operation = decision  # always "PROPOSAL" in v3 (REFINE unified into PROPOSAL)
 
+    # Inject the action-space description so the L1 paradigm designer knows
+    # what behavioral building blocks (tools, interaction loop) the agent has.
+    if hasattr(env, "action_space_description"):
+        cfg._env_action_space = env.action_space_description()
+
     outcome = run_proposal(
         node,
         l1_signals,

@@ -1,28 +1,30 @@
-"""L1 Strategy Cycle — diverse-iterate + objective-lift candidate search (v3).
+"""L1 Behavioral Paradigm Cycle — diverse-iterate + objective-lift search (v3).
 
-When L0 saturates, this cycle searches for a better COGNITIVE STRATEGY. It is a
-CANDIDATE GENERATOR, not a gatekeeper: it selects the best candidate by an
-objective signal and hands it to the tree, whose val/test is the real judge.
+When L0 saturates, this cycle searches for a better BEHAVIORAL PARADIGM — a
+multi-phase plan governing how the agent approaches tasks from start to finish.
+It is a CANDIDATE GENERATOR, not a gatekeeper: it selects the best candidate by
+an objective signal and hands it to the tree, whose val/test is the real judge.
 
-  Step 1  One-time grounding analysis (1a/1b/1c parallel → 1d directions)
-  Loop (up to cfg.max_l1_iterations rounds, each a DISTINCT philosophy):
-    Step 2  Strategy proposal — a NEW cognitive philosophy, ledger-anchored
-    Step 3  Test the candidate (new strategy, EMPTY rules) K times on a FIXED
+  Step 1  One-time grounding analysis (1a/1b parallel → 1d design brief)
+  Loop (up to cfg.max_l1_iterations rounds, each a DISTINCT behavioral arc):
+    Step 2  Paradigm design — a NEW behavioral arc, grounded in trajectory
+            evidence + task understanding, anchored to the cycle ledger
+    Step 3  Test the candidate (new paradigm, EMPTY rules) K times on a FIXED
             residual + regression task set
     Categorize vs the node's baseline (pass@K, symmetric is_persistent_fail):
             cracked / still_failed / regressed / maintained → lift, regression
-    Step 4  Category-specific contrastive diagnosis (per-trajectory Layer-1
-            analyzers → Layer-2 aggregate) — drives the next philosophy
-    Keep-best by net_lift; early-stop when a clearly strong candidate appears
+    Step 4  Category-specific paradigm evaluation (per-task phase-level
+            analyzers → aggregate evaluation) — drives the next design
+    Keep-best by net_lift; early-stop when enough effective candidates appear
 
 After the loop, the best candidate with lift>0 becomes an MCTS child node;
 if none cracked any residual task, the last direction is archived.
 
-Why EMPTY rules: testing the strategy alone handicaps it, which makes lift a
+Why EMPTY rules: testing the paradigm alone handicaps it, which makes lift a
 conservative LOWER bound on the deployed (post-exploitation, rules-restored)
 artifact and regression an UPPER bound — a cracked-under-handicap residual will
-(in expectation) also crack once L0 restores rules. Selection stays objective
-(no LLM); the LLM is used only to produce rich diagnosis that steers the search.
+(in expectation) also crack once L0 restores rules.  Selection stays objective
+(no LLM); the LLM is used only for rich evaluation that steers the design.
 
 All intermediate products are persisted under
 ``{out_dir}/{node_id}/l1_cycle/round_{N}/``.
@@ -85,20 +87,21 @@ class ProposalOutcome:
 class _PreviousAttempt:
     """One round's full decision record — the unit of the cross-round ledger.
 
-    Assembled in code from each round's objective categorization + the Layer-2
-    diagnosis; NO dedicated LLM call generates the record itself. Later rounds
+    Assembled in code from each round's objective categorization + the paradigm
+    evaluation; NO dedicated LLM call generates the record itself.  Later rounds
     read it (via :meth:`_IterationContext.render_ledger`) so the search
-    accumulates — preserving the active ingredient, avoiding harm, attacking the
-    residual — instead of re-deriving from scratch or drifting via depth-refine.
+    accumulates — preserving effective phases, avoiding harmful ones, attacking
+    the residual — instead of re-deriving from scratch or drifting.
     """
     round: int
-    # ── Generation (the philosophy this round explored) ─────────────────────
-    philosophy: str = ""            # the declared cognitive philosophy
-    mechanism_difference: str = ""  # how it differed in MECHANISM from priors
+    # ── Generation (the paradigm this round explored) ──────────────────────
+    # v2 compat aliases: philosophy -> core_approach, mechanism_difference -> behavioral_difference
+    philosophy: str = ""            # core_approach (kept as 'philosophy' for ckpt compat)
+    mechanism_difference: str = ""  # behavioral_difference (kept for ckpt compat)
     strategy_name: str = ""
     strategy_summary: str = ""
     design_reasoning: str = ""
-    was_refine: bool = False        # True if this round REFINED the prior strategy
+    was_refine: bool = False        # True if this round REFINED the prior paradigm
     # ── Objective categorization vs baseline (pass@K, NO LLM) ───────────────
     lift: int = 0                   # #cracked (residual unlocked)
     regression: int = 0             # #regressed (solved task broken)
@@ -155,42 +158,47 @@ class _IterationContext:
 
     def render_ledger(self) -> str:
         """Render the cross-round decision ledger as a distilled, readable text
-        block for prompt injection (Step 2 generation).
+        block for prompt injection (Step 2 design + Step 1d brief).
 
-        Per round it tells the next philosophy designer four things it must act
-        on: the PHILOSOPHY already tried (do not repeat its mechanism), the
-        OBJECTIVE result (lift/regression — what truly worked), the ACTIVE
-        INGREDIENT to preserve, the HARM to avoid, and the RESIDUAL still open.
-        Assembled purely from recorded fields — no raw JSON or trajectories.
+        Per round it tells the next paradigm designer what it must act on: the
+        PARADIGM already tried (do not repeat its arc shape), the OBJECTIVE
+        result (lift/regression), which PHASES were effective (preserve) vs
+        harmful (avoid), the REMAINING GAP, and the design feedback for the next
+        round.  Assembled purely from recorded fields — no raw JSON or
+        trajectories.
         """
         if not self.previous_attempts:
-            return "(no prior rounds — this is the first philosophy in this cycle)"
+            return "(no prior rounds — this is the first paradigm in this cycle)"
         blocks: list[str] = []
         for a in self.previous_attempts:
             if a.failure_note:
                 blocks.append(
                     f"=== Round {a.round} ===\n"
-                    f"Philosophy: (Step 2 produced no usable strategy)\n"
+                    f"Paradigm: (Step 2 produced no usable design)\n"
                     f"Note: {a.failure_note}"
                 )
                 continue
             d = a.diagnosis or {}
             cracked = ", ".join(str(t) for t in a.cracked_task_ids[:8]) or "none"
             regressed = ", ".join(str(t) for t in a.regressed_task_ids[:8]) or "none"
-            mode = "REFINE of prior" if a.was_refine else "NEW philosophy"
+            mode = "REFINE of prior" if a.was_refine else "NEW paradigm"
             verdict = "EFFECTIVE (lift>0)" if a.lift > 0 else "ineffective (lift 0)"
+            # Use new field names when available, fall back to old for ckpt compat
+            core_approach = a.philosophy or "(undeclared)"
+            arc_diff = a.mechanism_difference or "(unstated)"
             blocks.append(
                 f"=== Round {a.round} [{mode}]: {a.strategy_name or '(unnamed)'} — {verdict} ===\n"
-                f"Philosophy: {a.philosophy or '(undeclared)'}\n"
-                f"How it differed in mechanism: {a.mechanism_difference or '(unstated)'}\n"
+                f"Core approach: {core_approach}\n"
+                f"Behavioral arc difference: {arc_diff}\n"
                 f"Objective result: lift +{a.lift} (cracked: {cracked}) | "
                 f"regression -{a.regression} (regressed: {regressed}) | "
                 f"net {a.net_lift:+d} | still-failed {len(a.still_failed_task_ids)}/{a.n_residual}\n"
-                f"Active ingredient (PRESERVE): {(d.get('active_ingredient') or '(none found)')[:300]}\n"
-                f"Harm (AVOID): {(d.get('harm') or '(no strategy-level harm)')[:250]}\n"
-                f"Residual still open: {(d.get('residual_characterization') or '?')[:250]} "
-                f"[nature: {d.get('residual_nature', '?')} — if L0_tactical, leave it to L0]\n"
-                f"  -> next-direction hint (cognitive): {(d.get('next_direction_hint') or '(none)')[:250]}"
+                f"Adherence: {(d.get('adherence') or d.get('active_ingredient') or '(not assessed)')[:300]}\n"
+                f"Effective phases (PRESERVE): {(d.get('effective_phases') or d.get('active_ingredient') or '(none)')[:300]}\n"
+                f"Problematic phases (AVOID): {(d.get('problematic_phases') or d.get('harm') or '(none)')[:250]}\n"
+                f"Remaining needs: {(d.get('remaining_needs') or d.get('residual_characterization') or '?')[:250]} "
+                f"[nature: {d.get('remaining_nature') or d.get('residual_nature', '?')}]\n"
+                f"Design feedback: {(d.get('design_feedback') or d.get('next_direction_hint') or '(none)')[:300]}"
             )
         return "\n\n".join(blocks)
 
@@ -302,55 +310,83 @@ Output ONLY the JSON object — no prose, no fences."""
 
 
 _STEP1D_SYSTEM = """\
-You are synthesizing analysis into the NEXT strategic hypothesis for improving an \
-AI agent's cognitive strategy. You receive TWO kinds of input:
+You are preparing a DESIGN BRIEF for a behavioral-paradigm designer. The designer \
+will use your brief to create the agent's next task-solving approach — a multi-phase \
+plan governing how the agent behaves from the moment it receives a task to the \
+moment it submits an answer.
 
-A. FIXED ANALYSIS of the agent's post-exploitation state (computed once; identical \
-every round of this cycle):
-   1. L0 CEILING ANALYSIS — why tactical optimization stalled
-   2. TRAJECTORY ANALYSIS — deep behavioral patterns from failure traces
-   3. CONTRASTIVE LIMITATION ANALYSIS — why L0-identified divergences couldn't be \
-fixed with rules
+You receive TWO kinds of input:
 
-B. CYCLE LEDGER — what PRIOR ROUNDS of this same cycle already tried: each round's \
-hypothesis/direction, the strategy, its OBJECTIVE result (pass rate), the verdict, \
-and the post-mortem of WHY it failed (e.g. "the agent followed it but anchored to a \
-wrong logical hypothesis"). Empty on the first round.
+A. FIXED ANALYSIS of the agent's post-exploitation state (computed once):
+   1. L0 CEILING ANALYSIS — why tactical optimization stalled, and what behavioral \
+arc the agent currently follows.
+   2. BEHAVIORAL ANALYSIS — what behavioral arcs exist across trajectories, which \
+lead to success vs failure, what failing tasks need.
+
+B. CYCLE LEDGER — what PRIOR ROUNDS of this cycle already tried: each round's \
+paradigm design (its phase structure and behavioral arc shape), its OBJECTIVE result \
+(lift/regression), and the paradigm evaluation (which phases worked, which failed, \
+what to keep/avoid/change). Empty on the first round.
+
+Your brief must give the designer everything needed to produce a well-grounded, \
+genuinely novel paradigm:
+
+1. PARADIGM SPACE MAP:
+   - Current paradigm: what behavioral arc does the agent follow now? (phases, \
+transitions, overall shape)
+   - Tried paradigms: what arcs have prior rounds explored? What were their results? \
+Which PHASES were effective, which were harmful?
+   - Unexplored territory: based on your understanding of the task domain AND the \
+behavioral analysis, what genuinely different arc shapes have NOT been tried? You may \
+propose arcs observed in success trajectories but never deliberately deployed, OR \
+arcs you believe would suit the task domain based on your understanding.
+
+2. DESIGN REQUIREMENTS:
+   - Target failure cluster: what types of tasks are still failing? What do they \
+need from a behavioral arc that the current paradigm does not provide?
+   - Constraints: what effective phases/behaviors MUST be preserved (from the \
+ledger)? What harmful directions MUST be avoided?
+
+3. DESIGN MATERIALS:
+   - Success arcs: behavioral patterns from successful trajectories that could be \
+systematized (made deliberate instead of accidental).
+   - Agent capabilities: what actions/tools are available and how the interaction \
+loop works (provided separately).
+   - Task understanding: based on the task descriptions and trajectories, what does \
+solving these tasks fundamentally require? What phases of work are essential?
 
 CRITICAL — synthesize ACROSS rounds; do NOT re-derive from scratch:
-- The FIXED analysis (A) will keep suggesting the SAME high-level framing every \
-round. The LEDGER (B) is authoritative on what has actually been tried and ruled \
-out. If a direction was already tried, do NOT re-propose it under a new name.
-- Build on what the post-mortems established. If prior rounds established the agent \
-now FOLLOWS a structured approach but still fails because of X, the open problem is \
-X — attack THAT, not the already-solved framing.
-- PRESERVE what worked: anything the ledger shows as effective (e.g. a format the \
-agent reliably adheres to) is a constraint to keep, not discard.
+- The FIXED analysis (A) suggests the same high-level themes every round. The LEDGER \
+(B) is authoritative on what has been tried and ruled out. Do NOT re-propose a tried \
+arc shape under a new name.
+- Build on post-round evaluations. If prior rounds established that a particular \
+phase structure works but a specific phase needs adjustment, the open problem is that \
+phase — attack it, not the overall framing.
+- PRESERVE what worked: any phase the ledger confirms effective is a constraint.
 
-GROUND-TRUTH CONSTRAINT — the agent has NO access to ground-truth/expected answers \
-at runtime. NEVER recommend a direction that requires comparing against or reverse- \
-engineering from expected/ground-truth values; the agent cannot do it.
+GROUND-TRUTH CONSTRAINT — the agent has NO access to expected answers at runtime. \
+Never recommend an approach that requires comparing against ground truth.
 
-Output a JSON object:
+Output ONLY a JSON object:
 {
-  "cycle_synthesis": {
-    "established": ["<what prior rounds CONFIRMED works — [] on round 1>"],
-    "ruled_out": ["<directions already tried that are NOT the bottleneck — [] on round 1>"],
-    "open_problem": "<the current binding constraint the next strategy must attack>"
+  "paradigm_space": {
+    "current_arc": "<the agent's current behavioral arc: phases, transitions, shape>",
+    "tried_arcs": [{"arc": "<arc shape>", "result": "<objective outcome>", \
+"effective_phases": "<what worked>", "issues": "<what failed>"}],
+    "unexplored": ["<genuinely different arc shapes worth trying, with brief rationale>"]
   },
-  "core_assumptions_and_limitations": "<key strategic limitation behind the open_problem>",
-  "recommended_directions": [
-    {
-      "direction": "<the strategic change — MUST attack open_problem and differ from ruled_out>",
-      "rationale": "<why this addresses the open problem, given what's already been tried>",
-      "expected_impact": "<what types of tasks would benefit and how>",
-      "risk": "<what could go wrong or what effective behaviors might be lost>"
-    }
-  ],
-  "constraints": "<what is working well (from the current strategy AND prior rounds) that must be preserved>"
+  "design_requirements": {
+    "target_failures": "<what types of tasks are failing and what arc they need>",
+    "preserve": ["<effective phases/behaviors from prior rounds — MUST keep>"],
+    "avoid": ["<harmful directions confirmed by prior rounds — MUST NOT repeat>"]
+  },
+  "design_materials": {
+    "success_arcs": ["<behavioral arcs from successful trajectories to systematize>"],
+    "task_understanding": "<what solving these tasks fundamentally requires — \
+essential phases of work, key challenges, common pitfalls>"
+  }
 }
-
-Output ONLY the JSON object — no prose, no fences."""
+No prose, no fences — just the JSON object."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -358,74 +394,136 @@ Output ONLY the JSON object — no prose, no fences."""
 # ══════════════════════════════════════════════════════════════════════════════
 
 _STEP2_SYSTEM = """\
-You design a COGNITIVE STRATEGY — the document injected into an agent's SYSTEM \
-PROMPT that tells it HOW TO THINK when approaching tasks.
+You are a BEHAVIORAL-PARADIGM DESIGNER. You design the document injected into an AI \
+agent's system prompt that governs HOW IT APPROACHES TASKS — from receiving the task \
+to submitting a final answer. A behavioral paradigm is a multi-phase plan that shapes \
+the agent's full trajectory: what it does first, what it does next, when it pivots, \
+how it recovers from errors.
 
-ALTITUDE — THE ONE RULE YOU MUST NOT BREAK. L1 searches COGNITIVE STRATEGIES (ways of \
-THINKING). It does NOT learn tactical rules. The system has a strict division of \
-labour: YOU produce the thinking frame; a SEPARATE L0 optimizer then adds tactical \
-rules (exact APIs, formats, idioms) on top of your strategy. Therefore:
-  - GOOD (strategy): "Form a structural hypothesis about the data before acting."
-  - BAD (tactical rule — NEVER write this): "call this specific API with these \
-arguments"; "use this exact output format"; "handle this particular edge case".
-  - When the diagnosis says the residual is tactical (a specific API or syntax, an \
-exact format, a particular edge case), that residual is L0's JOB. Do NOT try to fix it \
-by encoding tactics into your strategy. Leave it. Stay at the altitude of THINKING. A \
-strategy polluted with tactical rules is a failed strategy even if it happens to pass.
+═══ WHAT YOU ARE DESIGNING ═══
 
-You operate in one of two MODES (given at the top of the input):
+A behavioral paradigm defines the PHASE STRUCTURE of the agent's problem-solving \
+trajectory. Each phase has:
+  • A PURPOSE — what this phase accomplishes
+  • ENTRY/EXIT CONDITIONS — when the agent enters and leaves this phase
+  • CORE BEHAVIORS — what the agent should DO (observable actions, not just thoughts)
+  • TRANSITION SIGNALS — what triggers moving to the next phase or looping back
 
-▸ MODE = NEW — propose a strategy on a GENUINELY DIFFERENT cognitive MECHANISM from \
-every philosophy in the ledger. This is diverse exploration: do not re-propose a tried \
-philosophy under a new name; state how yours differs in mechanism (not just wording). \
-Drift into ever-more-elaborate variants of the same idea is the failure mode to avoid.
+After deployment, an observer watching the agent's action sequence should be able to \
+tell which paradigm it is following. Two paradigms are genuinely different when the \
+agent's action sequences under them are visibly distinct — different phases, different \
+ordering, different resource allocation across the trajectory.
 
-▸ MODE = REFINE — the CURRENT strategy (given in full) was tested and cracked NOTHING \
-(lift 0), but its core cognitive idea looks sound and is worth one more try. KEEP its \
-core philosophy; improve its OPERATIONALIZATION so the agent actually follows and \
-benefits from it — per the diagnosis (e.g. it was too abstract / not enacted in the \
-Thought→Action loop / a key thinking move was under-specified). Do NOT switch to an \
-unrelated idea, and do NOT pile on tactics — same frame, made to actually work.
+═══ ALTITUDE ═══
 
-You receive a one-time GROUNDING analysis and a CYCLE LEDGER (every prior round's \
-philosophy, its objective lift/regression, and its diagnosis: the active ingredient \
-that worked, the harm to avoid, the residual). Use them under BOTH modes:
-1. PRESERVE the active ingredient — anything the ledger shows OBJECTIVELY cracked \
-tasks is a thinking behavior to KEEP; re-express it, never drop it.
-2. AVOID the harm — never re-introduce a genuine strategy-level harm. ("Handicap" \
-regressions are NOT harm; they vanish once L0 restores rules — do not contort to avoid them.)
-3. PURSUE cognitive leverage — target failures a better WAY OF THINKING can unlock; \
-leave purely tactical residual to L0.
+The system has a strict two-layer division of labour:
+  • L1 (YOU): the SHAPE of the trajectory — phase structure, behavioral patterns, \
+transition logic, error recovery. If you change it, the agent's action sequence \
+CHANGES SHAPE.
+  • L0 (a SEPARATE optimizer, runs AFTER you): execution DETAILS within each phase — \
+which specific API arguments to use, exact output formats, edge-case handling. These \
+refine the trajectory without changing its shape.
 
-STRATEGY FORMAT — two sections, nothing else:
+SELF-CHECK: if an external observer can tell the agent is following your paradigm by \
+watching its action sequence alone (without inspecting the content of individual tool \
+arguments), your design is at the correct altitude. If they would need to examine \
+specific parameter values or output formatting to tell, you are too low — that detail \
+belongs to L0.
 
-  ## <Strategy Name>
-  <A concise paragraph: the core mental model, the key insight, why this way of \
-thinking is effective. Graspable in 30 seconds.>
+Examples of CORRECT altitude (L1):
+  "Before writing any solution, explore the available data by examining at least two \
+relevant sources." → Changes what the agent DOES in its first turns.
+  "After each attempt, compare the result to your initial expectations; if they \
+diverge, return to the exploration phase." → Changes the TRANSITION structure.
 
-  ### Details
-  <Detailed expansion: cognitive mechanisms, thinking moves, when-to-switch triggers. \
-Multiple paragraphs / #### sub-sections / bullets as needed. The agent reading ONLY \
-this should know exactly HOW to think — not what API to call.>
+Examples of TOO LOW (L0 — never write these):
+  "Use LEFT JOIN instead of INNER JOIN when nullable columns are involved."
+  "Format output as a markdown table with headers."
+  "Handle the case where input is empty by returning a default value."
 
-FOLLOWABILITY — the agent runs in a ReAct loop that forces an Action every turn. Lead \
-with a few OPERABLE mental moves it can enact inside the Thought→Action loop, each \
-observable in a Thought line, stated briefly enough not to be skimmed. It is tested \
-with NO tactical rules, so it must be SELF-CONTAINED — but self-contained as a way of \
-THINKING, never by smuggling in tactics.
+When the design brief identifies a tactical residual (a specific API detail, format, \
+or edge case), that is L0's job. Leave it. Do NOT encode tactics into phases.
 
-Output a JSON object:
+═══ MODES ═══
+
+▸ MODE = NEW — Design a paradigm whose phase structure and behavioral arc are \
+GENUINELY DIFFERENT from every paradigm in the ledger. This is diverse exploration of \
+the behavioral space. Do not re-propose a tried arc shape under new names. State \
+concretely how your paradigm produces a DIFFERENT action sequence — which phases are \
+new, reordered, or replaced. Drift into ever-more-elaborate variants of the same arc \
+is the failure mode to avoid.
+
+▸ MODE = REFINE — The prior paradigm's arc shape is sound but certain PHASES need \
+adjustment. KEEP the same phase structure; improve specific phases per the evaluation \
+(e.g. a phase was too vague for the agent to follow, a transition condition was wrong, \
+a critical phase was missing its recovery path). Do NOT switch to a different arc.
+
+═══ DESIGN GROUNDING ═══
+
+You receive a DESIGN BRIEF and a CYCLE LEDGER. Your design MUST be grounded in them:
+
+1. DUAL SOURCES — every phase you design should trace to at least one of:
+   (a) Trajectory evidence: a behavioral pattern observed in successful trajectories \
+that you are systematizing (making it happen on purpose instead of by accident), or a \
+gap identified in failure trajectories that your phase addresses.
+   (b) Task understanding: your knowledge of what solving these tasks requires — a \
+phase that the task domain demands even if no trajectory has demonstrated it yet.
+   State which source grounds each phase in your design_grounding output.
+
+2. PRESERVE effective phases — anything the ledger shows OBJECTIVELY cracked tasks \
+(effective phases from the evaluation) is a behavior to KEEP. Re-express it in your \
+paradigm; never drop it.
+
+3. AVOID harmful phases — never reintroduce a phase the ledger marked as genuine \
+"harm" (the paradigm's structure actively misled the agent). "Handicap" items (the \
+agent stumbled on a missing tactical detail) are NOT harm — they vanish once L0 \
+restores execution details; do not contort your design to avoid them.
+
+═══ DOCUMENT FORMAT ═══
+
+  ## <Paradigm Name>
+  <Overview: the core approach in 2-3 sentences — what makes this way of solving \
+tasks effective, and how it differs from alternative approaches. Graspable in 30 \
+seconds.>
+
+  ### Phase 1: <Phase Name>
+  <Purpose. Entry condition. What the agent should DO (observable actions). Exit \
+condition / transition signal.>
+
+  ### Phase 2: <Phase Name>
+  <...>
+
+  ### Phase N: <Phase Name>
+  <...>
+
+  ### Transitions & Recovery
+  <Summary of phase-to-phase transitions; what to do when something goes wrong at \
+each phase — which phase to return to, under what conditions.>
+
+FOLLOWABILITY — the agent runs in a ReAct loop (Thought → Action → Observation). \
+Each phase must describe behaviors the agent can ENACT as concrete actions, not just \
+think about. It is tested with NO tactical rules, so the paradigm must be \
+self-contained — but self-contained as a behavioral plan, never by smuggling in \
+tactical details.
+
+═══ OUTPUT ═══
+
+Output ONLY a JSON object:
 {
-  "philosophy": "<the core cognitive philosophy of THIS strategy, in one or two sentences>",
-  "mechanism_difference": "<MODE=NEW: how this differs in COGNITIVE MECHANISM from every \
-prior philosophy ('(first round)' if ledger empty). MODE=REFINE: what you changed in the \
-operationalization and why, keeping the same core philosophy>",
-  "strategy_text": "<full strategy.md body: ## Name + overview + ### Details>",
-  "design_reasoning": "<why this pursues cognitive leverage while preserving the active \
-ingredient and avoiding the harm — and why it stays at thinking altitude>"
+  "paradigm_name": "<a descriptive name for this behavioral paradigm>",
+  "core_approach": "<the essential approach in one or two sentences>",
+  "behavioral_difference": "<MODE=NEW: how the action sequence under this paradigm \
+differs from every prior paradigm — which phases are new, reordered, or structurally \
+different. '(first round)' if ledger empty. MODE=REFINE: which phases you adjusted \
+and how, keeping the same overall arc.>",
+  "strategy_text": "<the full paradigm document in the format above>",
+  "design_grounding": "<for each phase, state what grounds it: trajectory evidence \
+(cite which behavioral pattern or gap) or task understanding (explain what the task \
+domain demands)>",
+  "expected_behavioral_change": "<what an observer would see differently in the \
+agent's action sequence under this paradigm vs the current one>"
 }
-
-Output ONLY the JSON object — no prose, no fences."""
+No prose, no markdown fences around the JSON — just the JSON object."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -554,69 +652,81 @@ Output ONLY the JSON object — no prose, no fences."""
 
 
 _DIAGNOSE_AGGREGATE_SYSTEM = """\
-You synthesize per-task analyses from ONE round of L1 STRATEGY search into a single \
-actionable diagnosis that steers the NEXT round.
+You evaluate ONE round of a behavioral-paradigm search by synthesizing per-task \
+analyses into a single paradigm evaluation that steers the NEXT round's design.
 
-ALTITUDE — THIS IS THE MOST IMPORTANT CONSTRAINT. L1 searches COGNITIVE STRATEGIES \
-(how the agent THINKS), NOT tactical rules (what exact API call / format to use). The \
-two-layer system has a strict division of labour: L1 finds the thinking frame; a \
-SEPARATE L0 optimizer then adds the tactical rules on top. So:
-- A residual that is tactical (e.g. "uses the wrong API call or argument", "wrong \
-output format", "skips a required structural detail") is L0's job. It is the \
-EXPECTED, normal leftover of any cognitive frame — NOT a failure of L1, and NOT \
-something the next strategy should try to fix by encoding tactics.
-- Your "next_direction_hint" MUST stay at cognitive altitude: a DIFFERENT WAY OF \
-THINKING. It must NEVER be a list of tactical rules (use-this-API, this-exact-format, \
-handle-this-edge-case). If you catch yourself prescribing rules, you \
-are at the wrong altitude — re-express as a thinking habit or re-frame, or redirect to \
-a different cognitive leverage point entirely.
+This round, a candidate paradigm (a multi-phase behavioral plan, tested with NO \
+tactical rules) was compared against the baseline on a fixed task set. You receive:
+- CRACKED analyses: tasks the paradigm unlocked — each identifies which PHASE or \
+transition was the key enabler.
+- REGRESSED analyses: tasks the paradigm broke — each classified as:
+  • "handicap": the paradigm's phase structure is sound, but the agent stumbled on a \
+tactical DETAIL (specific API usage, format, edge case) the baseline's rules supplied. \
+This is EXPECTED — once the paradigm is deployed, L0 restores tactical rules and the \
+failure very likely disappears. NOT the paradigm's fault.
+  • "harm": the paradigm's phase structure itself MISLED the agent — directed it to \
+the wrong phase, imposed a counter-productive sequence, or omitted a critical phase. \
+This IS the paradigm's fault and must be fixed.
+- STILL-FAILED analyses: residual tasks neither solved — each describes what phase or \
+behavior is missing.
+- Objective counts (lift, regression, net_lift, harm_regressions, handicap_regressions).
 
-This round a candidate strategy (the new cognitive frame, tested with NO tactical \
-rules) was compared against the baseline on a fixed task set. You receive:
-- CRACKED analyses: tasks the strategy unlocked — each names the ACTIVE INGREDIENT.
-- REGRESSED analyses: tasks the strategy broke — each classified "handicap" (missing \
-tactical rule; EXPECTED; the L0 optimizer fixes it; NOT the strategy's fault) or \
-"harm" (the strategy actively misled).
-- STILL-FAILED analyses: residual tasks neither solved — each with its nature.
-- The objective counts (lift = residual cracked, regression, net_lift).
+═══ YOUR EVALUATION ═══
 
-Synthesize ACROSS tasks:
-1. ACTIVE INGREDIENT — the consistent cognitive behavior(s) that produced the cracks; \
-what to preserve. If nothing cracked, say so plainly.
-2. HARM — only genuine "harm" regressions (IGNORE every "handicap"). What to AVOID. If \
-all regressions were handicap, state there is no strategy-level harm.
-3. RESIDUAL CHARACTERIZATION — the dominant pattern among still-failed tasks.
-4. RESIDUAL NATURE — "L1_solvable" (a DIFFERENT cognitive frame could still crack some \
-of these), "L0_tactical" (the thinking is fine; only tactical rules remain — L0's \
-job), or "capability_limit" (the model cannot do it regardless).
-5. NEXT DIRECTION HINT — a DIFFERENT cognitive mechanism for the next strategy, at \
-cognitive altitude (a way of thinking, never tactical rules). Leave tactical residual \
-to L0.
-6. NEXT ACTION — choose how the next round should proceed. The key signal is the
-OBJECTIVE counts plus your handicap-vs-harm split (deploy_net = lift - harm_regressions
-is the post-exploitation net; handicap regressions recover once L0 restores rules):
-   - "propose_new" — the cognitive frame is sound and worth banking / moving on. Choose \
-this when the strategy cracked residual (lift > 0) AND its regressions are mostly \
-HANDICAP (deploy_net >= 0) — its job is done, explore a DIFFERENT frame; OR when lift \
-== 0 and the core idea looks WRONG (a dead end to abandon).
-   - "refine_current" — the SAME idea should be improved next round. Choose this when \
-lift == 0 but the core idea looks SOUND and merely poorly operationalized (the agent \
-didn't follow it, or a key thinking move was under-specified); OR when lift > 0 but the \
-regressions are dominated by genuine HARM (deploy_net < 0 — the frame actively misleads) \
-and that harm looks removable while keeping the cracks. Never refine to add tactics.
+Synthesize ACROSS tasks along these dimensions:
 
-Output a JSON object:
+1. ADHERENCE — did the agent actually FOLLOW the paradigm's phase structure? Could \
+you observe the intended phases in the agent's action sequence? If not, the paradigm \
+may need clearer operationalization (more concrete phase descriptions, more explicit \
+transition signals) rather than a conceptual change.
+
+2. EFFECTIVE PHASES — which phases consistently enabled the cracks (the tasks \
+unlocked)? These are the paradigm's strengths — PRESERVE them in any future design.
+
+3. PROBLEMATIC PHASES — which phases caused genuine "harm" regressions (IGNORE every \
+"handicap" — those are expected tactical gaps, not paradigm faults)? Name the \
+specific phase(s) and what they did wrong.
+
+4. REMAINING NEEDS — from the still-failed analyses, what is the dominant gap? What \
+phase, transition, or behavioral pattern is missing from the current paradigm?
+
+5. REMAINING NATURE — classify the dominant residual:
+   - "L1_addressable": a DIFFERENT phase structure or arc shape could crack some of \
+these — the problem is in the paradigm's design.
+   - "L0_tactical": the phase structure is sound; failures are due to missing \
+tactical details (API usage, format, edge cases) within the phases — L0's job.
+   - "capability_limit": the model cannot solve these regardless of paradigm or rules.
+
+6. NEXT ACTION — decide how the next round should proceed, based on the OBJECTIVE \
+counts plus your evaluation:
+   - "propose_new": the paradigm is worth banking and moving on. Choose when: lift > 0 \
+AND regressions are mostly handicap (the arc works; explore a DIFFERENT arc now); OR \
+lift == 0 AND the arc shape itself is the problem (a dead end to abandon).
+   - "refine_current": the SAME arc shape should be adjusted. Choose when: lift == 0 \
+BUT the arc idea is sound and the agent just didn't follow it or a key phase was \
+under-specified; OR lift > 0 BUT regressions are dominated by genuine harm that looks \
+removable while keeping the cracks.
+
+7. DESIGN FEEDBACK — concrete input for the next paradigm designer:
+   - If propose_new: what arc shape to explore (MUST be a genuinely different \
+behavioral sequence, NEVER a list of tactical rules), and what effective phases to \
+carry forward.
+   - If refine_current: which specific phase(s) to adjust, and how.
+
+Output ONLY a JSON object:
 {
-  "active_ingredient": "<consistent cognitive behavior(s) to preserve — '' if nothing cracked>",
-  "harm": "<genuine strategy-level harm to avoid — '' if only handicap regressions>",
-  "residual_characterization": "<dominant residual failure pattern>",
-  "residual_nature": "L1_solvable | L0_tactical | capability_limit",
-  "next_direction_hint": "<a DIFFERENT cognitive mechanism (a way of thinking) — NEVER tactical rules>",
+  "adherence": "<did the agent follow the paradigm's phase structure? what was \
+observed vs intended?>",
+  "effective_phases": "<which phases enabled cracks and why — '' if nothing cracked>",
+  "problematic_phases": "<which phases caused genuine harm and how — '' if only \
+handicap regressions>",
+  "remaining_needs": "<dominant gap: what phase/behavior is missing>",
+  "remaining_nature": "L1_addressable | L0_tactical | capability_limit",
   "next_action": "propose_new | refine_current",
-  "next_action_reason": "<one line: why, grounded in the objective lift>"
+  "next_action_reason": "<one line: why, grounded in objective counts + evaluation>",
+  "design_feedback": "<concrete input for the next paradigm designer>"
 }
-
-Output ONLY the JSON object — no prose, no fences."""
+No prose, no fences — just the JSON object."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -656,21 +766,21 @@ def run_l1_cycle(
 
     Against the node's baseline (``train_groups`` = its post-exploitation full-skill
     rollout), it fixes a residual + regression test set ONCE, then each round:
-    produces a COGNITIVE strategy (Step 2), tests it with EMPTY rules K times
+    designs a behavioral PARADIGM (Step 2), tests it with EMPTY rules K times
     (Step 3), categorizes it OBJECTIVELY vs the baseline (lift/regression, no LLM),
-    and runs a category-specific contrastive diagnosis (Step 4) that steers the next
-    round. The cycle stays at STRATEGY altitude — tactical residual is left to L0.
+    and runs a category-specific paradigm evaluation (Step 4) that steers the next
+    design.  The cycle stays at paradigm altitude — tactical details are left to L0.
 
     Each round runs in one of two modes, decided objectively from the prior round:
-      - a strategy that was EFFECTIVE (lift>0) is banked and the next round explores
-        a NEW, mechanism-different philosophy (diverse exploration);
-      - a strategy that cracked nothing (lift==0) is REFINED once (same idea, better
-        operationalization) if the diagnosis judges its core sound, else abandoned
-        for a new philosophy.
+      - a paradigm that was EFFECTIVE (lift>0) is banked and the next round explores
+        a NEW, arc-different paradigm (diverse exploration);
+      - a paradigm that cracked nothing (lift==0) is REFINED once (same arc, better
+        phase operationalization) if the evaluation judges its structure sound, else
+        abandoned for a new arc.
 
     It stops when it has collected ``l1_target_effective`` (default 3) effective
-    strategies OR exhausts ``max_l1_iterations``, then returns the best effective one
-    (by ``net_lift``) for the tree to judge on val/test. If nothing cracked any
+    paradigms OR exhausts ``max_l1_iterations``, then returns the best effective one
+    (by ``net_lift``) for the tree to judge on val/test.  If nothing cracked any
     residual task, the last direction is archived.
     """
     cycle_dir = os.path.join(out_dir, node.node_id, "l1_cycle")
@@ -915,13 +1025,15 @@ def run_l1_cycle(
                   "EFFECTIVE" if effective else "ineffective", n_effective, target_effective)
 
         # ── Append this round to the cross-round ledger ─────────────────────
+        # Accept both old field names (philosophy/mechanism_difference) and new
+        # ones (core_approach/behavioral_difference) for forward compatibility.
         iteration_ctx.previous_attempts.append(_PreviousAttempt(
             round=iteration,
-            philosophy=str(step2.get("philosophy", "") or ""),
-            mechanism_difference=str(step2.get("mechanism_difference", "") or ""),
-            strategy_name=_strategy_name(strategy_text),
+            philosophy=str(step2.get("core_approach") or step2.get("philosophy", "") or ""),
+            mechanism_difference=str(step2.get("behavioral_difference") or step2.get("mechanism_difference", "") or ""),
+            strategy_name=str(step2.get("paradigm_name", "") or "") or _strategy_name(strategy_text),
             strategy_summary=strategy_text[:500],
-            design_reasoning=str(step2.get("design_reasoning", "") or ""),
+            design_reasoning=str(step2.get("design_grounding") or step2.get("design_reasoning", "") or ""),
             was_refine=(mode == "refine"),
             lift=cats["lift"], regression=cats["regression"], net_lift=cats["net_lift"],
             n_residual=cats["n_residual"], n_regression=cats["n_regression"],
@@ -1190,19 +1302,23 @@ def _step1c(client: "LLMClient", node: "TreeNode",
 
 def _step1d(client: "LLMClient", analyses: dict,
             iteration_ctx: "_IterationContext") -> dict:
-    """1d — synthesize the next hypothesis from the fixed analyses 1a/1b/1c PLUS
-    the cross-round ledger (so it builds on prior rounds, not re-derives)."""
+    """1d — produce a design brief from the fixed analyses 1a/1b PLUS the
+    cross-round ledger (so it builds on prior rounds, not re-derives)."""
     user_parts = ["# A. FIXED ANALYSIS of the node's post-exploitation state"]
     if "1a" in analyses:
-        user_parts.append("## 1. L0 Ceiling Analysis\n" + json.dumps(analyses["1a"], indent=2, ensure_ascii=False))
+        user_parts.append("## 1. L0 Ceiling Analysis + Current Behavioral Arc\n"
+                          + json.dumps(analyses["1a"], indent=2, ensure_ascii=False))
     if "1b" in analyses:
-        user_parts.append("## 2. Trajectory Analysis\n" + json.dumps(analyses["1b"], indent=2, ensure_ascii=False))
+        user_parts.append("## 2. Behavioral Analysis (arc landscape, success/failure patterns)\n"
+                          + json.dumps(analyses["1b"], indent=2, ensure_ascii=False))
+    # 1c is merged into 1b in the new design; include for backward compat if present
     if "1c" in analyses:
-        user_parts.append("## 3. Contrastive Limitation Analysis\n" + json.dumps(analyses["1c"], indent=2, ensure_ascii=False))
+        user_parts.append("## 3. Contrastive Analysis\n"
+                          + json.dumps(analyses["1c"], indent=2, ensure_ascii=False))
 
     user_parts.append(
         "# B. CYCLE LEDGER — what prior rounds of THIS cycle already tried "
-        "(authoritative on what is ruled out)\n" + iteration_ctx.render_ledger()
+        "(authoritative on what paradigms are ruled out)\n" + iteration_ctx.render_ledger()
     )
 
     user = "\n\n".join(user_parts)
@@ -1240,39 +1356,48 @@ def _run_step2(
     if mode == "refine":
         mode_header = (
             "## MODE = REFINE\n"
-            "The strategy below was tested and cracked NOTHING (lift 0), but its core "
-            "cognitive idea is judged sound. KEEP its core philosophy; improve its "
-            "OPERATIONALIZATION (per the latest diagnosis) so the agent actually follows "
-            "and benefits from it. Do NOT switch ideas; do NOT add tactical rules.\n\n"
-            "### Strategy to refine (the prior round's strategy)\n" + (refine_target or "(missing)")
+            "The paradigm below was tested and cracked NOTHING (lift 0), but its "
+            "phase structure is judged sound. KEEP the same arc shape; adjust specific "
+            "PHASES per the evaluation (e.g. a phase was too vague for the agent to "
+            "follow, a transition condition was wrong, a critical recovery path was "
+            "missing). Do NOT switch to a different arc; do NOT add tactical details.\n\n"
+            "### Paradigm to refine (the prior round's paradigm)\n" + (refine_target or "(missing)")
         )
     else:
         mode_header = (
             "## MODE = NEW\n"
-            "Propose a strategy on a GENUINELY DIFFERENT cognitive mechanism from every "
-            "philosophy in the ledger (diverse exploration). Preserve the active ingredient, "
-            "avoid the harm, and pursue a different cognitive leverage point. Leave tactical "
-            "residual to L0."
+            "Design a paradigm whose phase structure and behavioral arc are GENUINELY "
+            "DIFFERENT from every paradigm in the ledger. Preserve effective phases, "
+            "avoid harmful ones, and explore a different behavioral arc shape. Leave "
+            "tactical residual to L0."
         )
 
     user_parts = [
         mode_header,
-        "## One-time grounding analysis (why L0 stalled + failure patterns + initial directions)\n"
+        "## Design brief (behavioral analysis + paradigm space + design requirements)\n"
         + json.dumps(grounding, indent=2, ensure_ascii=False),
-        "## Current strategy.md of the node being branched (reference baseline)\n"
+        "## Current paradigm of the node being branched (reference baseline)\n"
         + (node.strategy or "(empty)").strip(),
     ]
 
+    # Inject agent action space if available from the env
+    action_desc = ""
+    if hasattr(cfg, "_env_action_space"):
+        action_desc = str(cfg._env_action_space)
+    if action_desc:
+        user_parts.append("## Agent action space\n" + action_desc)
+
     if iteration_ctx.previous_attempts:
         user_parts.append(
-            "## CYCLE LEDGER — every prior philosophy this cycle tried, its objective "
-            "lift/regression, and its diagnosis (active ingredient to PRESERVE, harm to "
-            "AVOID, residual; next_action). This is your authoritative steer.\n"
+            "## CYCLE LEDGER — every prior paradigm this cycle tried, its objective "
+            "result, and its evaluation (effective phases to PRESERVE, harmful phases to "
+            "AVOID, remaining needs, design feedback). This is your authoritative steer.\n"
             + iteration_ctx.render_ledger()
         )
     else:
         user_parts.append(
-            "## CYCLE LEDGER\n(empty — this is the first philosophy; ground it in the analysis above)"
+            "## CYCLE LEDGER\n(empty — this is the first paradigm; ground your design "
+            "in the brief above)"
         )
 
     user = "\n\n".join(user_parts)

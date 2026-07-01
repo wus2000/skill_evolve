@@ -170,6 +170,24 @@ class SpreadsheetBenchEnv:
             return list(self._items.get("test", []))
         return list(self._ensure_loader().test_items)
 
+    # ── Action space (for L1 paradigm design prompts) ─────────────────
+
+    def action_space_description(self) -> str:
+        max_turns = getattr(self.cfg, "max_turns", 50)
+        return (
+            "The agent operates in a ReAct loop (Thought -> Action -> Observation, "
+            f"repeating up to {max_turns} turns). One action type is available:\n"
+            "- execute_code(python_code): Run arbitrary Python code in a "
+            "persistent sandbox with access to openpyxl, pandas, and the "
+            "standard library. The code can read input spreadsheet files, "
+            "inspect data, perform computations, and write output files. "
+            "Each execution observes stdout/stderr and any files produced.\n"
+            "The agent sees a task instruction describing the required "
+            "spreadsheet transformation and a preview of the input file. "
+            "It must produce an output spreadsheet matching the expected "
+            "result (evaluated by cell-level comparison)."
+        )
+
     # ── Single rollout ───────────────────────────────────────────────────
 
     def run_one(
