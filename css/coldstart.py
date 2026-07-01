@@ -343,13 +343,55 @@ def cold_start(
     )
     from css.model.json_repair import complete_optimizer_json
 
+    import logging as _logging
+    import os as _os
+    _cs_log = _logging.getLogger("css")
+
     cold_dir = os.path.join(out_dir, "coldstart")
     os.makedirs(cold_dir, exist_ok=True)
 
-    # ── 1. Bare rollout: the frozen target model with NO skill ──────────────
-    # Subset the train set for the cold-start rollout when configured (large
-    # datasets: a full bare rollout of every task is wasteful before search even
-    # begins). Deterministic; 0 / >= len => the whole train set.
+    # ── 0. Bare-LLM TEST set baseline (no-skill, FULL test set) ────────────
+    # Run FIRST, before anything else — establishes the absolute baseline
+    # score that all subsequent improvements are measured against.
+    test_items = list(env.test_items())
+    bare_test_score = -1.0
+    test_k = getattr(cfg, "test_k_rollouts", 1) or 1
+    if test_items:
+        bare_test_dir = _os.path.join(cold_dir, "bare_test")
+        _os.makedirs(bare_test_dir, exist_ok=True)
+        _cs_log.info("Cold start: running bare-LLM baseline on FULL test set "
+                     "(%d tasks × %d rollouts)", len(test_items), test_k)
+        test_groups = grouped_batch_rollout(
+            env,
+            test_items,
+            "",  # bare: empty skill
+            target_client,
+            k_rollouts=test_k,
+            out_dir=bare_test_dir,
+            max_workers=cfg.max_api_workers,
+            task_timeout=cfg.task_timeout_s,
+            epoch=0,
+            node_id=_COLD_START_NODE_ID,
+        )
+        test_flat = [r for g in test_groups for r in g.rollouts]
+        bare_test_score = float(aggregate_scores(test_flat).get("task_hard", 0.0))
+        _cs_log.info("Cold start: bare-LLM TEST baseline = %.4f "
+                     "(%d/%d passed, %d tasks)",
+                     bare_test_score,
+                     sum(1 for r in test_flat if r.passed), len(test_flat),
+                     len(test_items))
+        import json as _json_test
+        with open(_os.path.join(bare_test_dir, "bare_test_baseline.json"),
+                  "w", encoding="utf-8") as _f:
+            _json_test.dump({
+                "bare_test_score": bare_test_score,
+                "n_test_items": len(test_items),
+                "k_rollouts": test_k,
+                "n_total_rollouts": len(test_flat),
+                "n_passed": sum(1 for r in test_flat if r.passed),
+            }, _f, indent=2)
+
+    # ── 1. Bare rollout on train subset: the frozen target model with NO skill
     from css.data.task_ledger import uniform_subset
     train_items = uniform_subset(
         list(env.train_items()), getattr(cfg, "coldstart_train_size", 0), seed=cfg.seed
@@ -372,49 +414,6 @@ def cold_start(
     flat = [r for g in groups for r in g.rollouts]
     baseline_score = float(aggregate_scores(flat).get("task_hard", 0.0))
 
-    # ── 1b. Bare-LLM TEST set baseline (no-skill, FULL test set) ───────────
-    # Run the bare model on the COMPLETE test set to establish the absolute
-    # baseline score that all subsequent improvements are measured against.
-    import logging as _logging
-    _cs_log = _logging.getLogger("css")
-    test_items = list(env.test_items())
-    bare_test_score = -1.0
-    if test_items:
-        _cs_log.info("Cold start: running bare-LLM baseline on FULL test set "
-                     "(%d tasks × %d rollouts)", len(test_items), cfg.k_rollouts)
-        bare_test_dir = _os.path.join(cold_dir, "bare_test")
-        _os.makedirs(bare_test_dir, exist_ok=True)
-        test_groups = grouped_batch_rollout(
-            env,
-            test_items,
-            "",  # bare: empty skill
-            target_client,
-            k_rollouts=cfg.k_rollouts,
-            out_dir=bare_test_dir,
-            max_workers=cfg.max_api_workers,
-            task_timeout=cfg.task_timeout_s,
-            epoch=0,
-            node_id=_COLD_START_NODE_ID,
-        )
-        test_flat = [r for g in test_groups for r in g.rollouts]
-        bare_test_score = float(aggregate_scores(test_flat).get("task_hard", 0.0))
-        _cs_log.info("Cold start: bare-LLM TEST baseline = %.4f "
-                     "(%d/%d passed, %d tasks)",
-                     bare_test_score,
-                     sum(1 for r in test_flat if r.passed), len(test_flat),
-                     len(test_items))
-        # Persist the bare test baseline prominently.
-        import json as _json_test
-        with open(_os.path.join(bare_test_dir, "bare_test_baseline.json"),
-                  "w", encoding="utf-8") as _f:
-            _json_test.dump({
-                "bare_test_score": bare_test_score,
-                "n_test_items": len(test_items),
-                "k_rollouts": cfg.k_rollouts,
-                "n_total_rollouts": len(test_flat),
-                "n_passed": sum(1 for r in test_flat if r.passed),
-            }, _f, indent=2)
-
     # ── 2. Analysis on a throwaway node; bare LLM is treated as saturated ───
     temp_node = TreeNode(
         node_id=_COLD_START_NODE_ID,
@@ -423,7 +422,6 @@ def cold_start(
         rules="",
         created_epoch=0,
     )
-    import os as _os
     analysis = run_analysis_epoch(
         optimizer_client,
         temp_node,

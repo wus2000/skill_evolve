@@ -56,6 +56,7 @@ class CSSConfig:
     l0_edit_budget: int = 3             # max edits each minibatch proposer may emit (L)
     max_edits_per_step: int = 6         # max edits applied per step after the merge coordinator
     exploitation_val_k: int = 1          # K for val gate in exploitation (1=fast; train K stays at k_rollouts)
+    test_k_rollouts: int = 1             # K for test-set evaluation (bare baseline + per-round test)
     merger_inject_history: bool = True   # Inject per-edit verification history into merger prompt
     merger_history_window: int = 3       # Max recent steps of edit verification history shown to merger
     rules_max_chars: int = 60_000       # Soft cap for rules.md (log warning, no truncation)

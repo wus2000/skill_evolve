@@ -529,13 +529,14 @@ def _run_node_epoch(
     node.val_score = float(aggregate_scores(val_flat).get("task_hard", 0.0))
 
     # (5) Test eval with the node's BEST skill -> generalization measure.
+    test_k = getattr(cfg, "test_k_rollouts", 1) or 1
     test_items = list(env.test_items())
     test_groups = grouped_batch_rollout(
         env,
         test_items,
         val_skill_text,
         target_client,
-        k_rollouts=cfg.k_rollouts,
+        k_rollouts=test_k,
         out_dir=_node_round_dir(out_dir, node, round_index, "test"),
         max_workers=cfg.max_api_workers,
         task_timeout=cfg.task_timeout_s,
