@@ -466,6 +466,7 @@ def cold_start(
         strategy_0 = (design_obj.get("strategy_text") or "").strip()
 
     # 3c. Lightweight self-critique (safety + executability check).
+    critique_obj = None
     if strategy_0:
         from css.trajectory import format_trajectory as _fmt_traj
         succ_trajs = [r for g in groups for r in g.rollouts if r.passed][:3]

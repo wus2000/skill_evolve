@@ -1,5 +1,8 @@
 """Phase 5 Layer 4 — root-cause attribution for L1 signals (design §4.3 / D4).
 
+.. note:: LEGACY in v3. Cold start and L1 cycle no longer call this module;
+   retained for test compatibility.
+
 This is the FIRST half of a PROPOSAL/REFINE: before any strategy change is
 considered, the optimizer must explain *why* a persistent failure pattern exists.
 The design's central claim (D4) is that a good strategy change is a LOGICAL

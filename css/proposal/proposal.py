@@ -112,8 +112,8 @@ class _PreviousAttempt:
     regressed_task_ids: list = field(default_factory=list)
     still_failed_task_ids: list = field(default_factory=list)
     # ── Layer-2 aggregate diagnosis (LLM; steers the next philosophy) ───────
-    # {active_ingredient, harm, residual_characterization, residual_nature,
-    #  next_direction_hint}
+    # {phase_that_unlocked, harm, residual_characterization, residual_nature,
+    #  next_direction_hint, paradigm_gap}
     diagnosis: dict = field(default_factory=dict)
     # Set instead of the above when Step 2 produced no usable strategy.
     failure_note: str = ""
@@ -558,68 +558,70 @@ No prose, no markdown fences around the JSON — just the JSON object."""
 # all trajectories at once — then Layer-2 synthesizes the per-task analyses.
 
 _CRACKED_ANALYZER_SYSTEM = """\
-You analyze WHY a new cognitive strategy UNLOCKED a task the baseline could not solve.
+You analyze WHY a new behavioral PARADIGM UNLOCKED a task the baseline could not solve.
 
 Setup:
-- The BASELINE agent (prior strategy + FULL tactical rules) FAILED this task on every attempt.
-- The CANDIDATE agent (the NEW strategy, with NO tactical rules) SUCCEEDED.
-- The candidate had no rules, so its COGNITIVE FRAME — not tactical detail — is what made the difference.
+- The BASELINE agent (prior paradigm + FULL tactical rules) FAILED this task on every attempt.
+- The CANDIDATE agent (the NEW paradigm, with NO tactical rules) SUCCEEDED.
+- The candidate had no rules, so its PHASE STRUCTURE — the sequence of behavioral \
+phases it induced, not tactical detail — is what made the difference.
 
-You receive: the strategy under test, ONE candidate SUCCESS trajectory, and ONE \
-baseline FAILURE trajectory of the SAME task.
+You receive: the paradigm under test (a multi-phase behavioral plan), ONE candidate \
+SUCCESS trajectory, and ONE baseline FAILURE trajectory of the SAME task.
 
-Compare the two move by move. Find the ACTIVE INGREDIENT: the specific cognitive \
-move, framing, check, or decision the strategy induced in the candidate that the \
-baseline never made — the thing that turned failure into success. Pinpoint the \
-exact divergence point and quote both trajectories.
+Compare the two arcs move by move. Find the PHASE or TRANSITION that unlocked the \
+task: the specific phase the paradigm induced (or the transition between phases) that \
+the baseline's arc never entered — the thing that turned failure into success. \
+Pinpoint the exact divergence point and quote both trajectories.
 
 Constraints:
-- The active ingredient must be a STRATEGY-level cognitive behavior the agent can \
+- The unlocking phase/transition must be a PARADIGM-level behavior the agent can \
 reproduce on OTHER tasks — not a one-off tactical trick (the candidate had no rules \
 to give it tactical tricks anyway).
 - GROUND TRUTH: the agent never sees expected/ground-truth answers at runtime; the \
-active ingredient must be doable WITHOUT them (you may read expected values to \
-understand WHY it worked, but the deployed agent never has them).
+phase must be executable WITHOUT them (you may read expected values to understand WHY \
+it worked, but the deployed agent never has them).
 
 Output a JSON object:
 {
   "task_id": "<id>",
-  "active_ingredient": "<the specific strategy-induced cognitive move that unlocked this task>",
-  "baseline_missing": "<what the baseline did instead / failed to do at the same decision point>",
+  "phase_that_unlocked": "<the specific paradigm phase or transition that unlocked this task>",
+  "baseline_arc_at_divergence": "<what arc/phase the baseline was in at the same point — what it did instead>",
   "evidence": "<quotes/actions from BOTH trajectories pinpointing the divergence>",
-  "generalizable": "<whether this likely helps other residual tasks, and which kinds>"
+  "generalizable": "<whether this phase likely helps other residual tasks, and which kinds>"
 }
 
 Output ONLY the JSON object — no prose, no fences."""
 
 
 _REGRESSED_ANALYZER_SYSTEM = """\
-You analyze WHY a new cognitive strategy BROKE a task the baseline solved — and, \
-crucially, whether the strategy is actually at fault.
+You analyze WHY a new behavioral PARADIGM BROKE a task the baseline solved — and, \
+crucially, whether the paradigm's phase structure is actually at fault.
 
 Setup:
-- The BASELINE agent (prior strategy + FULL tactical rules) SOLVED this task.
-- The CANDIDATE agent (the NEW strategy, with NO tactical rules) FAILED it.
-- TWO things changed at once: the strategy changed AND the tactical rules were \
+- The BASELINE agent (prior paradigm + FULL tactical rules) SOLVED this task.
+- The CANDIDATE agent (the NEW paradigm, with NO tactical rules) FAILED it.
+- TWO things changed at once: the phase structure changed AND the tactical rules were \
 removed. You MUST separate their effects.
 
 Classify the failure cause:
-- "handicap": the candidate pursued a SOUND approach but tripped on a concrete \
-TACTICAL detail the baseline's rules supplied (a specific API idiom, a known \
-edge case, an exact format or range). This is EXPECTED and NOT the strategy's fault — \
-once this strategy is deployed, the L0 optimizer re-adds tactical rules and this \
+- "handicap": the paradigm's phase structure was SOUND but the agent tripped on a \
+concrete TACTICAL detail the baseline's rules supplied (a specific API idiom, a known \
+edge case, an exact format or range). This is EXPECTED and NOT the paradigm's fault — \
+once this paradigm is deployed, the L0 optimizer re-adds tactical rules and this \
 failure very likely disappears.
-- "harm": the new strategy's COGNITIVE FRAME actively MISLED the agent — directed \
-its attention wrongly, imposed a wrong mental model, or induced a counter-productive \
-procedure the baseline never followed. This IS the strategy's fault and must be fixed.
+- "harm": the paradigm's PHASE STRUCTURE itself MISLED the agent — sent it into the \
+wrong phase, imposed a counter-productive sequence, or omitted a phase the task \
+needed. This IS the paradigm's fault and must be fixed.
 
-You receive: the strategy under test, ONE baseline SUCCESS trajectory, and ONE \
-candidate FAILURE trajectory of the SAME task.
+You receive: the paradigm under test (a multi-phase behavioral plan), ONE baseline \
+SUCCESS trajectory, and ONE candidate FAILURE trajectory of the SAME task.
 
-Compare them at the point they diverge. Decide handicap vs harm from the EVIDENCE: a \
-sound approach stumbling on a tactical detail is handicap; the new strategy steering \
-the agent into a wrong approach is harm. When in genuine doubt, prefer "handicap" \
-(do not penalize the strategy for missing rules) — but call clear misdirection "harm".
+Compare the two arcs at the point they diverge. Decide handicap vs harm from the \
+EVIDENCE: a sound phase structure stumbling on a tactical detail is handicap; the \
+phase structure steering the agent into a wrong arc is harm. When in genuine doubt, \
+prefer "handicap" (do not penalize the paradigm for missing rules) — but call clear \
+phase-level misdirection "harm", and name the specific phase that caused it.
 
 GROUND TRUTH: you may use the expected values you see to understand the divergence, \
 but the deployed agent has none — your handicap/harm call and harm_detail must hold \
@@ -629,7 +631,7 @@ Output a JSON object:
 {
   "task_id": "<id>",
   "failure_cause": "handicap | harm",
-  "harm_detail": "<if harm: exactly how the new strategy misled the agent; if handicap: which tactical detail/rule was missing>",
+  "harm_detail": "<if harm: which specific PHASE misled the agent and exactly how; if handicap: which tactical detail/rule was missing>",
   "evidence": "<quotes/actions at the divergence point supporting the classification>"
 }
 
@@ -637,27 +639,27 @@ Output ONLY the JSON object — no prose, no fences."""
 
 
 _STILLFAILED_ANALYZER_SYSTEM = """\
-You characterize a RESIDUAL failure — a task BOTH the baseline and the new strategy \
+You characterize a RESIDUAL failure — a task BOTH the baseline and the new paradigm \
 fail. There is no successful trajectory to contrast against; characterize the \
-difficulty from the failure alone.
+difficulty from the failure alone, through a PARADIGM-GAP lens.
 
-You receive: the strategy under test and ONE candidate FAILURE trajectory (the new \
-strategy, no tactical rules).
+You receive: the paradigm under test (a multi-phase behavioral plan) and ONE candidate \
+FAILURE trajectory (the new paradigm, no tactical rules).
 
 Determine:
-1. The concrete POINT the agent gets wrong (where, in the trajectory, it goes off).
-2. The NATURE of the residual difficulty:
-   - "reasoning": the agent's approach/logic is wrong — a better cognitive strategy \
-could still fix it (L1-addressable).
-   - "tactical": the approach is sound but the agent trips on a concrete, recurring \
-tactical/syntactic detail a specific RULE would fix (L0-addressable; expected to \
-improve once rules are restored).
-   - "perception": the agent misreads the task instruction or the input \
-structure before reasoning even begins.
-   - "capability": the task needs an operation or precision the model simply cannot \
-produce, regardless of strategy or rules.
-3. A NEXT-DIRECTION HINT: if reasoning/perception, what KIND of cognitive frame might \
-crack it next; otherwise, why a strategy cannot help.
+1. The concrete POINT the agent gets wrong (where, in the trajectory, its arc goes off).
+2. The PARADIGM GAP: what phase, transition, or behavioral pattern is MISSING from the \
+current paradigm that the task needed — or state that no phase structure would add it.
+3. The NATURE of the residual difficulty:
+   - "L1_addressable": a DIFFERENT phase structure or arc shape could still crack it — \
+the problem is in the paradigm's design.
+   - "L0_tactical": the phase structure is sound; the agent trips on a concrete, \
+recurring tactical/syntactic detail a specific RULE would fix (expected to improve \
+once L0 restores rules within the phases).
+   - "capability_limit": the task needs an operation or precision the model simply \
+cannot produce, regardless of paradigm or rules.
+4. A NEXT-DIRECTION HINT: if L1_addressable, what KIND of phase structure or arc might \
+crack it next; otherwise, why a paradigm change cannot help.
 
 GROUND TRUTH: the agent never sees expected/ground-truth answers; propose nothing \
 that needs them (you may read expected values to understand the failure; the \
@@ -667,8 +669,9 @@ Output a JSON object:
 {
   "task_id": "<id>",
   "residual_point": "<the concrete thing the agent gets wrong>",
-  "residual_nature": "reasoning | tactical | perception | capability",
-  "next_direction_hint": "<for reasoning/perception: what cognitive frame might address it; else why strategy can't help>"
+  "paradigm_gap": "<what phase/transition/behavior is missing from the paradigm — or why none would help>",
+  "residual_nature": "L1_addressable | L0_tactical | capability_limit",
+  "next_direction_hint": "<for L1_addressable: what phase structure might address it; else why a paradigm change can't help>"
 }
 
 Output ONLY the JSON object — no prose, no fences."""
@@ -1557,11 +1560,11 @@ def _diagnose_round(
     """Step 4: category-specific contrastive diagnosis (two layers).
 
     Layer 1 (parallel, ONE task in depth each — never all trajectories at once):
-      - cracked     -> contrast (candidate SUCCESS × baseline FAILURE) -> active_ingredient
+      - cracked     -> contrast (candidate SUCCESS × baseline FAILURE) -> phase_that_unlocked
       - regressed   -> contrast (baseline SUCCESS × candidate FAILURE) -> handicap|harm
       - still_failed -> candidate FAILURE alone (no contrast) -> residual nature
     Layer 2 synthesizes the per-task analyses into the round diagnosis
-    ``{active_ingredient, harm, residual_characterization, residual_nature,
+    ``{phase_that_unlocked, harm, residual_characterization, residual_nature,
     next_direction_hint}`` that steers the next philosophy.
 
     Selection is already done OBJECTIVELY (``categories``); this is purely to
@@ -1675,7 +1678,7 @@ def _diagnose_round(
             "n_residual": categories.get("n_residual", 0),
             "n_still_failed": len(categories.get("still_failed", [])),
         }, indent=2),
-        "## CRACKED per-task analyses (the active ingredient that worked)\n"
+        "## CRACKED per-task analyses (the phase/transition that unlocked the task)\n"
         + json.dumps(layer1["cracked"], indent=2, ensure_ascii=False),
         "## REGRESSED per-task analyses (each classified handicap vs harm)\n"
         + json.dumps(layer1["regressed"], indent=2, ensure_ascii=False),

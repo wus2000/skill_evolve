@@ -1,5 +1,8 @@
 """Phase 5 Layer 5a/5b — derive a strategy change and validate it cheaply.
 
+.. note:: LEGACY in v3. Cold start and L1 cycle no longer call this module;
+   retained for test compatibility.
+
 This module is the SECOND half of a PROPOSAL (the first half is
 :mod:`css.proposal.root_cause`, Layer 4). The design's central claim (D4 / D10)
 is that a good strategy change is a LOGICAL CONSEQUENCE of a correctly diagnosed

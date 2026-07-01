@@ -1,5 +1,8 @@
 """Phase 5 REFINE — Layer-5 LOCAL change derivation (design §4.2 / D10).
 
+.. note:: LEGACY in v3. Cold start and L1 cycle no longer call this module;
+   retained for test compatibility.
+
 PROPOSAL and REFINE share Layers 1-4 (an L1 signal + its four-level
 root-cause attribution from :mod:`css.proposal.root_cause`). They DIVERGE at
 Layer 5:

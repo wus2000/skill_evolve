@@ -285,8 +285,9 @@ def _render_contrastive_group(group: "TaskRolloutGroup", tool_trunc: int) -> str
 _EDIT_SPEC = """\
 `rules.md` is the agent's tactical playbook: `###` sections, one theme each,
 free-form markdown inside. You are shown the current `rules.md` and its section
-index. `strategy.md` is READ-ONLY context — `rules.md` executes that strategy;
-never restate or contradict it.
+index. `strategy.md` describes the agent's task-solving approach (phase \
+structure). It is READ-ONLY. `rules.md` provides execution details within that \
+approach — specific techniques, formats, edge cases; never restate or contradict it.
 
 ## Edit operations — two tiers
 Structural (establish or restructure a theme):
@@ -324,7 +325,9 @@ Produce AT MOST L edits; fewer is better; emit an EMPTY list if `rules.md` alrea
 covers this batch."""
 
 _SYSTEM_FAILURE_PROPOSER = """\
-You optimize the tactical playbook (`rules.md`) of a frozen task agent. You are
+You optimize the tactical playbook (`rules.md`) of a frozen task agent. The \
+agent's approach (`strategy.md`) defines the overall phase structure; your rules \
+refine the execution details within those phases. You are
 given a SMALL BATCH of FAILED trajectories. Find the systematic mistakes they
 share and propose the fewest, smallest edits that would prevent them.
 
@@ -343,7 +346,9 @@ rule_missing | rule_wrong | rule_ignored | data_exploration | code_error | other
 "source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
 _SYSTEM_SUCCESS_PROPOSER = """\
-You optimize the tactical playbook (`rules.md`) of a frozen task agent. You are
+You optimize the tactical playbook (`rules.md`) of a frozen task agent. The \
+agent's approach (`strategy.md`) defines the overall phase structure; your rules \
+refine the execution details within those phases. You are
 given a SMALL BATCH of SUCCESSFUL trajectories. Codify the recurring effective
 behaviours that drove them, for any not already in `rules.md`, so the agent
 reproduces them reliably.
@@ -362,7 +367,9 @@ two or more trajectories; ignore one-off lucky moves.
 "source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
 _SYSTEM_CONTRASTIVE_PROPOSER = """\
-You optimize the tactical playbook (`rules.md`) of a frozen task agent. You are
+You optimize the tactical playbook (`rules.md`) of a frozen task agent. The \
+agent's approach (`strategy.md`) defines the overall phase structure; your rules \
+refine the execution details within those phases. You are
 given multiple rollouts of the SAME task under the SAME rules — some passed, some
 failed. The difference lies in what the agent did, not in the task: this contrast
 is the strongest tactical signal. Codify what the passing rollout did that the
