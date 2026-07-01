@@ -83,7 +83,7 @@ def main() -> None:
 
         # Dataset-size subsets for the full split (0 = use all):
         coldstart_train_size=500,    # cold-start bare rollout
-        exploitation_val_size=550,   # RUN-FIXED val subset: baseline + L0 gate + val_score
+        exploitation_val_size=0,     # 0 = use FULL val set for gate (1100 items)
         analysis_train_size=1100,    # difficulty-weighted analysis rollout
 
         # L1 strategy cycle (v3)
