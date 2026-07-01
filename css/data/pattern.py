@@ -1,23 +1,20 @@
-"""Cognitive pattern data model (analysis Layers 1-3).
+"""Behavioral pattern data model (analysis Layers 1-3).
 
 Data flow:
-  Layer 1 (per-trajectory)  → :class:`Observation` (LLM names its own
-                              ``cognitive_aspect``; cites trajectory evidence).
+  Layer 1 (per-trajectory)  → :class:`Observation` (LLM names a
+                              ``cognitive_aspect`` — now a generalizable
+                              behavioral-pattern label; cites trajectory evidence).
   Layer 2 (clustering)       → :class:`PatternRecord` groups observations that
-                              describe the same cognitive behavior, optionally
+                              describe the same behavioral pattern, optionally
                               paired with a success/failure counterpart.
   Layer 3 (longitudinal)     → :class:`PatternRecord.occurrence_history` tracks
-                              the pattern's per-epoch occurrence rate, enabling
-                              code-computed L0/L1 signal separation.
+                              the pattern's per-epoch occurrence rate.
 
-This is the structural backbone of the analysis pipeline. The clustering and
-LLM-refinement *logic* is Phase 4; Phase 1 fixes the data contract so every
-later phase reads/writes the same shape.
-
-Design note (from the trajectory survey): no surveyed system implements a
-code-real "cross-trajectory cluster → recurrence count → generalization gate"
-chain. CSS makes that chain explicit here — ``occurrence_history`` +
-``remedy_resistance`` are the objective L1-signal evidence, not an LLM claim.
+This is the structural backbone of the analysis pipeline.  The ``Observation``
+structure is intentionally generic: the ``cognitive_aspect`` field holds
+whatever the Layer 1 LLM names the pattern (historically a cognitive tendency;
+now a behavioral arc pattern label).  The downstream pipeline clusters by this
+field and is agnostic to its semantic content.
 """
 from __future__ import annotations
 
@@ -30,10 +27,12 @@ Significance = Literal["critical", "notable"]
 
 @dataclass
 class Observation:
-    """One Layer-1 cognitive observation extracted from a single trajectory.
+    """One Layer-1 behavioral observation extracted from a single trajectory.
 
-    The ``cognitive_aspect`` is *named by the LLM* — CSS deliberately predefines
-    no cognitive dimensions (design D4 / Phase 4.1), so this field is free text.
+    The ``cognitive_aspect`` is *named by the LLM* — a generalizable behavioral
+    pattern label (e.g. "Extensive data exploration before solution attempt").
+    CSS deliberately predefines no dimensions; the taxonomy emerges bottom-up
+    in Layer 2 clustering. This field is free text.
     """
 
     obs_id: str

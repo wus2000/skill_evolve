@@ -1,31 +1,27 @@
-"""Analysis pipeline orchestrator — Phase 4 top level (design §4.3 / D4).
+"""Analysis pipeline orchestrator.
 
-The analysis stack turns a single epoch's raw rollouts into the longitudinal
-signal that drives the rest of CSS. This module is the thin orchestrator that
-wires the three layers together for one node, one epoch:
+The analysis stack turns a single epoch's raw rollouts into the behavioral
+pattern landscape that feeds L1 paradigm design. This module is the thin
+orchestrator that wires the three layers together for one node, one epoch:
 
-  * **Layer 1** (:func:`css.analysis.layer1.run_layer1`) — open-ended,
-    per-trajectory cognitive annotation plus same-task contrastive divergence.
+  * **Layer 1** (:func:`css.analysis.layer1.run_layer1`) — per-trajectory
+    behavioral arc annotation plus same-task contrastive arc divergence.
     Produces a flat stream of :class:`~css.data.pattern.Observation` records
     (stamped with this ``node_id`` / ``epoch``) and a list of
     :class:`~css.rollout.contrastive.ContrastiveDivergence`.
   * **Layer 2** (:func:`css.analysis.cluster.build_or_update_library`) — embeds
     the new observations, incrementally matches them to the node's existing
-    patterns, clusters the residue, LLM-refines each cluster into a stable
-    :class:`~css.data.pattern.PatternRecord`, and re-pairs failure↔success
-    counterparts. Mutates ``node.pattern_records`` in place.
+    behavioral patterns, clusters the residue, LLM-refines each cluster into a
+    stable :class:`~css.data.pattern.PatternRecord`, and re-pairs failure↔success
+    counterparts.  Mutates ``node.pattern_records`` in place.
   * **Layer 3** (:func:`css.analysis.longitudinal.record_epoch_occurrences` and
     :func:`css.analysis.longitudinal.detect_l1_signals`) — appends this epoch's
-    per-pattern occurrence point and then asks the EXISTING Phase-1 predicate
-    which active failure patterns now qualify as L1 signals.
+    per-pattern occurrence point and detects L1 signals (persistent failure
+    patterns under L0 saturation).
 
 The orchestrator does no heavy work itself: every layer it calls keeps its own
 heavy dependencies (sklearn / sentence-transformers / faiss) lazy, so importing
-:mod:`css.analysis.pipeline` is cheap and network-free. Only the standard-library
-and Phase-1 dataclass imports live at module top.
-
-Design references: ``design_final_en.md`` §4.3 Layer 1-3 and
-``training_mechanism_v6.md`` D4.
+:mod:`css.analysis.pipeline` is cheap and network-free.
 """
 from __future__ import annotations
 
@@ -244,3 +240,155 @@ def _save_analysis_result(
             json.dump(artifact, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+# ── Rendering helpers for paradigm design prompts ──────────────────────────
+
+def render_pattern_landscape(
+    library: "PatternLibrary",
+    divergences: "list[ContrastiveDivergence]",
+    *,
+    max_patterns: int = 20,
+    max_evidence_len: int = 200,
+) -> str:
+    """Render the PatternLibrary as structured text for paradigm design prompts.
+
+    Includes: behavioral patterns sorted by support count (descending), with
+    their polarity, counterpart pairings, and representative evidence excerpts.
+    Capped at ``max_patterns`` to stay within prompt budget.
+    """
+    from css.data.pattern import PatternLibrary
+
+    if library is None or len(library) == 0:
+        return "(no behavioral patterns discovered yet)"
+
+    all_patterns = sorted(
+        [p for p in library.patterns.values() if p.status == "active"],
+        key=lambda p: p.support_count,
+        reverse=True,
+    )
+
+    failure_patterns = [p for p in all_patterns if p.polarity == "failure"]
+    success_patterns = [p for p in all_patterns if p.polarity == "success"]
+    neutral_patterns = [p for p in all_patterns if p.polarity == "neutral"]
+
+    lines: list[str] = []
+    lines.append(f"Total patterns: {len(all_patterns)} "
+                 f"(failure: {len(failure_patterns)}, success: {len(success_patterns)}, "
+                 f"neutral: {len(neutral_patterns)})")
+
+    def _render_pattern(p, label: str) -> str:
+        parts = [f"  [{p.pattern_id}] {p.name} ({label}, {p.support_count} observations)"]
+        if p.description:
+            parts.append(f"    Description: {p.description[:300]}")
+        cpart = ""
+        if p.counterpart_id:
+            cp = library.patterns.get(p.counterpart_id)
+            if cp:
+                cpart = f"    Counterpart ({cp.polarity}): {cp.name}"
+        if cpart:
+            parts.append(cpart)
+        # Representative evidence from the most significant observations
+        top_obs = sorted(
+            p.observations,
+            key=lambda o: 0 if o.significance == "critical" else 1,
+        )[:2]
+        for o in top_obs:
+            ev = (o.evidence or "")[:max_evidence_len]
+            parts.append(f"    Evidence: {ev}")
+        return "\n".join(parts)
+
+    if failure_patterns:
+        lines.append("\n### Failure-associated behavioral patterns (sorted by frequency)")
+        for p in failure_patterns[:max_patterns // 2]:
+            lines.append(_render_pattern(p, "FAILURE"))
+
+    if success_patterns:
+        lines.append("\n### Success-associated behavioral patterns")
+        for p in success_patterns[:max_patterns // 2]:
+            lines.append(_render_pattern(p, "SUCCESS"))
+
+    if neutral_patterns[:5]:
+        lines.append("\n### Neutral patterns")
+        for p in neutral_patterns[:5]:
+            lines.append(_render_pattern(p, "neutral"))
+
+    # Contrastive divergences summary
+    if divergences:
+        systematic = [d for d in divergences if d.is_systematic]
+        lines.append(f"\n### Contrastive divergences (same-task success/failure pairs)")
+        lines.append(f"  Total: {len(divergences)} pairs analyzed, "
+                     f"{len(systematic)} systematic")
+        for d in systematic[:8]:
+            level = getattr(d, "divergence_level", "unknown")
+            lines.append(
+                f"  Task {d.task_id}: {d.divergence_point[:200]} "
+                f"[{level}]"
+            )
+
+    return "\n".join(lines)
+
+
+def render_representative_trajectories(
+    library: "PatternLibrary",
+    all_results: "dict",
+    *,
+    max_exemplars: int = 6,
+    tool_trunc: int = 300,
+) -> str:
+    """Select and render representative trajectories from analysis products.
+
+    Selection is analysis-driven: picks trajectories that exemplify the most
+    significant behavioral patterns (both failure and success). Not random
+    sampling — grounded in the analysis pipeline's pattern discovery.
+
+    ``all_results`` is a ``{(task_id, rollout_index): TaskResult}`` mapping.
+    """
+    from css.trajectory import format_trajectory
+
+    if library is None or len(library) == 0:
+        return "(no patterns available for representative selection)"
+
+    # Pick the most significant patterns and find their exemplar trajectories
+    top_patterns = sorted(
+        [p for p in library.patterns.values() if p.status == "active"],
+        key=lambda p: (0 if p.polarity == "failure" else 1,
+                       0 if any(o.significance == "critical" for o in p.observations) else 1,
+                       -p.support_count),
+    )
+
+    selected: list[tuple[str, str]] = []  # (task_id, rollout_index)
+    seen_tasks: set[str] = set()
+    blocks: list[str] = []
+
+    for pattern in top_patterns:
+        if len(blocks) >= max_exemplars:
+            break
+        # Pick the most significant observation from this pattern
+        best_obs = sorted(
+            pattern.observations,
+            key=lambda o: (0 if o.significance == "critical" else 1),
+        )
+        for obs in best_obs:
+            key = (obs.task_id, obs.rollout_index)
+            if obs.task_id in seen_tasks:
+                continue
+            result = all_results.get(key)
+            if result is None:
+                continue
+            seen_tasks.add(obs.task_id)
+            outcome = "PASSED" if result.passed else "FAILED"
+            traj_text = format_trajectory(result.messages, tool_trunc=tool_trunc)
+            desc = getattr(result, "task_description", "") or ""
+            blocks.append(
+                f"### Task {obs.task_id} ({outcome}) — exemplifies pattern "
+                f"'{pattern.name}'\n"
+                f"{f'Task: {desc}' + chr(10) if desc else ''}"
+                f"{traj_text}"
+            )
+            break
+
+    if not blocks:
+        return "(no representative trajectories available)"
+
+    return "\n\n---\n\n".join(blocks)

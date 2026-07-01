@@ -1,28 +1,27 @@
-"""Layer 2 cross-trajectory clustering (analysis pipeline, Phase 4).
+"""Layer 2 cross-trajectory clustering (analysis pipeline).
 
-Layer 1 produces a stream of :class:`Observation` records -- one LLM-named
-cognitive observation per (trajectory, finding). Layer 2 turns that stream into
-a longitudinally-stable :class:`PatternLibrary`:
+Layer 1 produces a stream of :class:`Observation` records — one behavioral
+arc annotation per (trajectory, finding). Layer 2 turns that stream into a
+longitudinally-stable :class:`PatternLibrary` of recurring behavioral patterns:
 
-  * 2a  match new observations against existing patterns by cognitive_aspect
+  * 2a  match new observations against existing patterns by behavioral-pattern
         label similarity (Jaccard pre-group + LLM synonym detection via
         :mod:`css.analysis.label_grouping`), then group the unmatched residue
         by label canonicalization.
   * 2b  per-cluster LLM refinement: unify a single pattern *name* +
         *description* + *polarity* + *cognitive_aspect* from the member
-        observations.
+        observations.  In the behavioral-paradigm design, the "cognitive_aspect"
+        is now a generalizable behavioral-pattern label (action-level, not
+        purely cognitive).
   * 2c  cross-cluster failure/success "counterpart" pairing: a failure pattern
-        and the success pattern describing the *same* cognitive aspect are linked
-        (``counterpart_id`` both ways). The success side is the constructive
-        target a later PROPOSAL edit systematizes.
+        and the success pattern describing the *same* behavioral aspect are
+        linked (``counterpart_id`` both ways). The success side exemplifies the
+        constructive behavior a paradigm design should systematize.
 
 Across epochs the library grows *incrementally*: new observations are first
 matched against existing patterns by label similarity; only the unmatched
 residue is grouped and refined afresh. This keeps ``pattern_id`` stable for a
 recurring pattern so Layer 3 can track its per-epoch occurrence rate.
-
-Design references: ``design_final_en.md`` section 4.3 Layer 2 and
-``training_mechanism_v6.md`` D4 / D8.
 """
 from __future__ import annotations
 
@@ -44,32 +43,34 @@ from css.model.json_repair import complete_optimizer_json
 # pattern; we never enumerate fixed cognitive dimensions.
 # ──────────────────────────────────────────────────────────────────────────
 _REFINE_SYSTEM = (
-    "You are a cognitive-pattern analyst. You are given several independent "
-    "observations of HOW an agent thinks, drawn from different task trajectories "
-    "but pre-grouped because they appear to describe the SAME underlying "
-    "cognitive behavior. Your job is to unify them into ONE pattern.\n\n"
+    "You are a behavioral-pattern analyst. You are given several independent "
+    "observations of HOW an agent ACTS during task solving, drawn from different "
+    "trajectories but pre-grouped because they appear to describe the SAME "
+    "underlying behavioral pattern. Your job is to unify them into ONE pattern.\n\n"
     "Do NOT invent a behavior that is not supported by the observations. Name the "
-    "pattern by the cognitive behavior it captures — not by the surface task. "
-    "The description should capture the RECURRING mechanism: what the agent's "
-    "mind does, under what conditions, and what it leads to — grounded in the "
-    "concrete behaviors described in the observations. Decide its polarity from "
-    "the observations' consequences: 'failure' if the behavior tends to cause "
-    "poor outcomes, 'success' if it tends to cause good outcomes, else "
-    "'neutral'.\n\n"
+    "pattern by the ACTION-LEVEL behavior it captures — what the agent does, in "
+    "what phase, under what conditions — not by abstract cognitive tendencies or "
+    "surface task details. The description should capture the RECURRING behavioral "
+    "mechanism: what the agent does, when, what triggers it, and what consequences "
+    "it produces — grounded in the concrete actions described in the observations. "
+    "Decide its polarity from the observations' consequences: 'failure' if this "
+    "behavior tends to cause poor outcomes, 'success' if it tends to cause good "
+    "outcomes, else 'neutral'.\n\n"
     "Respond with ONE JSON object and nothing else:\n"
     '{"name": "<specific, descriptive pattern name>", "description": "<a rich '
-    "description of the recurring cognitive behavior: what the agent's mind does, "
-    "under what conditions, what triggers it, and what consequences it produces — "
-    'grounded in the observations>", "cognitive_aspect": "<the named '
-    'cognitive aspect>", "polarity": "failure|success|neutral"}'
+    "description of the recurring behavioral pattern: what the agent does, under "
+    "what conditions, what triggers it, and what consequences it produces — "
+    'grounded in the observations>", "cognitive_aspect": "<the named behavioral '
+    'pattern label>", "polarity": "failure|success|neutral"}'
 )
 
 _COUNTERPART_SYSTEM = (
-    "You are a cognitive-pattern analyst. You are given a list of cognitive "
-    "patterns, each with an id, name, polarity and cognitive_aspect. Pair each "
-    "FAILURE pattern with the SUCCESS pattern that describes the SAME cognitive "
-    "aspect handled well (its constructive counterpart), when such a pair "
-    "clearly exists. A pattern may appear in at most one pair.\n\n"
+    "You are a behavioral-pattern analyst. You are given a list of behavioral "
+    "patterns, each with an id, name, polarity and cognitive_aspect (which is "
+    "a behavioral pattern label). Pair each FAILURE pattern with the SUCCESS "
+    "pattern that describes the SAME behavioral aspect handled well (its "
+    "constructive counterpart), when such a pair clearly exists. A pattern may "
+    "appear in at most one pair.\n\n"
     "Respond with ONE JSON object and nothing else:\n"
     '{"pairs": [{"failure_id": "<id>", "success_id": "<id>"}, ...]}\n'
     "Return an empty list if there are no clear counterpart pairs."

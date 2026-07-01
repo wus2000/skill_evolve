@@ -1,20 +1,24 @@
-"""Layer 1 — per-trajectory cognitive annotation (design §4.3 / D4).
+"""Layer 1 — per-trajectory behavioral arc annotation.
 
 Layer 1 is the entry point of the analysis pipeline: it reads raw trajectories
-and produces structured, evidence-cited cognitive observations. Two analysts run
-here, both driven by the *optimizer* LLM (never the frozen target):
+and produces structured, evidence-cited behavioral observations that capture
+HOW the agent acts — its phases, action patterns, transitions, and decision
+points — rather than only how it "thinks."
 
-  * :func:`annotate_trajectory` — an OPEN-ENDED single-trajectory analyst. It
-    observes *how the agent THINKS* (planning, verification, assumption-handling,
-    recovery, …) and — critically — **names its own** ``cognitive_aspect`` for
-    each observation rather than picking from a fixed list. CSS deliberately
-    predefines no cognitive dimensions (D4); the taxonomy emerges bottom-up in
-    Layer 2 clustering, so Layer 1 must not constrain it.
+Two analysts run here, both driven by the *optimizer* LLM (never the frozen
+target):
 
-  * :func:`annotate_contrastive_pair` — a same-task (success, failure) analyst.
-    Task, instruction, and skill are held constant, so the pair isolates the one
-    cognitive difference that flipped the outcome (D5). It yields a single
-    :class:`ContrastiveDivergence`.
+  * :func:`annotate_trajectory` — annotates a single trajectory's behavioral
+    arc: what phases the agent went through, what actions it took in each,
+    and which phase-level behaviors were critical to the outcome.  The
+    ``cognitive_aspect`` field (kept for data-structure compat) now captures
+    generalizable *behavioral pattern* labels (e.g. "premature solution
+    attempt without data exploration") — the taxonomy emerges bottom-up in
+    Layer 2 clustering.
+
+  * :func:`annotate_contrastive_pair` — a same-task (success, failure) pair
+    analyst.  It isolates the behavioral ARC DIVERGENCE: at which phase the
+    two runs' action sequences first parted ways.
 
 :func:`run_layer1` orchestrates both over a batch of rollout groups, stamping
 provenance (``node_id`` / ``epoch`` / ``polarity``) onto every observation.
@@ -23,7 +27,7 @@ Robustness contract: a malformed LLM response NEVER crashes the pipeline. The
 offending trajectory or pair simply contributes no observations / no divergence.
 
 LLM imports are kept light here (we only depend on the :class:`LLMClient`
-protocol surface). Heavy deps (embeddings / faiss) live in sibling modules and
+protocol surface).  Heavy deps (embeddings / faiss) live in sibling modules and
 are imported lazily there, not here.
 """
 from __future__ import annotations
@@ -49,50 +53,59 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 # ── Prompt: single-trajectory open-ended cognitive annotation ────────────────
 
 _SINGLE_SYSTEM = """\
-You are analyzing an agent's execution trajectory to extract behavioral \
-observations — recurring patterns in how the agent thinks, decides, acts, \
-and adapts during task execution.
+You are annotating an agent's task-solving trajectory to capture its BEHAVIORAL \
+ARC — the sequence of phases the agent went through and the action patterns \
+within each phase.
 
-Your observations feed a downstream clustering system that groups similar \
-patterns across many trajectories. Therefore:
+Your annotations feed a downstream system that clusters similar behavioral \
+patterns across many trajectories to discover recurring ARC TYPES (e.g. \
+"explore-then-commit", "immediate-attempt-then-fix"). Therefore:
 
-- Each observation should capture ONE distinct behavioral pattern (not a \
-compound of multiple patterns).
-- The "cognitive_aspect" field must describe the pattern in a way that would \
-match similar observations from OTHER trajectories of the same type — use \
-generalizable language, not task-specific details. This field is the clustering \
-key: two observations of the same underlying pattern from different \
-trajectories should have similar "cognitive_aspect" descriptions.
-- Assess whether the pattern HELPED or HINDERED task completion ("polarity").
+- Each observation should capture ONE distinct phase-level behavioral pattern — \
+what the agent DID (its observable actions and decisions), not just what it \
+thought.
+- The "cognitive_aspect" field is the clustering key: name the behavioral \
+pattern in generalizable language so the same pattern from a different \
+trajectory gets a similar label. Focus on ACTION-LEVEL patterns (what the \
+agent did and in what order), not abstract cognitive tendencies.
+- Assess whether the behavior HELPED or HINDERED task completion ("polarity").
 
-WHAT TO OBSERVE — analyze the trajectory at multiple levels:
-- How the agent decomposed and planned the task
-- How it chose tools, methods, and implementation approaches
-- How it handled errors, unexpected outputs, or ambiguity
-- How it verified its work and decided when to stop
-- Any habits, shortcuts, or blind spots in its reasoning
+WHAT TO ANNOTATE — trace the trajectory as a sequence of PHASES and find the \
+behavioral patterns that matter:
+- What PHASES did the agent go through? (e.g. understanding the task → \
+exploring data → attempting a solution → handling errors → verifying → \
+submitting). How much of the trajectory was spent in each?
+- Within each phase, what ACTION PATTERNS were notable? (e.g. the agent \
+explored broadly vs narrowly, committed early vs late, verified vs did not)
+- Where were the critical TRANSITION POINTS — moments where the agent shifted \
+from one phase to another, or where it should have shifted but did not?
+- Did the overall BEHAVIORAL ARC suit the task? Was the problem in the arc \
+itself (wrong phase structure or ordering) or in the execution details within \
+a sound arc (wrong API usage, format errors)?
 
 DIG INTO THE TRAJECTORY. Do not give abstract labels — trace what actually \
-happened. Reference the agent's specific words, code, or decisions. Your \
-analysis must be grounded in concrete trajectory content: if you cannot point \
-to a specific moment in the trajectory, you do not have an observation.
+happened. Reference the agent's specific actions, tool calls, and their results. \
+Your analysis must be grounded in concrete trajectory content: if you cannot \
+point to a specific action or decision, you do not have an observation.
 
 For each observation:
-- "what": a thorough analysis grounded in this specific trajectory — reference \
-specific moments (the agent's actual words, code, tool outputs, errors), \
-explain WHY the agent behaved this way, and trace cause and effect to the \
-outcome.
-- "cognitive_aspect": a generalizable label you invent — name the precise \
-behavioral tendency in your own words. Make it descriptive enough to \
-distinguish this pattern from superficially similar ones, but generalizable \
-enough that the same pattern from a different trajectory would get a similar \
-name.
-- "evidence": specific quotes, actions, and outcomes from the trajectory.
-- "consequence": what outcome this pattern led to and why.
-- "polarity": "positive" if this pattern helped task completion, "negative" \
-if it hindered it.
-- "significance": "critical" if this pattern plausibly determined the outcome, \
-"notable" if secondary.
+- "what": a thorough analysis of a specific phase-level behavior, grounded in \
+this trajectory — reference specific actions (tool calls, code, queries), their \
+results, the agent's response to those results, and the consequence for the \
+overall trajectory arc.
+- "cognitive_aspect": a generalizable behavioral pattern label — describe what \
+the agent did at the level of its approach/strategy (not task-specific details). \
+Examples: "Extensive data exploration before solution attempt", "Immediate \
+solution without schema inspection", "Error-driven iterative refinement", \
+"Single-attempt submission without verification".
+- "evidence": specific actions, tool calls, and their outcomes from the trajectory.
+- "consequence": how this behavior affected the trajectory's outcome — trace \
+the causal chain.
+- "polarity": "positive" if this behavior contributed to success, "negative" \
+if it contributed to failure.
+- "significance": "critical" if this behavior plausibly determined the outcome \
+(a different action here would likely have changed success/failure), "notable" \
+if it was a secondary factor.
 
 Your output is the ONLY record of this trajectory analysis. Be thorough — a \
 pattern you miss cannot be recovered by downstream systems. Report every \
@@ -100,10 +113,11 @@ distinct behavioral pattern you observe (typically 3–8 per trajectory).
 
 Output ONLY a JSON list, each element:
   {
-    "what": "<thorough analysis grounded in specific trajectory content>",
-    "cognitive_aspect": "<generalizable descriptive label for the pattern>",
-    "evidence": "<specific quotes or actions from the trajectory>",
-    "consequence": "<what outcome this led to, with causal explanation>",
+    "what": "<thorough analysis of a phase-level behavior, grounded in specific \
+trajectory actions>",
+    "cognitive_aspect": "<generalizable behavioral pattern label for clustering>",
+    "evidence": "<specific actions, tool calls, and outcomes from the trajectory>",
+    "consequence": "<how this behavior affected the outcome, with causal chain>",
     "polarity": "positive" | "negative",
     "significance": "critical" | "notable"
   }
@@ -128,33 +142,45 @@ list described in the instructions."""
 # ── Prompt: same-task contrastive (success vs failure) analysis ──────────────
 
 _CONTRASTIVE_SYSTEM = """\
-You are a cognitive analyst comparing two trajectories of the SAME task under \
-the SAME skill document: one rollout SUCCEEDED and one FAILED. Because the task, \
-instructions, and skill are identical, any difference in outcome must come from \
-a difference in how the two runs *thought* or *decided*. Your job is to isolate \
-the decisive cognitive difference.
+You are comparing two trajectories of the SAME task under the SAME skill \
+document: one rollout SUCCEEDED and one FAILED. Because the task, instructions, \
+and skill are identical, the difference in outcome must come from a difference \
+in the agents' BEHAVIORAL ARC — what they did, in what order, and how they \
+responded to intermediate results. Your job is to isolate the decisive \
+behavioral divergence.
 
-Do not list every surface difference. Find the divergence that mattered: the \
-moment where the two runs' reasoning or strategy first parted ways in a manner \
-that explains the opposite outcomes.
+Do not list every surface difference. Find the ARC DIVERGENCE: the point where \
+the two runs' ACTION SEQUENCES first parted ways in a manner that explains the \
+opposite outcomes. Focus on WHAT THEY DID (actions, tool calls, their ordering) \
+rather than what they thought in isolation.
 
-DIG INTO BOTH TRAJECTORIES. Reference specific code, decisions, or reasoning \
-from each run. Show exactly what the success run did differently at the critical \
-moment, and trace how that difference propagated to the opposite outcomes.
+DIG INTO BOTH TRAJECTORIES. Reference specific actions, tool calls, and their \
+results from each run. Show exactly what the success run did differently — which \
+phase it was in, what action it took, how it responded to the result — and \
+trace how that behavioral difference propagated to the opposite outcomes.
+
+Classify the divergence:
+- "approach_difference": the two runs followed different BEHAVIORAL ARCS — \
+different phases, different ordering, different overall approach. This is an L1 \
+(paradigm-level) difference that a paradigm change could address.
+- "execution_difference": the two runs followed a similar arc but one made a \
+specific mistake in execution detail (wrong API argument, syntax error, missed \
+edge case). This is an L0 (tactical-level) difference.
 
 Output ONLY a single JSON object:
   {
-    "divergence_point": "<the specific trajectory moment where the two runs \
-first meaningfully diverged — reference the actual code, decision, or reasoning \
-from both runs>",
-    "cognitive_difference": "<a detailed analysis of the difference in \
-thinking/strategy that explains the success vs the failure — trace the causal \
-chain from the divergence point to each outcome>",
-    "is_systematic": true | false
+    "divergence_point": "<the specific trajectory moment where the two runs' \
+action sequences first diverged — reference the actual actions/tool calls from \
+both runs>",
+    "cognitive_difference": "<a detailed analysis of the behavioral difference \
+that explains success vs failure — trace actions and their consequences in both \
+runs from the divergence point to the outcome>",
+    "is_systematic": true | false,
+    "divergence_level": "approach_difference" | "execution_difference"
   }
-Set "is_systematic" to true only if this difference looks like a recurring, \
-generalizable cognitive pattern worth changing the agent's strategy over (not a \
-one-off slip or luck). No prose, no markdown fences — just the JSON object."""
+Set "is_systematic" to true only if this difference is a recurring, \
+generalizable behavioral pattern (not a one-off slip or luck). \
+No prose, no markdown fences — just the JSON object."""
 
 _CONTRASTIVE_USER_TMPL = """\
 {pair}

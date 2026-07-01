@@ -238,40 +238,63 @@ Output ONLY the JSON object — no prose, no fences."""
 
 
 _STEP1B_SYSTEM = """\
-You are a trajectory analyst performing deep behavioral analysis on agent \
-failure trajectories. You are examining WHY the agent fails at specific tasks, \
-looking for patterns in the agent's THINKING PROCESS — not surface errors.
+You are analyzing the BEHAVIORAL LANDSCAPE of an AI agent's task-solving \
+trajectories. You receive a comprehensive view built from ALL training \
+trajectories (processed by an upstream analysis pipeline), including:
 
-You receive 3-5 representative failure trajectories with full execution traces.
+- A PATTERN LANDSCAPE: named behavioral patterns discovered across all \
+trajectories, sorted by frequency, with polarity (failure/success-associated), \
+counterpart pairings, and representative evidence.
+- CONTRASTIVE DIVERGENCES: same-task success/failure pairs showing where the \
+agent's behavioral arc split between success and failure.
+- REPRESENTATIVE TRAJECTORIES: a few full trajectory examples selected by the \
+analysis pipeline to exemplify the most significant patterns.
 
-For each trajectory, identify:
-1. The critical decision point where the agent's approach diverged from what \
-would succeed
-2. What mental model or reasoning pattern led to the wrong decision
-3. Whether the failure stems from the agent's STRATEGY (how it thinks) vs \
-its RULES (what it does)
+Your analysis prepares the ground for designing a new behavioral paradigm (a \
+multi-phase task-solving plan). You must answer:
 
-Look for SYSTEMATIC patterns across trajectories — shared cognitive blind \
-spots, common wrong assumptions, or recurring failure mechanisms.
+1. CURRENT ARC LANDSCAPE: What distinct behavioral arcs (phase sequences) does \
+the agent follow? Which arcs lead to success, which to failure? Are there \
+success-associated arcs that occur only accidentally (not deliberately guided)?
 
-Output a JSON object:
+2. ARC-OUTCOME RELATIONSHIPS: What is the connection between behavioral arc \
+shape (not execution details) and task outcomes? Do certain arc shapes \
+consistently succeed on certain task types and fail on others?
+
+3. FAILURE NEEDS: For the tasks the agent still fails, what do those tasks \
+NEED from a behavioral arc that the current approach does not provide? Think \
+from the TASK'S perspective (what the task requires), not just the agent's \
+mistakes. What phases of work are missing or inadequate?
+
+4. SYSTEMATIZATION OPPORTUNITIES: Which success-associated behavioral patterns \
+could be turned into DELIBERATE paradigm phases? (Currently they happen by \
+accident — a paradigm could make them happen on purpose, every time.)
+
+DIG INTO THE DATA. Reference specific patterns, specific divergences, and \
+specific trajectory moments. Do not give abstract summaries — ground your \
+analysis in the evidence provided.
+
+Output ONLY a JSON object:
 {
-  "trajectory_analyses": [
+  "current_arcs": [
     {
-      "task_id": "<id>",
-      "critical_decision_point": "<where the approach went wrong>",
-      "reasoning_failure": "<what cognitive pattern led to failure>",
-      "strategic_vs_tactical": "strategic | tactical | both",
-      "evidence": "<specific quotes/actions from the trajectory>"
+      "arc_description": "<a distinct behavioral arc shape observed>",
+      "frequency": "<how common this arc is>",
+      "outcome_tendency": "success | failure | mixed",
+      "task_fit": "<what task types this arc suits or fails on>"
     }
   ],
-  "systematic_patterns": [
+  "arc_outcome_analysis": "<how arc shape relates to outcomes — what \
+distinguishes successful from unsuccessful arcs>",
+  "failure_needs": [
     {
-      "pattern": "<description of the shared cognitive pattern>",
-      "affected_tasks": ["<task_ids>"],
-      "root_mechanism": "<why this pattern keeps occurring>"
+      "task_cluster": "<what types of tasks are failing>",
+      "what_they_need": "<what behavioral arc those tasks require>",
+      "current_gap": "<what phase or behavior is missing from the current approach>"
     }
-  ]
+  ],
+  "systematization_opportunities": ["<success-associated patterns that could \
+become deliberate paradigm phases>"]
 }
 
 Output ONLY the JSON object — no prose, no fences."""
@@ -1159,17 +1182,16 @@ def _run_step1_analyses(
             _step1a, client, node, cfg=cfg, tool_trunc=tool_trunc
         )
 
-        # 1b: Failure trajectory deep analysis
-        rep_trajs = _select_representative_failures(fail_results, node.pattern_records, k=5)
+        # 1b: Behavioral arc landscape analysis (consumes the FULL analysis
+        # pipeline products — PatternLibrary + divergences + representative
+        # trajectories; replaces the old 1b + 1c with a single comprehensive
+        # view).
         futures["1b"] = pool.submit(
-            _step1b, client, rep_trajs, tool_trunc=tool_trunc
+            _step1b, client, node, train_groups, fail_results, cfg=cfg
         )
 
-        # 1c: L0 contrastive limitation review
-        mixed_groups = [g for g in train_groups if g.contrastive_pairs()]
-        futures["1c"] = pool.submit(
-            _step1c, client, node, mixed_groups, tool_trunc=tool_trunc
-        )
+        # 1c is merged into 1b (contrastive info now comes from the analysis
+        # pipeline's divergences, injected into 1b's pattern landscape).
 
         for key, fut in futures.items():
             try:
@@ -1239,19 +1261,59 @@ def _step1a(client: "LLMClient", node: "TreeNode", *, cfg: "CSSConfig",
     return result if result is not None else {"ceiling_analysis": text}
 
 
-def _step1b(client: "LLMClient", trajectories: "list[TaskResult]", *,
-            tool_trunc: int) -> dict:
-    """1b — failure trajectory deep analysis."""
-    from css.trajectory import format_trajectory
+def _step1b(client: "LLMClient",
+            node: "TreeNode",
+            train_groups: "list[TaskRolloutGroup]",
+            fail_results: "list[TaskResult]",
+            *,
+            cfg: "CSSConfig") -> dict:
+    """1b — behavioral arc landscape analysis.
 
-    traj_parts = []
-    for r in trajectories[:5]:
-        header = f"### Task {r.task_id} (outcome: {'PASS' if r.passed else 'FAIL'})"
-        desc = getattr(r, "task_description", "") or ""
-        traj_text = format_trajectory(r.messages, tool_trunc=tool_trunc)
-        traj_parts.append(f"{header}\n{desc}\n\n{traj_text}")
+    Consumes the analysis pipeline's products (PatternLibrary + divergences)
+    together with representative raw trajectories. This gives the optimizer a
+    comprehensive view of the behavioral landscape built from ALL trajectories,
+    not just a handful of raw examples.
+    """
+    from css.analysis.pipeline import (
+        render_pattern_landscape,
+        render_representative_trajectories,
+    )
 
-    user = "## Failure trajectories for analysis\n\n" + "\n\n---\n\n".join(traj_parts)
+    library = node.pattern_records
+    # Divergences are stored in the analysis checkpoint; fall back to empty if
+    # the node hasn't been through the analysis pipeline yet.
+    divergences = getattr(node, "_analysis_divergences", []) or []
+
+    # Build a result lookup for representative trajectory rendering
+    all_results: dict[tuple, Any] = {}
+    for g in train_groups:
+        for r in g.rollouts:
+            all_results[(str(r.task_id), r.rollout_index)] = r
+
+    user_parts = []
+
+    # 1. Pattern landscape (from ALL trajectories, processed by analysis pipeline)
+    landscape = render_pattern_landscape(
+        library, divergences,
+        max_patterns=20, max_evidence_len=200,
+    )
+    user_parts.append(
+        "## Behavioral Pattern Landscape (extracted from ALL training trajectories)\n"
+        + landscape
+    )
+
+    # 2. Representative trajectories (selected by the analysis pipeline's
+    # pattern discovery, not random sampling — traceable to source)
+    rep_text = render_representative_trajectories(
+        library, all_results,
+        max_exemplars=6, tool_trunc=cfg.tool_trunc,
+    )
+    user_parts.append(
+        "## Representative trajectories (analysis-selected exemplars)\n"
+        + rep_text
+    )
+
+    user = "\n\n".join(user_parts)
     text = _safe_optimizer_call(client, _STEP1B_SYSTEM, user, max_tokens=8192)
     result = _parse_json_safe(text, None)
     if result is None:
