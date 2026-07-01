@@ -975,12 +975,15 @@ def run_css(
             _save_skill_snapshot(out_dir, root, 0)
             _measure_initial_val(root, env, target_client, cfg=cfg, out_dir=out_dir,
                                  round_index=0, val_items=_run_val_subset(env, cfg))
+        bare_test = getattr(cs, "bare_test_score", -1.0)
         _log.info("Cold start done — baseline(strategy@val)=%.3f bare_floor(train)=%.3f "
-                  "patterns=%d root=%s strategy=%d chars",
-                  root.val_score if root else 0.0, cs.baseline_score, cs.n_patterns,
+                  "bare_test=%.3f patterns=%d root=%s strategy=%d chars",
+                  root.val_score if root else 0.0, cs.baseline_score,
+                  bare_test, cs.n_patterns,
                   tree.root_id, len(root.strategy or "") if root else 0)
 
         log_event("cold_start_done", baseline_score=cs.baseline_score,
+                  bare_test_score=bare_test,
                   n_patterns=cs.n_patterns,
                   root_id=tree.root_id,
                   strategy_len=len(root.strategy or "") if root else 0)
