@@ -76,6 +76,15 @@ def main() -> None:
 
         # Reflect pipeline (three-way analysis -> unified edit generator)
         reflect_mode="plan_a",
+        merger_granularity="point",   # ablation knob: "point" | "section"
+
+        # L0 val gate: two-stage item-paired sign test.
+        # The val set is small (60) — a K=1 screen misses too many real flips
+        # (a 0.3->0.7 improvement flips a K=1 screen only ~58% of the time),
+        # so screen at K=3 to surface enough discordant items for the test.
+        gate_mode="paired",
+        gate_screen_k=3,
+        gate_escalation_k=3,
 
         # L1 strategy cycle (v3): diverse-iterate + objective lift/deploy_net.
         # Test-set sizes for this run (residual = baseline-0/K, regression = baseline-K/K);

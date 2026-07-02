@@ -5,13 +5,18 @@ can be independently ablation-tested and collectively applied without conflicts.
 
 Two validation layers:
   * **Structural** (programmatic, zero cost): catches unambiguous type conflicts
-    (e.g. section_rewrite + point_edit on the same section).
+    (e.g. section_rewrite + point_edit on the same section) and phantom-section
+    point ops (point ops targeting a ``###`` section that does not exist in the
+    current rules.md — anchors cannot resolve there).
   * **Semantic** (one LLM call, conditional): checks anchor locatability,
     anchor overlap, paraphrase duplicates, and causal dependencies among point
     edits within the same section.  Only triggered when same-section point edits
     exist — no overhead otherwise.
 
 On violation, returns structured feedback suitable for a merger repair loop.
+:func:`salvage_phantom_point_ops` is the deterministic last-resort fallback
+applied when the repair loop exhausts its retries with phantom-section
+violations still present.
 """
 from __future__ import annotations
 
@@ -27,7 +32,18 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["validate_edits", "ValidationResult"]
+__all__ = ["validate_edits", "ValidationResult", "salvage_phantom_point_ops"]
+
+
+def _existing_headings(rules_md: str) -> set[str]:
+    """Exact ``###`` headings present in the current rules.md (fence-aware)."""
+    if not rules_md or not rules_md.strip():
+        return set()
+    from css.optimizer.section_apply import parse_rules_into_sections
+    return {
+        sec.heading for sec in parse_rules_into_sections(rules_md)
+        if sec.heading != "_preamble"
+    }
 
 
 # ── Result type ──────────────────────────────────────────────────────────────
@@ -69,9 +85,42 @@ class ValidationResult:
 
 # ── Layer A: structural checks (programmatic) ───────────────────────────────
 
-def _structural_check(edits: list[MergedEdit]) -> list[dict]:
+def _structural_check(edits: list[MergedEdit], rules_md: str = "") -> list[dict]:
     """Detect unambiguous structural conflicts. Zero LLM cost."""
     violations: list[dict] = []
+
+    # Phantom-section point ops: a point op can only modify a section that
+    # EXISTS in the current rules.md — otherwise its anchor cannot resolve
+    # and independent ablation apply would have nothing to attach to.
+    existing = _existing_headings(rules_md)
+    phantom: dict[str, list[int]] = {}
+    for i, e in enumerate(edits):
+        if e.is_point and e.section_target not in existing:
+            phantom.setdefault(e.section_target, []).append(i)
+    for section, indices in phantom.items():
+        empty_note = (
+            " (the current rules.md has NO sections at all)"
+            if not existing else ""
+        )
+        violations.append({
+            "type": "phantom_section",
+            "edit_indices": indices,
+            "detail": (
+                f"Point op(s) {indices} target section {section!r} which does "
+                f"NOT exist in the current rules.md{empty_note}. Point ops can "
+                f"only modify EXISTING sections — their anchors cannot resolve "
+                f"in a section that is not there. Historical or proposed "
+                f"content is NOT part of the current rules.md."
+            ),
+            "suggestion": (
+                "Re-emit this material as a new_section edit (compose the "
+                "fragments into one complete section: ### heading + full "
+                "body), or re-anchor to a section that actually exists in "
+                "the section index. If another edit in your output already "
+                "creates this section via new_section, fold this content "
+                "directly into that edit's content instead."
+            ),
+        })
 
     section_types: dict[str, list[tuple[int, str]]] = {}
     for i, e in enumerate(edits):
@@ -389,7 +438,7 @@ def validate_edits(
     still provide safety nets.
     """
     # Layer A: structural
-    structural = _structural_check(edits)
+    structural = _structural_check(edits, rules_md)
     if structural:
         return ValidationResult(
             valid=False,
@@ -408,3 +457,94 @@ def validate_edits(
             )
 
     return ValidationResult(valid=True)
+
+
+# ── Deterministic fallback: phantom-section salvage ──────────────────────────
+
+def salvage_phantom_point_ops(
+    edits: list[MergedEdit],
+    rules_md: str,
+) -> tuple[list[MergedEdit], bool]:
+    """Last-resort structural salvage after the repair loop is exhausted.
+
+    Purely programmatic — no LLM. For point ops whose ``section_target`` does
+    not exist in the current rules.md:
+
+      * ``point_add`` — content is self-contained new material. All phantom
+        point_adds for the same section are merged into ONE ``new_section``
+        edit (heading = section_target, body = contents joined in order,
+        target_tasks = union). If the edit list already contains a
+        ``new_section`` for that heading, the content is folded into it
+        instead of creating a duplicate.
+      * ``point_edit`` / ``point_remove`` — the text they want to modify or
+        delete does not exist; nothing salvageable. Dropped with a log.
+
+    Returns ``(new_edits, changed)``.
+    """
+    existing = _existing_headings(rules_md)
+
+    out: list[MergedEdit] = []
+    new_section_idx: dict[str, int] = {}  # heading -> index in `out`
+    phantom_adds: dict[str, list[MergedEdit]] = {}
+    changed = False
+
+    for e in edits:
+        if not e.is_point or e.section_target in existing:
+            out.append(e)
+            if e.delta_type == "new_section":
+                heading = e.section_target.strip()
+                new_section_idx[heading] = len(out) - 1
+            continue
+        changed = True
+        if e.delta_type == "point_add":
+            phantom_adds.setdefault(e.section_target, []).append(e)
+        else:
+            _log.warning(
+                "salvage: dropping %s on phantom section %r — target text "
+                "does not exist in current rules.md",
+                e.delta_type, e.section_target,
+            )
+
+    for section, adds in phantom_adds.items():
+        heading = section.strip()
+        if not heading.startswith("### "):
+            heading = "### " + heading.lstrip("# ").strip()
+        body = "\n".join(a.content.strip() for a in adds if a.content.strip())
+        tasks: list[str] = []
+        for a in adds:
+            for t in a.target_tasks:
+                if t not in tasks:
+                    tasks.append(t)
+        rationale = " | ".join(a.rationale for a in adds if a.rationale)
+        derivation = (
+            "salvaged: %d phantom point_add(s) merged into one new_section"
+            % len(adds)
+        )
+
+        if heading in new_section_idx:
+            # Fold into the existing new_section edit for this heading.
+            host = out[new_section_idx[heading]]
+            host.content = host.content.rstrip("\n") + "\n" + body + "\n"
+            for t in tasks:
+                if t not in host.target_tasks:
+                    host.target_tasks.append(t)
+            _log.info(
+                "salvage: folded %d phantom point_add(s) into existing "
+                "new_section %r", len(adds), heading,
+            )
+        else:
+            out.append(MergedEdit(
+                section_target=heading,
+                delta_type="new_section",
+                after_section="_end",
+                content=heading + "\n\n" + body + "\n",
+                target_tasks=tasks,
+                rationale=rationale,
+                derivation=derivation,
+            ))
+            _log.info(
+                "salvage: merged %d phantom point_add(s) into new_section %r",
+                len(adds), heading,
+            )
+
+    return out, changed

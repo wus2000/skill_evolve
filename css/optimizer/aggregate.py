@@ -149,6 +149,13 @@ them target the same section. Do NOT collapse them into a section_rewrite.
   - target_tasks: Union of source_tasks from contributing raw edits. Non-empty.
   - point_anchor: Must be copied VERBATIM from the current rules.md text
     shown above — not paraphrased, not abbreviated.
+  - **Point ops require an EXISTING section.** A point op's section_target
+    MUST be a heading present in the Section index of the CURRENT rules.md.
+    Text seen in raw edits or optimization history is NOT part of the
+    current rules.md and can NOT serve as a section_target or point_anchor.
+    To introduce material whose section does not exist yet, use new_section
+    (compose the complete section). Never emit point ops against sections
+    another edit in this same output is creating.
 
 ## Principles
 
@@ -204,22 +211,163 @@ them target the same section. Do NOT collapse them into a section_rewrite.
    outputting noise. But do NOT artificially reduce count by bundling
    independent high-confidence improvements into one edit."""
 
+# Section-granularity merger system prompt (ablation alternative to point mode).
+# Restored from the pre-point-edit design (ONE EDIT PER SECTION) with the
+# orthogonal improvements kept: delete_section support, no numbered budget
+# (edit-count guidance lives in the user prompt), verdict-aware principle 8.
+_MERGER_SYSTEM_SECTION = """\
+You are the MERGER in a rules.md optimization pipeline. You consolidate
+independently-proposed raw edits into section-level edit units for ablation
+testing.
+
+## What you produce
+
+Each output edit is the COMPLETE TARGET CONTENT of one ### section in rules.md.
+rules.md is a tactical playbook that a SEPARATE task-executing agent reads as
+its operational instructions. The task agent has NO access to raw edits,
+optimization history, or any context from this pipeline — it only sees the
+final rules.md text. Therefore, every piece of content you write must be a
+DIRECT, ACTIONABLE instruction that helps the agent perform tasks correctly.
+Do not include any information that is only meaningful to the optimization
+process (rationale, source tasks, failure statistics, "why" explanations).
+
+## Output format — JSON only, no fences, no prose
+{
+  "reasoning": "<key consolidation decisions, 2-3 sentences>",
+  "edits": [
+    {
+      "section_target": "### <for rewrite/delete: existing heading; for new_section: the NEW heading matching content>",
+      "delta_type": "new_section | section_rewrite | section_refinement | delete_section",
+      "after_section": "### <only for new_section: existing heading to insert after, or _end/_start>",
+      "content": "### <heading>\\n<well-structured markdown body>  (omit for delete_section)",
+      "target_tasks": ["task_id_1", ...],
+      "rationale": "<DETAILED — see Principle 6>",
+      "derivation": "<DETAILED — see Principle 6>"
+    }
+  ]
+}
+
+## Operations and field rules
+
+**section_rewrite / section_refinement** — modify an EXISTING ### section:
+  - section_target: the EXACT existing ### heading being modified
+    (must match a heading in the section index above)
+  - after_section: OMIT (not needed — the section already exists in place)
+  - content: the COMPLETE replacement section (### heading + full body,
+    including ALL existing content that should be KEPT plus your changes)
+
+**new_section** — create an entirely NEW ### section:
+  - section_target: the NEW ### heading you are creating. It MUST match
+    the ### heading on the first line of your content.
+  - after_section: where to INSERT this new section — must be "_end"
+    (document end), "_start" (before all sections), or an EXISTING ###
+    heading from the section index. Do NOT reference a section created
+    by another edit in this output.
+  - content: the COMPLETE new section (### heading + full body)
+
+**delete_section** — remove an entire ### section:
+  - section_target: the EXACT existing ### heading to delete
+  - content: (omit)
+  - Use when a section is redundant, harmful, or its content has been
+    consolidated into another section.
+
+**All operations:**
+  - content: This is what the task agent will read as its rules — write it
+    FROM THE AGENT'S PERSPECTIVE. Include only what the agent needs to act
+    correctly: procedures, patterns, checks, constraints. Do NOT include
+    anything the agent cannot act on: no "**Rationale**:", no
+    "**Source Tasks**:", no "**Why**:", no failure statistics, no edit
+    provenance. Those belong in rationale/derivation fields.
+  - **CRITICAL — NO NUMBERED HEADINGS.** Section headings (###) must be
+    DESCRIPTIVE NAMES without numeric prefixes. Write
+    "### Input Parsing and Data Inspection", NEVER
+    "### 2. Input Parsing and Data Inspection". Raw edits from upstream may
+    contain numbered headings copied from strategy.md — you MUST strip those
+    numbers when consolidating. Numbered headings break when sections are
+    added or removed during optimization.
+  - target_tasks: Union of source_tasks from all contributing raw edits.
+    Must be non-empty.
+
+## Principles
+
+1. ONE EDIT PER SECTION. Multiple raw edits touching the same section MUST
+   be merged into one edit. Non-negotiable (enables independent ablation).
+
+2. GROUP BY CONTENT, NOT SOURCE TYPE. Failure-driven and success-driven raw
+   edits proposing the same improvement → merge them. Cross-source agreement
+   is high confidence; note it in derivation.
+
+3. GAP-ALIGN. Choose delta_type based on the section index above:
+   - If the section index is empty or the topic is NOT covered by any
+     existing section → use "new_section" with after_section="_end".
+   - If the topic IS covered by an existing ### section → use
+     "section_rewrite" or "section_refinement", NEVER a duplicate new_section.
+
+4. PRESERVE EXISTING CONTENT. For rewrite/refinement, output the COMPLETE
+   section — existing bullets that should be kept + changes. You are writing
+   the replacement.
+
+5. RESOLVE CONTRADICTIONS. Conflicting raw edits → keep the version with
+   more supporting patches. Explain in derivation.
+
+6. DERIVATION TRANSPARENCY. The rationale and derivation fields carry
+   critical diagnostic value — they are NOT summaries, they are detailed
+   audit records. Write each thoroughly:
+
+   rationale must answer:
+   - What valuable INSIGHT was discovered from the trajectories?
+   - Which task IDs and how many independent patches support this insight?
+     (cross-patch consensus = high confidence)
+   - What concrete behavior change is expected after applying this edit?
+
+   derivation must answer:
+   - Which raw edit numbers contributed? (list ALL by index)
+   - For each contributing raw edit, what did it propose and what was kept
+     vs refined?
+   - Were any raw edits DROPPED? Which ones and why?
+   - How were overlapping proposals resolved?
+
+7. QUALITY OVER QUANTITY. Fewer high-confidence edits beat many speculative
+   ones. Drop weak/low-support raw edits rather than outputting noise."""
+
+
 _PRINCIPLE_8_HISTORY = """
 
-8. LEARN FROM HISTORY (when optimization history is provided below). The optimization history below shows recent edit
-   verification results:
-   - An edit that PASSED per-edit verification but the step was rejected at
-     the final gate: the direction is sound but clashed with other edits.
-     Consider re-proposing it.
-   - An edit that FAILED per-edit verification: do not re-propose in the
-     same form. Take a different approach.
-   - A section with multiple consecutive failed edits may be near-optimal.
-     Prioritize other sections."""
+8. LEARN FROM HISTORY (when optimization history is provided below). Each
+   past edit carries a verification VERDICT — read it as follows:
+   - CLEAN_GAIN: direction confirmed by real task flips. If its step was
+     rejected at the final gate, the edit itself is sound — consider
+     re-proposing it (alone or with fewer companions).
+   - MIXED_GAIN / MIXED_LOSS (both gains AND losses): the HIGHEST-VALUE
+     signal. The mechanism is REAL — actual solvability flips in both
+     directions — but the rule as written overreaches. Do NOT drop the
+     direction. Inspect the gained vs lost task IDs, identify what
+     separates the two contexts, and re-propose the rule with an explicit
+     condition/guard that scopes it to the gaining context.
+   - CLEAN_LOSS: direction harmful — do not re-propose; consider whether
+     the inverse rule is warranted.
+   - MARGINAL_GAIN: weak positive (pass-rate stabilization, no solvability
+     flip). Fine to keep building on, but do not treat as confirmed.
+   - NULL: no measurable effect. Do not re-propose verbatim — the theme may
+     still matter but needs a substantively different formulation.
+   - A section with multiple consecutive NULL/CLEAN_LOSS edits may be
+     near-optimal. Prioritize other sections."""
 
 
-def _build_merger_system_prompt(has_history: bool) -> str:
-    """Build the merger system prompt, conditionally including principle #8."""
-    prompt = _MERGER_PRINCIPLES_1_7
+def _build_merger_system_prompt(
+    has_history: bool, granularity: str = "point"
+) -> str:
+    """Build the merger system prompt for the configured granularity.
+
+    ``granularity="point"`` — fine-grained point edits are the default output
+    (current design). ``"section"`` — ONE EDIT PER SECTION (the pre-point
+    design, kept for empirical ablation). Principle #8 (verdict-aware history
+    learning) is shared by both modes.
+    """
+    prompt = (
+        _MERGER_SYSTEM_SECTION if granularity == "section"
+        else _MERGER_PRINCIPLES_1_7
+    )
     if has_history:
         prompt += _PRINCIPLE_8_HISTORY
     return prompt
@@ -241,9 +389,19 @@ def _format_merger_history(step_buffer: "StepBuffer", window: int) -> str:
         if not verifications:
             continue
 
+        accepted_step = getattr(entry, "action", "") in (
+            "accept", "accept_new_best",
+        )
+        consequence = (
+            "ACCEPTED — the applied candidate advanced the rules trajectory"
+            if accepted_step else
+            "REJECTED — candidate DISCARDED; edit contents below are NOT in "
+            "the current rules.md"
+        )
         step_header = (
             f"### Step {entry.step} (action={entry.action}, "
-            f"score {entry.score_before:.3f} -> {entry.score_after:.3f})"
+            f"score {entry.score_before:.3f} -> {entry.score_after:.3f}) "
+            f"[{consequence}]"
         )
         parts.append(step_header)
 
@@ -256,10 +414,26 @@ def _format_merger_history(step_buffer: "StepBuffer", window: int) -> str:
             ev_derivation = getattr(ev, "derivation", "")
             ev_task_results = getattr(ev, "task_results", {})
 
+            verdict = ""
+            gained: list[str] = []
+            lost: list[str] = []
+            if hasattr(ev, "compute_verdict"):
+                verdict = ev.compute_verdict()
+                gained = ev.gained_tasks()
+                lost = ev.lost_tasks()
+
             lines = [
                 f"  Edit {i}: section_target={ev_section}, "
                 f"delta_type={ev_delta}, passed={ev_passed}",
             ]
+            if verdict:
+                flip_info = ""
+                if gained or lost:
+                    flip_info = (
+                        f" (gained: {', '.join(gained) or '-'}"
+                        f" | lost: {', '.join(lost) or '-'})"
+                    )
+                lines.append(f"    verdict: {verdict.upper()}{flip_info}")
             if ev_content:
                 content_preview = ev_content.replace("\n", "\n    ")
                 lines.append(f"    content:\n    {content_preview}")
@@ -282,7 +456,55 @@ def _format_merger_history(step_buffer: "StepBuffer", window: int) -> str:
 
     if not parts:
         return "(no edit verification history available)"
-    return "\n\n".join(parts)
+    note = (
+        "NOTE: This history shows PAST ATTEMPTS — for learning what was "
+        "tried and whether it worked. The edit contents below are "
+        "HISTORICAL: edits from rejected steps were NEVER applied and their "
+        "text is NOT in the current rules.md. NEVER use historical edit "
+        "content as point_anchor targets; anchor ONLY to text visible in "
+        "the \"Current rules.md\" section above."
+    )
+    return note + "\n\n" + "\n\n".join(parts)
+
+
+# ── Cumulative insight digest (beyond the sliding history window) ───────────
+
+_DIGEST_VERDICTS = frozenset({"clean_gain", "mixed_gain", "mixed_loss"})
+
+
+def _format_insight_digest(step_buffer: "StepBuffer", cap: int = 30) -> str:
+    """One-line-per-edit digest of high-value verdicts across ALL steps.
+
+    Rare, high-value outcomes (clean_gain / mixed_*) would otherwise be
+    forgotten once they scroll past ``merger_history_window``. This digest
+    keeps them visible for the node's whole lifetime: section + verdict +
+    flipped task IDs + first sentence of the rationale. Most recent first,
+    capped at ``cap`` lines. Empty string when nothing qualifies.
+    """
+    lines: list[str] = []
+    for entry in reversed(step_buffer.entries):
+        verifications = getattr(entry, "edit_verifications", None)
+        if not verifications:
+            continue
+        for ev in verifications:
+            if not hasattr(ev, "compute_verdict"):
+                continue
+            verdict = ev.compute_verdict()
+            if verdict not in _DIGEST_VERDICTS:
+                continue
+            gained = ", ".join(ev.gained_tasks()) or "-"
+            lost = ", ".join(ev.lost_tasks()) or "-"
+            rationale = (getattr(ev, "rationale", "") or "").split(". ")[0][:160]
+            lines.append(
+                f"- [step {entry.step}] [{verdict.upper()}] "
+                f"{getattr(ev, 'section_target', '?')} "
+                f"(gained: {gained} | lost: {lost}) — {rationale}"
+            )
+            if len(lines) >= cap:
+                break
+        if len(lines) >= cap:
+            break
+    return "\n".join(lines)
 
 
 # ── Raw edit formatter ───────────────────────────────────────────────────────
@@ -363,24 +585,42 @@ def _build_merger_user_prompt(
     merger_inject_history = getattr(cfg, "merger_inject_history", True)
     has_history = _check_has_history(step_buffer) if merger_inject_history else False
     if has_history:
+        # 4a. Cumulative high-value insights (whole node lifetime, capped)
+        digest = _format_insight_digest(step_buffer)
+        if digest:
+            sections.append(
+                "## Cumulative edit insights (all steps — high-value verdicts "
+                "that must not be forgotten)\n" + digest
+            )
+        # 4b. Recent-window full verification detail
         window = getattr(cfg, "merger_history_window", 3)
         sections.append(
             "## Optimization history\n" + _format_merger_history(step_buffer, window)
         )
 
     # 5. Guidance
-    sections.append(
-        "## Edit count\n"
-        "Many raw edits are redundant — multiple patches often propose the "
-        "same improvement in different wording. First de-duplicate: identify "
-        "the set of genuinely DISTINCT improvements across all raw edits. "
-        "Then produce one output edit per distinct improvement.\n\n"
-        "Do NOT artificially cap or inflate the count. Do NOT produce one "
-        "edit per raw edit — de-duplicate first. The typical range after "
-        "de-duplication is 5-25 edits depending on the diversity of the raw "
-        "input. If the raw edits are highly redundant, fewer is correct; if "
-        "they cover many independent topics, more is correct."
-    )
+    granularity = getattr(cfg, "merger_granularity", "point")
+    if granularity == "section":
+        sections.append(
+            "## Edit count\n"
+            "Many raw edits are redundant — multiple patches often propose "
+            "the same improvement in different wording. De-duplicate first, "
+            "then produce exactly ONE edit per section that needs changing "
+            "(plus new_section / delete_section edits as needed)."
+        )
+    else:
+        sections.append(
+            "## Edit count\n"
+            "Many raw edits are redundant — multiple patches often propose the "
+            "same improvement in different wording. First de-duplicate: identify "
+            "the set of genuinely DISTINCT improvements across all raw edits. "
+            "Then produce one output edit per distinct improvement.\n\n"
+            "Do NOT artificially cap or inflate the count. Do NOT produce one "
+            "edit per raw edit — de-duplicate first. The typical range after "
+            "de-duplication is 5-25 edits depending on the diversity of the raw "
+            "input. If the raw edits are highly redundant, fewer is correct; if "
+            "they cover many independent topics, more is correct."
+        )
 
     return "\n\n".join(sections)
 
@@ -598,7 +838,9 @@ def merger(
     has_history = _check_has_history(step_buffer) if merger_inject_history else False
 
     # Build prompts
-    system = _build_merger_system_prompt(has_history)
+    system = _build_merger_system_prompt(
+        has_history, granularity=getattr(cfg, "merger_granularity", "point")
+    )
     user = _build_merger_user_prompt(rules, raw_patches, step_buffer, cfg)
 
     _log.info(

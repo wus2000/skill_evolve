@@ -78,3 +78,49 @@ def evaluate_gate(
         best_score=best_score,
         best_step=best_step,
     )
+
+
+def gate_result_from_action(
+    action: GateAction,
+    candidate_rules: str,
+    cand_score: float,
+    current_rules: str,
+    current_score: float,
+    best_rules: str,
+    best_score: float,
+    best_step: int,
+    global_step: int,
+) -> GateResult:
+    """Build a :class:`GateResult` from an externally-decided action.
+
+    Used by decision procedures whose accept/reject verdict is NOT the scalar
+    comparison (e.g. the paired sign-test gate) and by checkpoint resume,
+    which replays a stored action. The state-threading semantics match
+    :func:`evaluate_gate` exactly.
+    """
+    if action == "accept_new_best":
+        return GateResult(
+            action="accept_new_best",
+            current_rules=candidate_rules,
+            current_score=cand_score,
+            best_rules=candidate_rules,
+            best_score=cand_score,
+            best_step=global_step,
+        )
+    if action == "accept":
+        return GateResult(
+            action="accept",
+            current_rules=candidate_rules,
+            current_score=cand_score,
+            best_rules=best_rules,
+            best_score=best_score,
+            best_step=best_step,
+        )
+    return GateResult(
+        action="reject",
+        current_rules=current_rules,
+        current_score=current_score,
+        best_rules=best_rules,
+        best_score=best_score,
+        best_step=best_step,
+    )

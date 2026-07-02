@@ -98,6 +98,12 @@ class TreeNode:
 
     created_epoch: int = -1
 
+    # Paired-gate incumbent ledger: per-val-item measurement record of the
+    # CURRENT incumbent rules — {item_id: {"passes": int, "trials": int}}.
+    # Bootstrapped lazily by the paired gate, folded with escalation rollouts,
+    # and reset to the winning candidate's measurements on accept.
+    val_ledger: dict = field(default_factory=dict)
+
     # ── Convenience ────────────────────────────────────────────────────────
     @property
     def n_steps(self) -> int:
@@ -141,6 +147,7 @@ class TreeNode:
             refine_count=int(d.get("refine_count", 0)),
             status=d.get("status", "active"),
             created_epoch=int(d.get("created_epoch", -1)),
+            val_ledger=dict(d.get("val_ledger", {})),
         )
 
     def to_dict(self, include_embeddings: bool = False) -> dict:
@@ -165,6 +172,7 @@ class TreeNode:
             "refine_count": self.refine_count,
             "status": self.status,
             "created_epoch": self.created_epoch,
+            "val_ledger": self.val_ledger,
         }
 
 

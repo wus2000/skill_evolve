@@ -80,6 +80,14 @@ def main() -> None:
         batch_size=128,        # train tasks per L0 step
         minibatch_size=16,     # trajectories per reflect minibatch
         reflect_mode="plan_a",
+        merger_granularity="point",   # ablation knob: "point" | "section"
+
+        # L0 val gate: two-stage item-paired sign test.
+        # Bird's val set is large (1100) — K=1 screen already yields enough
+        # discordant items for the sign test.
+        gate_mode="paired",
+        gate_screen_k=1,
+        gate_escalation_k=3,
 
         # Dataset-size subsets for the full split (0 = use all):
         coldstart_train_size=500,    # cold-start bare rollout

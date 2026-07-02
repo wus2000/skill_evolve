@@ -48,9 +48,42 @@ class EditVerification:
     #   "status": "GAINED"|"LOST"|"RETAINED"|"STILL_UNSOLVED"}}
     rationale: str = ""
     derivation: str = ""
+    # Outcome category (see compute_verdict). "" on entries written before
+    # the verdict system existed — consumers call compute_verdict() then.
+    verdict: str = ""
+
+    def gained_tasks(self) -> list[str]:
+        return [t for t, r in self.task_results.items()
+                if isinstance(r, dict) and r.get("status") == "GAINED"]
+
+    def lost_tasks(self) -> list[str]:
+        return [t for t, r in self.task_results.items()
+                if isinstance(r, dict) and r.get("status") == "LOST"]
+
+    def compute_verdict(self) -> str:
+        """Categorize this verification outcome (derivable from task_results).
+
+        - clean_gain    : G>0, L=0 — direction confirmed
+        - mixed_gain    : G>L>0 — passed with known collateral damage
+        - mixed_loss    : 0<G<=L — REAL effect but net harmful (refine, don't drop)
+        - clean_loss    : G=0, L>0 — direction harmful
+        - marginal_gain : G=L=0, passed via continuous tiebreaker
+        - null          : G=L=0, failed — no measurable effect
+        """
+        if self.verdict:
+            return self.verdict
+        g = len(self.gained_tasks())
+        l = len(self.lost_tasks())
+        if g > 0 and l == 0:
+            return "clean_gain"
+        if g > 0 and l > 0:
+            return "mixed_gain" if g > l else "mixed_loss"
+        if l > 0:
+            return "clean_loss"
+        return "marginal_gain" if self.passed else "null"
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "section_target": self.section_target,
             "delta_type": self.delta_type,
             "content": self.content,
@@ -60,6 +93,9 @@ class EditVerification:
             "rationale": self.rationale,
             "derivation": self.derivation,
         }
+        if self.verdict:
+            d["verdict"] = self.verdict
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "EditVerification":
@@ -78,6 +114,7 @@ class EditVerification:
             task_results=raw_results,
             rationale=str(d.get("rationale", "")),
             derivation=str(d.get("derivation", "")),
+            verdict=str(d.get("verdict", "")),
         )
 
 

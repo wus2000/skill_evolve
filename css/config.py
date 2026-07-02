@@ -60,7 +60,22 @@ class CSSConfig:
     test_k_rollouts: int = 1             # K for test-set evaluation (bare baseline + per-round test)
     merger_inject_history: bool = True   # Inject per-edit verification history into merger prompt
     merger_history_window: int = 3       # Max recent steps of edit verification history shown to merger
+    merger_granularity: str = "point"    # "point" (fine-grained point edits) | "section" (one edit per section)
     rules_max_chars: int = 60_000       # Soft cap for rules.md (log warning, no truncation)
+
+    # ── Per-edit ablation verification (signal floor + pass criterion) ────
+    verify_floor_divisor: int = 8        # verification set floor = batch_size // this
+                                         # (pad with random batch control tasks — they double
+                                         # as regression detectors outside the edit's targets)
+    verify_min_net_flips: int = 2        # continuous tiebreaker requires >= this many net
+                                         # rollout flips (single-flip passes are noise)
+
+    # ── L0 val gate (paired sign-test vs legacy mean comparison) ──────────
+    gate_mode: str = "paired"            # "paired" (two-stage item-paired sign test) | "mean"
+    gate_paired_alpha: float = 0.1       # one-sided binomial significance to ACCEPT
+    gate_screen_k: int = 1               # stage-1 screen rollouts per val item (candidate side)
+    gate_escalation_k: int = 3           # stage-2 fresh rollouts PER SIDE on discordant items
+    gate_shadow_log: bool = True         # paired mode also logs the counterfactual mean decision
 
     # ── Dataset-size subsets (knob >= split size OR <= 0  =>  use the WHOLE set;
     #    only when 0 < knob < split size is the set subsampled). Lets a large
@@ -167,6 +182,20 @@ class CSSConfig:
             problems.append("require 0 <= coverage_low <= coverage_high <= 1")
         if not (0.0 < self.prune_ci < 1.0):
             problems.append("prune_ci must be in (0, 1)")
+        if self.gate_mode not in ("mean", "paired"):
+            problems.append("gate_mode must be 'mean' or 'paired'")
+        if self.merger_granularity not in ("point", "section"):
+            problems.append("merger_granularity must be 'point' or 'section'")
+        if not (0.0 < self.gate_paired_alpha < 1.0):
+            problems.append("gate_paired_alpha must be in (0, 1)")
+        if self.gate_screen_k < 1:
+            problems.append("gate_screen_k must be >= 1")
+        if self.gate_escalation_k < 1:
+            problems.append("gate_escalation_k must be >= 1")
+        if self.verify_floor_divisor < 1:
+            problems.append("verify_floor_divisor must be >= 1")
+        if self.verify_min_net_flips < 0:
+            problems.append("verify_min_net_flips must be >= 0")
         if problems:
             raise ValueError("Invalid CSSConfig:\n  - " + "\n  - ".join(problems))
 
