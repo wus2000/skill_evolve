@@ -74,7 +74,10 @@ class CSSConfig:
     gate_mode: str = "paired"            # "paired" (two-stage item-paired sign test) | "mean"
     gate_paired_alpha: float = 0.1       # one-sided binomial significance to ACCEPT
     gate_screen_k: int = 1               # stage-1 screen rollouts per val item (candidate side)
-    gate_escalation_k: int = 3           # stage-2 fresh rollouts PER SIDE on discordant items
+    gate_escalation_k: int = 3           # stage-2 fresh rollouts PER SIDE per round on discordant items
+    gate_max_escalation_rounds: int = 3  # adaptive deepening: extra stage-2 rounds while the
+                                         # permutation p sits in the ambiguous band (alpha, 0.5]
+                                         # — small val sets buy DEPTH where width is capped
     gate_shadow_log: bool = True         # paired mode also logs the counterfactual mean decision
 
     # ── Dataset-size subsets (knob >= split size OR <= 0  =>  use the WHOLE set;
@@ -192,6 +195,8 @@ class CSSConfig:
             problems.append("gate_screen_k must be >= 1")
         if self.gate_escalation_k < 1:
             problems.append("gate_escalation_k must be >= 1")
+        if self.gate_max_escalation_rounds < 1:
+            problems.append("gate_max_escalation_rounds must be >= 1")
         if self.verify_floor_divisor < 1:
             problems.append("verify_floor_divisor must be >= 1")
         if self.verify_min_net_flips < 0:

@@ -52,7 +52,7 @@ _FINGERPRINT_FIELDS = (
     "minibatch_size", "min_l0_epochs", "max_l0_epochs", "reflect_mode",
     "max_l1_iterations", "l1_diagnostic_tasks", "l1_regression_tasks",
     "merger_granularity", "gate_mode", "gate_paired_alpha",
-    "gate_screen_k", "gate_escalation_k",
+    "gate_screen_k", "gate_escalation_k", "gate_max_escalation_rounds",
     "verify_floor_divisor", "verify_min_net_flips",
 )
 

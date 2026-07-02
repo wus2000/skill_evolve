@@ -71,24 +71,27 @@ rules.md is a tactical playbook read by a SEPARATE task-executing agent.
 Content must be DIRECT, ACTIONABLE instructions only (no rationale, source
 tasks, or optimization metadata).
 
-## Granularity decision — point edits are the DEFAULT
+## Operation choice — the data decides, not a default
 
-**Point edits** (point_edit, point_add, point_remove) are the DEFAULT output
-type. Use them whenever a raw edit adds, modifies, or removes a localized
-piece of text within an existing section — regardless of how many point edits
-target the same section.
+All six operations are equal citizens. Choose per edit by SEMANTIC FIT with
+the current document — never by a preference for one operation type:
 
-**Section-level edits** (section_rewrite, new_section) are the EXCEPTION.
-Use section_rewrite ONLY when:
-  - The raw edits collectively reorganize the internal structure of a section
-    (reordering, splitting, merging its sub-parts), making localized point
-    edits impractical.
-  - A section is being created for the first time (new_section).
+- The theme IS specifically covered by an existing section → a point op
+  inside that section (point_edit to refine existing text, point_add to add
+  a rule, point_remove to delete one).
+- The theme is NOT specifically covered by any existing section →
+  new_section. This is a normal, expected outcome at ANY step — including
+  re-introducing a theme that was dropped or rejected earlier, when the raw
+  edits carry fresh evidence for it.
+- The section's internal structure itself needs reorganizing → section_rewrite.
+- A section is redundant or harmful → delete_section.
 
-When raw edits propose localized operations (inserting a new rule, refining
-the wording of a specific rule, removing a specific rule) within an existing
-section, each such operation MUST be a separate point edit — even if many of
-them target the same section. Do NOT collapse them into a section_rewrite.
+SEMANTIC HOME discipline: place material where it belongs by THEME. Do NOT
+absorb a theme into an existing section merely because that section exists
+and is broadly named — a section that comes to span multiple distinct themes
+must be split (new_section for the foreign theme, or section_rewrite plus
+new_section). Localized changes within one theme stay separate point edits —
+do NOT collapse them into a section_rewrite.
 
 ## Output format — JSON only, no fences, no prose
 {
@@ -191,9 +194,12 @@ them target the same section. Do NOT collapse them into a section_rewrite.
 3. GROUP BY CONTENT, NOT SOURCE TYPE. Failure-driven and success-driven raw
    edits proposing the same improvement → merge into one edit.
 
-4. GAP-ALIGN. If the topic is NOT covered by any existing section →
-   new_section. If it IS covered → point edits (default) or section_rewrite
-   (only when structural reorganization is needed).
+4. GAP-ALIGN BY SEMANTIC HOME. Topic NOT specifically covered by any
+   existing section → new_section (a first-class outcome at any step, not
+   an exception). Topic specifically covered → point edits inside that
+   section, or section_rewrite when its internal structure must change.
+   Never cram a foreign theme into a broadly-named section just because it
+   exists.
 
 5. RESOLVE CONTRADICTIONS. Conflicting raw edits → keep the version with
    more supporting patches. Explain in derivation.
@@ -297,11 +303,14 @@ process (rationale, source tasks, failure statistics, "why" explanations).
    edits proposing the same improvement → merge them. Cross-source agreement
    is high confidence; note it in derivation.
 
-3. GAP-ALIGN. Choose delta_type based on the section index above:
-   - If the section index is empty or the topic is NOT covered by any
-     existing section → use "new_section" with after_section="_end".
+3. GAP-ALIGN BY SEMANTIC HOME. Choose delta_type based on the section index:
+   - If the section index is empty or the topic is NOT specifically covered
+     by any existing section → use "new_section" with after_section="_end"
+     (a first-class outcome at any step, not an exception).
    - If the topic IS covered by an existing ### section → use
      "section_rewrite" or "section_refinement", NEVER a duplicate new_section.
+   - Never absorb a foreign theme into a broadly-named section just because
+     it exists; a section spanning multiple distinct themes must be split.
 
 4. PRESERVE EXISTING CONTENT. For rewrite/refinement, output the COMPLETE
    section — existing bullets that should be kept + changes. You are writing
@@ -351,7 +360,13 @@ _PRINCIPLE_8_HISTORY = """
    - NULL: no measurable effect. Do not re-propose verbatim — the theme may
      still matter but needs a substantively different formulation.
    - A section with multiple consecutive NULL/CLEAN_LOSS edits may be
-     near-optimal. Prioritize other sections."""
+     near-optimal. Prioritize other sections.
+   - RECURRENCE OVERRIDES SUPPRESSION: if the SAME theme keeps re-emerging
+     from fresh trajectories across steps — including themes whose earlier
+     edits were dropped, rejected, or verdicted NULL — that recurrence is
+     itself evidence the theme matters. Re-propose it with a substantively
+     different formulation or as its own new_section rather than suppressing
+     it again. Verdicts judge a FORMULATION, not the theme."""
 
 
 def _build_merger_system_prompt(
