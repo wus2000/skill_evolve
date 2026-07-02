@@ -17,14 +17,17 @@ Stage 1 (screen): candidate is rolled on ALL val items at ``gate_screen_k``.
   difference (majority-flip is blind to partial shifts like 2/3 -> 3/3 —
   real signal that reaches the mean but would never reach the decision).
   The screen only SELECTS items; its data never enters the accept decision.
-Stage 2 (verdict, strictly symmetric, adaptively deepened): every item in D
-  gets ``gate_escalation_k`` FRESH rollouts on BOTH sides per round. The
-  decision statistic is an exact sign-flip permutation test on the per-item
-  pass-count deltas (:func:`perm_sf_signflip`) — margins count, ties
-  contribute zero. While p sits in the ambiguous band (alpha, 0.5], further
-  rounds add depth (up to ``gate_max_escalation_rounds``): small val sets
-  cannot add width, so the gate buys information depth per item instead.
-Decision: ACCEPT iff the permutation p <= ``gate_paired_alpha``.
+Stage 2 (verdict, strictly symmetric, ONE round): every item in D gets
+  ``gate_escalation_k`` FRESH rollouts on BOTH sides; per-item verdict
+  compares pass counts over these equal fresh trials.
+Decision — the item-level net-flip rule (estimated VALUE decides, not
+evidence strength; items are the unit the deployment metric counts):
+  n+ > n-                            -> ACCEPT
+  n+ == n- and cand_mean > inc_mean  -> ACCEPT (mean tiebreak)
+  otherwise                          -> reject
+The exact sign-flip permutation p (:func:`perm_sf_signflip`, margins
+included) is computed as TELEMETRY only — logged and persisted for post-hoc
+calibration; no rollout is ever spent chasing significance.
 
 Ledger maintenance: incumbent-side escalation rollouts are folded into the
 ledger (contested items accumulate precision over steps). On ACCEPT the ledger
@@ -69,7 +72,8 @@ class PairedGateResult:
     n_screen_discordant: int      # |D| after stage-1 screen
     cand_mean: float              # candidate screen mean pass rate (bookkeeping scalar)
     ledger_bootstrapped: int      # items bootstrapped into the ledger this call
-    escalation_rounds: int = 1    # stage-2 rounds actually run (adaptive deepening)
+    escalation_rounds: int = 1    # stage-2 rounds actually run
+    inc_mean: float = 0.0         # incumbent ledger mean over the same val items
 
     def to_dict(self) -> dict:
         return {
@@ -81,6 +85,7 @@ class PairedGateResult:
             "cand_mean": self.cand_mean,
             "ledger_bootstrapped": self.ledger_bootstrapped,
             "escalation_rounds": self.escalation_rounds,
+            "inc_mean": self.inc_mean,
         }
 
 
@@ -229,7 +234,6 @@ def run_paired_gate(
 
     screen_k = max(1, getattr(cfg, "gate_screen_k", 1))
     esc_k = max(1, getattr(cfg, "gate_escalation_k", 3))
-    alpha = getattr(cfg, "gate_paired_alpha", 0.1)
 
     inc_text = SkillDocument(
         skill_dir="", strategy=node.strategy or "", rules=node.rules or ""
@@ -309,34 +313,34 @@ def run_paired_gate(
         if differs:
             discordant.append(iid)
 
-    # ── Stage 2: symmetric fresh escalation with adaptive deepening ──────
-    # Each round adds esc_k FRESH rollouts PER SIDE on the discordant items;
-    # the decision statistic is an exact sign-flip permutation test on the
-    # per-item pass-count deltas (margins count: 3-0 > 2-1; ties contribute
-    # zero instead of being discarded). While p sits in the ambiguous band
-    # (alpha, 0.5], buy DEPTH — the information-theoretic answer for small
-    # val sets whose width is capped.
-    max_rounds = max(1, getattr(cfg, "gate_max_escalation_rounds", 3))
+    # ── Stage 2: ONE symmetric fresh escalation round ─────────────────────
+    # Decision = the item-level net-flip rule (estimated VALUE decides, not
+    # evidence strength): items are the unit the deployment metric counts, so
+    # the per-item verdict count IS the net-improvement estimate.
+    #   n+  > n-                              -> ACCEPT
+    #   n+ == n-  and cand_mean > inc_mean    -> ACCEPT (mean tiebreak)
+    #   otherwise                             -> reject
+    # The exact permutation p (margins included) is computed as TELEMETRY
+    # only — logged and persisted for post-hoc calibration, never spending a
+    # rollout chasing significance.
     cand_acc: dict[str, list[int]] = {iid: [0, 0] for iid in discordant}
     inc_acc: dict[str, list[int]] = {iid: [0, 0] for iid in discordant}
-    esc_rounds = 0
     p_value = 1.0
     n_pos = n_neg = 0
 
-    while discordant and esc_rounds < max_rounds:
-        esc_rounds += 1
+    if discordant:
         d_items = [item_by_id[i] for i in discordant]
         # The two sides are independent (different skill texts, disjoint
         # out_dirs) and each is well under the worker budget — roll them
-        # CONCURRENTLY instead of back-to-back (halves escalation wall time).
+        # CONCURRENTLY instead of back-to-back.
         with ThreadPoolExecutor(max_workers=2) as pool:
             fut_cand = pool.submit(
                 _roll_items, env, cand_text, d_items, target_client, esc_k,
-                os.path.join(out_dir, f"gate_esc_cand_r{esc_rounds}"), cfg,
+                os.path.join(out_dir, "gate_esc_cand_r1"), cfg,
             )
             fut_inc = pool.submit(
                 _roll_items, env, inc_text, d_items, target_client, esc_k,
-                os.path.join(out_dir, f"gate_esc_inc_r{esc_rounds}"), cfg,
+                os.path.join(out_dir, "gate_esc_inc_r1"), cfg,
             )
             esc_cand = fut_cand.result()
             esc_inc = fut_inc.result()
@@ -352,7 +356,6 @@ def run_paired_gate(
             entry["trials"] += t
 
         deltas = []
-        n_pos = n_neg = 0
         for iid in discordant:
             cp, ct = cand_acc[iid]
             ip, it = inc_acc[iid]
@@ -363,22 +366,29 @@ def run_paired_gate(
                 n_pos += 1
             elif ip > cp:
                 n_neg += 1
-        p_value = perm_sf_signflip(deltas)
+        p_value = perm_sf_signflip(deltas)  # telemetry only
 
-        _log.info(
-            "paired gate: round %d/%d — |D|=%d n+=%d n-=%d perm_p=%.4f",
-            esc_rounds, max_rounds, len(discordant), n_pos, n_neg, p_value,
-        )
-        if p_value <= alpha or p_value > 0.5:
-            break  # decided (accept) or trending-worse (no point deepening)
+    # Incumbent mean over the same val items (ledger, escalation folded in) —
+    # the tiebreak scalar for the n+ == n- case.
+    inc_rates = [
+        e["passes"] / e["trials"]
+        for iid, e in ledger.items()
+        if iid in item_by_id and e.get("trials", 0) > 0
+    ]
+    inc_mean = sum(inc_rates) / len(inc_rates) if inc_rates else 0.0
 
-    accept = p_value <= alpha
+    if n_pos > n_neg:
+        accept = True
+    elif n_pos == n_neg:
+        accept = cand_mean > inc_mean
+    else:
+        accept = False
 
     _log.info(
-        "paired gate: screen_discordant=%d -> %d escalation round(s), "
-        "n+=%d n-=%d p=%.4f alpha=%.2f -> %s (cand_mean=%.4f)",
-        len(discordant), esc_rounds, n_pos, n_neg, p_value, alpha,
-        "ACCEPT" if accept else "reject", cand_mean,
+        "paired gate: screen_discordant=%d -> n+=%d n-=%d "
+        "(cand_mean=%.4f inc_mean=%.4f, telemetry_p=%.4f) -> %s",
+        len(discordant), n_pos, n_neg, cand_mean, inc_mean, p_value,
+        "ACCEPT" if accept else "reject",
     )
 
     # ── Ledger transition on accept: candidate becomes the incumbent ─────
@@ -402,5 +412,6 @@ def run_paired_gate(
         n_screen_discordant=len(discordant),
         cand_mean=cand_mean,
         ledger_bootstrapped=len(missing),
-        escalation_rounds=esc_rounds,
+        escalation_rounds=1,
+        inc_mean=inc_mean,
     )
