@@ -609,7 +609,7 @@ def _build_merger_user_prompt(
             "(plus new_section / delete_section edits as needed)."
         )
     else:
-        sections.append(
+        guidance = (
             "## Edit count\n"
             "Many raw edits are redundant — multiple patches often propose the "
             "same improvement in different wording. First de-duplicate: identify "
@@ -617,10 +617,24 @@ def _build_merger_user_prompt(
             "Then produce one output edit per distinct improvement.\n\n"
             "Do NOT artificially cap or inflate the count. Do NOT produce one "
             "edit per raw edit — de-duplicate first. The typical range after "
-            "de-duplication is 5-25 edits depending on the diversity of the raw "
+            "de-duplication is 5-20 edits depending on the diversity of the raw "
             "input. If the raw edits are highly redundant, fewer is correct; if "
             "they cover many independent topics, more is correct."
         )
+        # Sparse document: steer toward theme-level organization so the
+        # initial structure is a handful of rich sections, not one section
+        # per rule (each output edit is a separately-verified unit — count
+        # directly prices the step).
+        n_sections = len(_section_headings(rules).splitlines()) if rules else 0
+        if n_sections < 2:
+            guidance += (
+                "\n\nThe document currently has little or no structure. When "
+                "establishing the initial structure, organize the material "
+                "into a SMALL number of THEMATIC sections: a section owns a "
+                "theme, and related rules become bullets WITHIN it — never "
+                "one section per individual rule."
+            )
+        sections.append(guidance)
 
     return "\n\n".join(sections)
 

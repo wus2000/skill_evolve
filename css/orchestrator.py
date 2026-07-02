@@ -404,6 +404,10 @@ def _run_node_epoch(
                              val_items=val_items)
 
     # (1) L0 EXPLOITATION: batch-step loop until saturation or hard cap.
+    # The paired gate seeds its incumbent ledger from the val_baseline
+    # predictions (same skill => zero-rollout bootstrap); tell it where they
+    # live for this node/round.
+    cfg._val_baseline_dir = _node_round_dir(out_dir, node, round_index, "val_baseline")
     node.step_buffer.reset_saturation()
     l0_steps_before = node.n_steps
     exploit_summary = run_exploitation_epoch(
@@ -501,32 +505,42 @@ def _run_node_epoch(
     _save_analysis_artifacts(out_dir, node, round_index, analysis)
 
     # (4) Validation eval with the node's BEST skill -> node.val_score + curve.
-    # Optimization: if exploitation produced a new best THIS round, its val gate
-    # already evaluated the best_rules on the full val set. Reuse those predictions
-    # (grouped_batch_rollout skips existing prediction files) instead of re-running
-    # 60×K=180 fresh rollouts. If no new best this round, the skill hasn't changed
-    # and node.val_score is already correct from the previous round.
+    # Zero-rollout policy: the gate already measured every candidate on the
+    # full val set. New best this round -> its gate predictions ARE the best
+    # skill's val measurement; re-read them from disk (paired mode: the K=1
+    # screen; mean mode: the evaluate_candidate predictions at
+    # exploitation_val_k). No new best -> the skill did not change, so
+    # node.val_score from the previous round (or the node baseline) already
+    # measures it; skip entirely (re-rolling an unchanged skill each round
+    # was pure duplicate cost).
     val_skill_text = _val_skill_text(node)
     best_val_dir = getattr(exploit_summary, "best_val_out_dir", "")
     if best_val_dir:
-        val_out_dir = best_val_dir
-        _log.info("Val eval reusing exploitation best-step predictions: %s", best_val_dir)
+        if getattr(cfg, "gate_mode", "mean") == "paired":
+            val_k = max(1, getattr(cfg, "gate_screen_k", 1))
+        else:
+            val_k = getattr(cfg, "exploitation_val_k", 0) or cfg.k_rollouts
+        _log.info("Val eval reusing gate predictions (K=%d): %s", val_k, best_val_dir)
+        val_groups = grouped_batch_rollout(
+            env,
+            val_items,
+            val_skill_text,
+            target_client,
+            k_rollouts=val_k,
+            out_dir=best_val_dir,
+            max_workers=cfg.max_api_workers,
+            task_timeout=cfg.task_timeout_s,
+            epoch=round_index,
+            node_id=node.node_id,
+        )
+        val_flat = [r for g in val_groups for r in g.rollouts]
+        node.val_score = float(aggregate_scores(val_flat).get("task_hard", 0.0))
     else:
-        val_out_dir = _node_round_dir(out_dir, node, round_index, "val")
-    val_groups = grouped_batch_rollout(
-        env,
-        val_items,
-        val_skill_text,
-        target_client,
-        k_rollouts=cfg.k_rollouts,
-        out_dir=val_out_dir,
-        max_workers=cfg.max_api_workers,
-        task_timeout=cfg.task_timeout_s,
-        epoch=round_index,
-        node_id=node.node_id,
-    )
-    val_flat = [r for g in val_groups for r in g.rollouts]
-    node.val_score = float(aggregate_scores(val_flat).get("task_hard", 0.0))
+        # PRUNE degrades conservatively on the skip path: empty val_groups
+        # means "no paired validation passes" -> never prunes on stale data.
+        val_groups = []
+        _log.info("Val eval skipped — no new best this round; val_score=%.4f carried",
+                  node.val_score)
 
     # (5) Test eval with the node's BEST skill -> generalization measure.
     test_k = getattr(cfg, "test_k_rollouts", 1) or 1

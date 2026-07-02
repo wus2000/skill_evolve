@@ -123,6 +123,51 @@ def _roll_items(
     }
 
 
+def _seed_ledger_from_predictions(
+    env: "TaskEnv",
+    ledger: dict,
+    items: list[dict],
+    inc_text: str,
+    seed_dir: str,
+    cfg: "CSSConfig",
+) -> int:
+    """Seed ledger entries from same-skill predictions persisted on disk.
+
+    Uses the env's own resume-cache loader (``load_cached_result``) with the
+    incumbent's skill hash — reuse happens only for results produced under
+    the EXACT same skill text, so a stale/different-skill baseline can never
+    poison the ledger. Best-effort: any miss just leaves the item for the
+    rollout bootstrap. Returns the number of items seeded.
+    """
+    loader = getattr(env, "load_cached_result", None)
+    if loader is None:
+        return 0
+    try:
+        from css.envs.common import skill_hash
+        inc_hash = skill_hash(inc_text)
+    except Exception:  # noqa: BLE001
+        return 0
+
+    max_k = max(1, getattr(cfg, "k_rollouts", 1))
+    seeded = 0
+    for item in items:
+        iid = _item_id(item)
+        passes = trials = 0
+        for r in range(max_k):
+            try:
+                res = loader(item, seed_dir, rollout_index=r, skill_hash=inc_hash)
+            except Exception:  # noqa: BLE001
+                res = None
+            if res is None:
+                continue
+            trials += 1
+            passes += 1 if res.passed else 0
+        if trials > 0:
+            ledger[iid] = {"passes": passes, "trials": trials}
+            seeded += 1
+    return seeded
+
+
 def run_paired_gate(
     env: "TaskEnv",
     node: "TreeNode",
@@ -154,8 +199,26 @@ def run_paired_gate(
     item_by_id = {_item_id(it): it for it in val_items if _item_id(it)}
     ledger: dict = node.val_ledger
 
-    # ── Stage 0: bootstrap missing incumbent ledger entries ──────────────
+    # ── Stage 0: fill missing incumbent ledger entries ───────────────────
+    # Seed-first: the round's val_baseline rollout already measured THIS
+    # incumbent on the val set (same skill text) at k_rollouts — read those
+    # predictions from disk (path + skill_hash checked by the env's cache
+    # loader; zero rollouts) before rolling anything.
     missing = [iid for iid in item_by_id if iid not in ledger]
+    if missing:
+        seed_dir = str(getattr(cfg, "_val_baseline_dir", "") or "")
+        seeded = 0
+        if seed_dir and os.path.isdir(seed_dir):
+            seeded = _seed_ledger_from_predictions(
+                env, ledger, [item_by_id[i] for i in missing],
+                inc_text, seed_dir, cfg,
+            )
+            if seeded:
+                _log.info(
+                    "paired gate: seeded incumbent ledger for %d item(s) from "
+                    "val_baseline predictions (no rollouts)", seeded,
+                )
+            missing = [iid for iid in item_by_id if iid not in ledger]
     if missing:
         _log.info("paired gate: bootstrapping incumbent ledger for %d item(s)",
                   len(missing))

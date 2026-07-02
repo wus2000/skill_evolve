@@ -32,7 +32,10 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["validate_edits", "ValidationResult", "salvage_phantom_point_ops"]
+__all__ = [
+    "validate_edits", "ValidationResult", "salvage_phantom_point_ops",
+    "purity_telemetry",
+]
 
 
 def _existing_headings(rules_md: str) -> set[str]:
@@ -64,23 +67,30 @@ class ValidationResult:
         self.conflict_pairs = conflict_pairs or []
 
     def feedback_text(self) -> str:
-        """Format violations as human-readable feedback for the merger repair."""
+        """Format violations for the repair protocol (edits referenced as E#n)."""
         if not self.violations:
             return ""
-        parts: list[str] = [
-            "INDEPENDENCE VIOLATIONS FOUND — fix and re-output all edits.\n"
-        ]
+        parts: list[str] = ["VIOLATIONS FOUND:\n"]
         for i, v in enumerate(self.violations):
             tag = v.get("type", "UNKNOWN").upper()
-            indices = v.get("edit_indices", [])
+            ids = ", ".join(f"E#{j}" for j in v.get("edit_indices", []))
             detail = v.get("detail", "")
             suggestion = v.get("suggestion", "")
             parts.append(
-                f"Violation {i + 1} [{tag}] (edits {indices}):\n"
+                f"Violation {i + 1} [{tag}] (edits: {ids}):\n"
                 f"  Detail: {detail}\n"
                 f"  Suggested fix: {suggestion}"
             )
         return "\n\n".join(parts)
+
+    def implicated_indices(self) -> set[int]:
+        """Union of all edit indices named by the violations (repair allowlist)."""
+        out: set[int] = set()
+        for v in self.violations:
+            for i in v.get("edit_indices", []):
+                if isinstance(i, int):
+                    out.add(i)
+        return out
 
 
 # ── Layer A: structural checks (programmatic) ───────────────────────────────
@@ -93,6 +103,11 @@ def _structural_check(edits: list[MergedEdit], rules_md: str = "") -> list[dict]
     # EXISTS in the current rules.md — otherwise its anchor cannot resolve
     # and independent ablation apply would have nothing to attach to.
     existing = _existing_headings(rules_md)
+    # Co-emitted new_section hosts (heading -> index), for fold suggestions.
+    hosts: dict[str, int] = {
+        e.section_target.strip(): i for i, e in enumerate(edits)
+        if e.delta_type == "new_section"
+    }
     phantom: dict[str, list[int]] = {}
     for i, e in enumerate(edits):
         if e.is_point and e.section_target not in existing:
@@ -102,25 +117,46 @@ def _structural_check(edits: list[MergedEdit], rules_md: str = "") -> list[dict]
             " (the current rules.md has NO sections at all)"
             if not existing else ""
         )
-        violations.append({
-            "type": "phantom_section",
-            "edit_indices": indices,
-            "detail": (
-                f"Point op(s) {indices} target section {section!r} which does "
-                f"NOT exist in the current rules.md{empty_note}. Point ops can "
-                f"only modify EXISTING sections — their anchors cannot resolve "
-                f"in a section that is not there. Historical or proposed "
-                f"content is NOT part of the current rules.md."
-            ),
-            "suggestion": (
-                "Re-emit this material as a new_section edit (compose the "
-                "fragments into one complete section: ### heading + full "
-                "body), or re-anchor to a section that actually exists in "
-                "the section index. If another edit in your output already "
-                "creates this section via new_section, fold this content "
-                "directly into that edit's content instead."
-            ),
-        })
+        host_idx = hosts.get(section.strip())
+        ids = [f"E#{j}" for j in indices]
+        if host_idx is not None:
+            # The point ops depend on a new_section co-emitted in this same
+            # output — an independence violation with a known host: name the
+            # host so the repair can fold via a targeted operation.
+            violations.append({
+                "type": "phantom_section",
+                "edit_indices": indices + [host_idx],
+                "detail": (
+                    f"Point op(s) {ids} target section {section!r} which does "
+                    f"NOT exist in the current rules.md — it is being CREATED "
+                    f"by edit E#{host_idx} in this same output. Under "
+                    f"independent ablation each edit is applied alone, so "
+                    f"these point ops would have no section to attach to."
+                ),
+                "suggestion": (
+                    f"Fold the point ops' content directly into E#{host_idx}'s "
+                    f"section body (a merge operation replacing E#{host_idx}), "
+                    f"and drop the separate point ops."
+                ),
+            })
+        else:
+            violations.append({
+                "type": "phantom_section",
+                "edit_indices": indices,
+                "detail": (
+                    f"Point op(s) {ids} target section {section!r} which does "
+                    f"NOT exist in the current rules.md{empty_note}. Point ops "
+                    f"can only modify EXISTING sections — their anchors cannot "
+                    f"resolve in a section that is not there. Historical or "
+                    f"proposed content is NOT part of the current rules.md."
+                ),
+                "suggestion": (
+                    "Re-emit this material as a new_section edit (compose the "
+                    "fragments into one complete section: ### heading + full "
+                    "body), or re-anchor to a section that actually exists in "
+                    "the section index."
+                ),
+            })
 
     section_types: dict[str, list[tuple[int, str]]] = {}
     for i, e in enumerate(edits):
@@ -197,11 +233,12 @@ def _structural_check(edits: list[MergedEdit], rules_md: str = "") -> list[dict]
 # ── Layer B: LLM semantic check ──────────────────────────────────────────────
 
 _VALIDATOR_SYSTEM = """\
-You are an edit independence validator. You check whether a set of proposed \
-point-level edits to a rules.md document can be applied independently and \
-simultaneously without conflicts.
+You are an edit validator for a rules.md optimization pipeline. You perform \
+two checks on a set of proposed edits: INDEPENDENCE (can they be applied \
+independently and simultaneously without conflicts?) and CONTENT PURITY \
+(is every edit's content pure agent-facing instruction text?).
 
-## Fundamental Independence Principle
+## Check 1 — Independence (applies to point-level edits)
 
 Two edits are INDEPENDENT if and only if:
 1. Each edit targets a distinct, non-overlapping region of the document text.
@@ -211,43 +248,34 @@ text that the other edit targets.
 individual effects — no edit's contribution is lost, overwritten, or \
 semantically changed by the other.
 
-Any violation of these conditions means the edits CONFLICT and cannot be \
-independently ablation-tested.
+Key rule: multiple point_add edits sharing the same point_anchor are ALLOWED \
+— insertions do not modify existing text and remain independently testable. \
+Do NOT flag them.
 
-## Key rule: point_add with shared anchors is NOT a conflict
+Conflict patterns (non-exhaustive — flag ANY independence violation):
+- **Modification overlap**: two point_edit/point_remove edits target the same \
+or overlapping text (even with slightly different anchor wording).
+- **Causal dependency**: applying edit A changes/removes text that edit B's \
+anchor references.
+- **Anchor not found**: a point_anchor does not exist in its target section.
+- **Ambiguous anchor**: a point_anchor matches multiple locations (does NOT \
+apply to point_add).
 
-Multiple point_add edits that share the same point_anchor are ALLOWED and \
-should NOT be flagged. Insertions do not modify or remove existing text — \
-each point_add can be independently applied to the original document and \
-independently verified via ablation testing. Do NOT flag these as violations.
+## Check 2 — Content purity (applies to EVERY edit's content field)
 
-## Conflict patterns (non-exhaustive — flag ANY independence violation)
+The content field is the text a SEPARATE task-executing agent will read as \
+its operational rules. It must contain ONLY domain instructions the agent \
+can act on. Flag content that contains optimization-process material:
+- provenance or justification prose (rationale/derivation-style explanations \
+of why the rule was added, which analyses support it)
+- references to specific training tasks or task identifiers
+- protocol bookkeeping (edit IDs, verification outcomes, gate/score talk)
+- meta commentary about the optimization, editing, or merging process
 
-**Modification overlap**: Two point_edit or point_remove edits target the \
-same text or overlapping text regions (even if anchor strings differ slightly \
-due to paraphrasing). This is a real conflict because both attempt to \
-modify/delete the same content.
-
-**Causal dependency**: Applying edit A (point_edit or point_remove) changes \
-or removes text that edit B's point_anchor references. After A is applied, \
-B cannot locate its anchor or its modification becomes semantically invalid.
-
-**Anchor not found**: An edit's point_anchor cannot be located in the target \
-section — the text does not exist there (hallucinated or imprecise anchor).
-
-**Ambiguous anchor**: An edit's point_anchor matches multiple locations in \
-the target section, making the intended edit location unclear. (This does \
-NOT apply to point_add — multiple insertions at the same anchor are fine.)
-
-## Checking procedure
-
-For each point edit:
-  1. Verify the point_anchor can be unambiguously located in the target section \
-(for point_add, verify the anchor exists; ambiguity is acceptable).
-
-For each pair of point_edit/point_remove edits targeting the SAME section:
-  2. Verify their anchors target distinct, non-overlapping text regions.
-  3. Verify neither edit's modification would invalidate the other's anchor.
+Judge by SEMANTICS, not keywords: a domain rule legitimately using words \
+like "derivation" or cell references like "E3" is FINE. Flag only text whose \
+communicative purpose is optimizer-to-optimizer, not optimizer-to-agent. \
+When uncertain, do NOT flag.
 
 ## Output format — JSON only, no fences, no prose
 {
@@ -255,29 +283,25 @@ For each pair of point_edit/point_remove edits targeting the SAME section:
   "violations": [
     {
       "type": "anchor_overlap | paraphrase_duplicate | causal_dependency | \
-anchor_not_found | ambiguous_anchor",
+anchor_not_found | ambiguous_anchor | content_purity",
       "edit_indices": [i, j],
-      "detail": "<describe the specific conflict>",
-      "suggestion": "<how the merger should fix this>"
+      "detail": "<describe the specific problem>",
+      "suggestion": "<how to fix it>"
     }
   ]
 }
 
-If all edits are independent, return {"valid": true, "violations": []}.
-Report ONLY genuine violations — do not flag edits that truly target \
-different, non-overlapping text."""
+If everything passes, return {"valid": true, "violations": []}.
+Report ONLY genuine violations."""
 
 
 def _needs_semantic_check(edits: list[MergedEdit]) -> bool:
-    """Return True if any section has multiple point edits (the only case
-    where semantic independence checking is needed)."""
-    point_sections: dict[str, int] = {}
-    for e in edits:
-        if e.is_point:
-            point_sections[e.section_target] = (
-                point_sections.get(e.section_target, 0) + 1
-            )
-    return any(count > 1 for count in point_sections.values())
+    """Layer B runs whenever there are edits to check.
+
+    Independence needs it when same-section point edits exist; content purity
+    applies to every edit. One LLM call covers both.
+    """
+    return bool(edits)
 
 
 def _build_validator_user(
@@ -288,29 +312,33 @@ def _build_validator_user(
 
     sections = parse_rules_into_sections(rules_md)
 
-    # Only include sections that have point edits targeting them
+    # Include sections that have point edits targeting them (independence ctx)
     point_sections = set()
     for e in edits:
         if e.is_point:
             point_sections.add(e.section_target)
 
-    parts: list[str] = ["## Relevant sections from rules.md\n"]
-    for sec in sections:
-        if sec.heading in point_sections:
-            parts.append(f"--- {sec.heading} ---\n{sec.content}\n")
-    if not any(sec.heading in point_sections for sec in sections):
-        parts.append("(no matching sections found)\n")
+    parts: list[str] = []
+    if point_sections:
+        parts.append("## Relevant sections from rules.md\n")
+        matched = False
+        for sec in sections:
+            if sec.heading in point_sections:
+                parts.append(f"--- {sec.heading} ---\n{sec.content}\n")
+                matched = True
+        if not matched:
+            parts.append("(no matching sections found)\n")
 
-    parts.append(f"\n## Point edits to validate ({len(edits)} total)\n")
+    parts.append(f"\n## Edits to validate ({len(edits)} total)\n")
     for i, e in enumerate(edits):
-        if not e.is_point:
-            continue
-        parts.append(
+        lines = [
             f"Edit {i}: delta_type={e.delta_type}, "
-            f"section_target={e.section_target!r}\n"
-            f"  point_anchor: {e.point_anchor!r}\n"
-            f"  content: {e.content!r}\n"
-        )
+            f"section_target={e.section_target!r}"
+        ]
+        if e.point_anchor:
+            lines.append(f"  point_anchor: {e.point_anchor!r}")
+        lines.append(f"  content: {e.content!r}")
+        parts.append("\n".join(lines) + "\n")
 
     return "\n".join(parts)
 
@@ -428,10 +456,11 @@ def validate_edits(
     rules_md: str,
     client: "LLMClient | None" = None,
 ) -> ValidationResult:
-    """Run independence validation on merged edits.
+    """Run independence + content-purity validation on merged edits.
 
-    Layer A (structural) always runs.  Layer B (semantic) runs only when
-    same-section point edits exist AND a client is provided.
+    Layer A (structural) always runs.  Layer B (one LLM call — independence
+    for point edits + content purity for every edit) runs whenever edits
+    exist AND a client is provided.
 
     On any LLM failure, returns optimistic result (valid=True) so the
     pipeline proceeds — the downstream ablation verification and val gate
@@ -457,6 +486,49 @@ def validate_edits(
             )
 
     return ValidationResult(valid=True)
+
+
+# ── Purity telemetry (LOG-ONLY — never enforces) ─────────────────────────────
+
+_TELEMETRY_MARKERS = (
+    "target_tasks", "Rationale:", "Source Tasks:", "derivation:",
+    "GAINED", "LOST", "verdict",
+)
+
+
+def purity_telemetry(edits: list[MergedEdit], run_task_ids: "set[str] | None" = None) -> None:
+    """Deterministic metadata-marker scan over edit contents — telemetry ONLY.
+
+    Logs WARNING lines for observability; NEVER enforces, mutates, or feeds
+    the repair loop (deterministic string rules on LLM prose are false-positive
+    prone — e.g. a domain rule legitimately containing "derivation" or a
+    task-id-like token). Enforcement is the semantic validator's job; this
+    scan exists to collect real-world leak data so any future hard rule is
+    driven by observed patterns, not imagination.
+    """
+    import re as _re
+
+    for i, e in enumerate(edits):
+        content = e.content or ""
+        if not content:
+            continue
+        hits: list[str] = []
+        for marker in _TELEMETRY_MARKERS:
+            if marker in content:
+                hits.append(marker)
+        if _re.search(r"\bE#\d+\b", content):
+            hits.append("protocol-id(E#n)")
+        if run_task_ids:
+            for tid in run_task_ids:
+                if tid and tid in content:
+                    hits.append(f"task-id({tid})")
+                    break
+        if hits:
+            _log.warning(
+                "purity-telemetry: edit %d (%s) content contains marker(s) %s "
+                "— log-only, not enforced",
+                i, e.section_target, hits,
+            )
 
 
 # ── Deterministic fallback: phantom-section salvage ──────────────────────────
