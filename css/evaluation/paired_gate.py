@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from math import comb
 from typing import TYPE_CHECKING
@@ -260,21 +261,29 @@ def run_paired_gate(
                     "val_baseline predictions (no rollouts)", seeded,
                 )
             missing = [iid for iid in item_by_id if iid not in ledger]
+    # ── Stage 0b + Stage 1: bootstrap (incumbent, missing items) and screen
+    # (candidate, all items) are independent rollout batches — run them
+    # CONCURRENTLY. Bootstrap is usually empty after seeding.
     if missing:
         _log.info("paired gate: bootstrapping incumbent ledger for %d item(s)",
                   len(missing))
-        boot = _roll_items(
-            env, inc_text, [item_by_id[i] for i in missing], target_client,
-            screen_k, os.path.join(out_dir, "gate_bootstrap_inc"), cfg,
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_screen = pool.submit(
+            _roll_items, env, cand_text, list(item_by_id.values()),
+            target_client, screen_k,
+            os.path.join(out_dir, "gate_screen_cand"), cfg,
         )
-        for iid, (p, t) in boot.items():
-            ledger[iid] = {"passes": p, "trials": t}
-
-    # ── Stage 1: candidate screen on all val items ────────────────────────
-    cand_screen = _roll_items(
-        env, cand_text, list(item_by_id.values()), target_client,
-        screen_k, os.path.join(out_dir, "gate_screen_cand"), cfg,
-    )
+        fut_boot = None
+        if missing:
+            fut_boot = pool.submit(
+                _roll_items, env, inc_text,
+                [item_by_id[i] for i in missing], target_client, screen_k,
+                os.path.join(out_dir, "gate_bootstrap_inc"), cfg,
+            )
+        cand_screen = fut_screen.result()
+        if fut_boot is not None:
+            for iid, (p, t) in fut_boot.result().items():
+                ledger[iid] = {"passes": p, "trials": t}
     rates = [p / t for (p, t) in cand_screen.values() if t > 0]
     cand_mean = sum(rates) / len(rates) if rates else 0.0
 
@@ -317,14 +326,20 @@ def run_paired_gate(
     while discordant and esc_rounds < max_rounds:
         esc_rounds += 1
         d_items = [item_by_id[i] for i in discordant]
-        esc_cand = _roll_items(
-            env, cand_text, d_items, target_client, esc_k,
-            os.path.join(out_dir, f"gate_esc_cand_r{esc_rounds}"), cfg,
-        )
-        esc_inc = _roll_items(
-            env, inc_text, d_items, target_client, esc_k,
-            os.path.join(out_dir, f"gate_esc_inc_r{esc_rounds}"), cfg,
-        )
+        # The two sides are independent (different skill texts, disjoint
+        # out_dirs) and each is well under the worker budget — roll them
+        # CONCURRENTLY instead of back-to-back (halves escalation wall time).
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_cand = pool.submit(
+                _roll_items, env, cand_text, d_items, target_client, esc_k,
+                os.path.join(out_dir, f"gate_esc_cand_r{esc_rounds}"), cfg,
+            )
+            fut_inc = pool.submit(
+                _roll_items, env, inc_text, d_items, target_client, esc_k,
+                os.path.join(out_dir, f"gate_esc_inc_r{esc_rounds}"), cfg,
+            )
+            esc_cand = fut_cand.result()
+            esc_inc = fut_inc.result()
         for iid, (p, t) in esc_cand.items():
             cand_acc[iid][0] += p
             cand_acc[iid][1] += t
