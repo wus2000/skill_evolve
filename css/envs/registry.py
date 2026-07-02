@@ -24,6 +24,10 @@ _ALIASES = {
     "spreadsheet": "spreadsheetbench",
     "ssb": "spreadsheetbench",
     "bird": "bird",
+    # Scaffold env (css/envs/template) — toy QA task; used for mechanism smoke
+    # tests and as the copy-me starting point for new benchmarks. See
+    # docs/env_integration_guide.md.
+    "template": "template",
 }
 
 
@@ -52,5 +56,8 @@ def build_env(cfg: "CSSConfig", **kwargs) -> "TaskEnv":
     if name == "bird":
         from css.envs.bird.task_interface import BirdEnv
         return BirdEnv(cfg, **kwargs)
+    if name == "template":
+        from css.envs.template.task_interface import TemplateEnv
+        return TemplateEnv(cfg, **kwargs)
     # Unreachable: canonical_env_name already validated the name.
     raise ValueError(f"Unhandled env_name {cfg.env_name!r}")
