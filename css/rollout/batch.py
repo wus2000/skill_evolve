@@ -220,7 +220,15 @@ def batch_rollout(
             fut_meta[uid] = (item, rollout_index)
 
         pending_futs = set(futs)
-        batch_deadline = t0 + task_timeout * 3
+        # Batch safety net: must scale with the number of concurrency WAVES.
+        # The old fixed ``task_timeout * 3`` silently assumed <=3 waves; a large
+        # batch (e.g. ALFWorld cold-start: 3000 units / 256 workers = 12 waves
+        # x ~8 min) is GUARANTEED to hit it, mass-failing every pending unit
+        # ("batch-deadline") while their threads keep running as zombies —
+        # measured live 2026-07-03. Keep the net (hang protection), size it to
+        # the batch: one task_timeout per wave plus one of slack, floor 3.
+        waves = -(-total // max(1, max_workers))
+        batch_deadline = t0 + task_timeout * max(3, waves + 1)
         while pending_futs:
             done, _ = wait(pending_futs, timeout=5, return_when=FIRST_COMPLETED)
             now = time.time()
