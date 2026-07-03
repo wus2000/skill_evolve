@@ -85,6 +85,11 @@ def main() -> None:
         minibatch_size=16,     # trajectories per reflect minibatch
         reflect_mode="plan_a",
         merger_granularity="section",  # ABLATION ARM: one edit per section
+        # Budget-bounded L0 (V3.4) — same values as the point arm so the
+        # granularity comparison stays controlled; see run_experiment_bird_server.py.
+        min_l0_epochs=0,       # no full-epoch floor before saturation checks
+        max_l0_steps=20,       # hard per-round L0 step budget
+        l0_stall_steps=8,      # saturate after 8 steps without a new best
 
         # L0 val gate: two-stage item-paired sign test.
         # Bird's val set is large (1100) — K=1 screen already yields enough

@@ -113,8 +113,8 @@ class TreeNode:
     def is_root(self) -> bool:
         return self.branch_type == "ROOT" or self.parent_id is None
 
-    def is_saturated(self, n_threshold: int) -> bool:
-        return self.step_buffer.is_saturated(n_threshold)
+    def is_saturated(self, n_threshold: int, stall_threshold: int = 0) -> bool:
+        return self.step_buffer.is_saturated(n_threshold, stall_threshold=stall_threshold)
 
     def accept_slope(self, window: int) -> float:
         return self.step_buffer.accept_slope(window)

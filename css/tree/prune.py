@@ -86,7 +86,7 @@ def should_prune(
     """
     if node.n_steps < cfg.min_steps:
         return (False, f"n_steps {node.n_steps} < min_steps {cfg.min_steps}")
-    if not node.is_saturated(cfg.N):
+    if not node.is_saturated(cfg.N, stall_threshold=getattr(cfg, "l0_stall_steps", 0)):
         return (False, "node not saturated")
     if best_sibling is None:
         return (False, "no sibling to compare")

@@ -221,15 +221,36 @@ class StepBuffer:
             count += 1
         return count
 
-    def is_saturated(self, n_threshold: int) -> bool:
-        """Saturated when the last ``n_threshold`` steps were all rejects.
+    def steps_since_new_best(self) -> int:
+        """Number of tail entries since the last ``accept_new_best`` step.
+
+        An ``epoch_reset`` sentinel also stops the count: it marks a deliberate
+        "give exploitation another chance" boundary, so stall detection starts
+        fresh after it, mirroring how the sentinel resets the reject streak.
+        """
+        count = 0
+        for e in reversed(self.entries):
+            if e.action in ("accept_new_best", "epoch_reset"):
+                break
+            count += 1
+        return count
+
+    def is_saturated(self, n_threshold: int, stall_threshold: int = 0) -> bool:
+        """Saturated when the last ``n_threshold`` steps were all rejects, OR —
+        when ``stall_threshold`` > 0 — when ``stall_threshold`` consecutive
+        steps have passed without an ``accept_new_best``.
+
+        The stall condition exists because a noise-limited acceptance gate can
+        keep accepting ~50% of candidates indefinitely (measured on BIRD: 9/17
+        accepts with per-step p-values 0.07-0.99), so a consecutive-reject
+        streak alone never fires even after best-score progress has stopped.
 
         ``n_threshold < 1`` is meaningless (would report an empty buffer as
-        saturated); treated as never-saturated.
+        saturated); treated as never-saturated for the reject condition.
         """
-        if n_threshold < 1:
-            return False
-        return self.consecutive_rejects() >= n_threshold
+        if n_threshold >= 1 and self.consecutive_rejects() >= n_threshold:
+            return True
+        return stall_threshold > 0 and self.steps_since_new_best() >= stall_threshold
 
     def reset_saturation(self) -> None:
         """Break the consecutive-reject streak so exploitation can resume.

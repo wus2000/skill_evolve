@@ -81,6 +81,13 @@ def main() -> None:
         minibatch_size=16,     # trajectories per reflect minibatch
         reflect_mode="plan_a",
         merger_granularity="point",   # ablation knob: "point" | "section"
+        # Budget-bounded L0 (V3.4): the paired gate accepts ~50% under noise, so
+        # the consecutive-reject saturation never fires; the stall detector (no
+        # accept_new_best for N steps) is the effective terminator, letting the
+        # round proceed to the L1 PROPOSAL cycle instead of grinding L0 forever.
+        min_l0_epochs=0,       # no full-epoch floor before saturation checks
+        max_l0_steps=20,       # hard per-round L0 step budget
+        l0_stall_steps=8,      # saturate after 8 steps without a new best
 
         # L0 val gate: two-stage item-paired sign test.
         # Bird's val set is large (1100) — K=1 screen already yields enough

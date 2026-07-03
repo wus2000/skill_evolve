@@ -50,8 +50,10 @@ class CSSConfig:
 
     # ── L0 EXPLOITATION ──────────────────────────────────────────────────
     minibatch_size: int = 8             # trajectories per L0 minibatch
-    min_l0_epochs: int = 1             # full train-set passes before saturation check activates
+    min_l0_epochs: int = 1             # full train-set passes before saturation check activates (0 = no epoch floor)
     max_l0_epochs: int = 100           # hard cap on train-set passes (effectively unlimited)
+    max_l0_steps: int = 0              # absolute per-round L0 step budget (0 = epoch caps only)
+    l0_stall_steps: int = 8            # saturation: consecutive steps without accept_new_best (0 = disabled)
     batch_size: int = 40                # tasks per batch in batch-step architecture
     num_generators: int = 3             # deprecated (plan_a v1 N-generator stage); unused by per-minibatch plan_a
     l0_edit_budget: int = 3             # max edits each minibatch proposer may emit (L)
@@ -197,6 +199,14 @@ class CSSConfig:
             problems.append("gate_escalation_k must be >= 1")
         if self.gate_max_escalation_rounds < 1:
             problems.append("gate_max_escalation_rounds must be >= 1")
+        if self.min_l0_epochs < 0:
+            problems.append("min_l0_epochs must be >= 0")
+        if self.max_l0_epochs < 1:
+            problems.append("max_l0_epochs must be >= 1")
+        if self.max_l0_steps < 0:
+            problems.append("max_l0_steps must be >= 0")
+        if self.l0_stall_steps < 0:
+            problems.append("l0_stall_steps must be >= 0")
         if self.verify_floor_divisor < 1:
             problems.append("verify_floor_divisor must be >= 1")
         if self.verify_min_net_flips < 0:

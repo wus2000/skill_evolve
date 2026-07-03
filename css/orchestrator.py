@@ -424,12 +424,12 @@ def _run_node_epoch(
     )
     _log.info("Exploitation done — round=%d node=%s steps=%d->%d best=%.3f saturated=%s rules=%d chars",
               round_index, node.node_id, l0_steps_before, node.n_steps,
-              node.best_score, node.is_saturated(cfg.N), len(node.rules or ""))
+              node.best_score, node.is_saturated(cfg.N, stall_threshold=getattr(cfg, "l0_stall_steps", 0)), len(node.rules or ""))
 
     log_event("exploitation_done", round_index=round_index, node_id=node.node_id,
               steps_before=l0_steps_before, steps_after=node.n_steps,
               new_steps=node.n_steps - l0_steps_before,
-              best_score=node.best_score, saturated=node.is_saturated(cfg.N),
+              best_score=node.best_score, saturated=node.is_saturated(cfg.N, stall_threshold=getattr(cfg, "l0_stall_steps", 0)),
               consecutive_rejects=node.step_buffer.consecutive_rejects(),
               rules_len=len(node.rules or ""))
 
@@ -483,7 +483,7 @@ def _run_node_epoch(
               n_pass=n_pass, n_groups=len(train_groups))
 
     # (3) Layer 1-3 analysis on post-exploitation trajectories.
-    l0_saturated = node.is_saturated(cfg.N)
+    l0_saturated = node.is_saturated(cfg.N, stall_threshold=getattr(cfg, "l0_stall_steps", 0))
     analysis = run_analysis_epoch(
         optimizer_client,
         node,
@@ -698,7 +698,7 @@ def _branch_pass(
 
         log_event("branch_decision", round_index=round_index, node_id=node_id,
                   decision=decision, n_l1_signals=len(l1_signals),
-                  saturated=node.is_saturated(cfg.N))
+                  saturated=node.is_saturated(cfg.N, stall_threshold=getattr(cfg, "l0_stall_steps", 0)))
 
         if decision == "EXPLOITATION":
             labels.append("EXPLOITATION")

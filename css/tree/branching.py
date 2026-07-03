@@ -45,13 +45,19 @@ def decide_branch(node: "TreeNode", l1_signals: list, *, cfg: "CSSConfig") -> st
       * not L0-saturated -> ``"EXPLOITATION"``
       * saturated        -> ``"PROPOSAL"``
 
+    Saturation is the reject streak OR the best-progress stall
+    (``cfg.l0_stall_steps`` consecutive steps without an ``accept_new_best``);
+    the latter exists because a noise-limited gate keeps accepting ~50% of
+    candidates forever, so the reject streak alone never fires (see
+    ``StepBuffer.is_saturated``).
+
     NOTE: ``l1_signals`` is accepted but NOT used for the branching decision
     itself (v3 decides purely on saturation). The parameter is kept because the
     caller (``_branch_pass``) already has it from the analysis pipeline, and the
     value is still used for logging / artifacts elsewhere. Do NOT remove the
     analysis step that produces it — cold_start and pattern_records depend on it.
     """
-    if not node.is_saturated(cfg.N):
+    if not node.is_saturated(cfg.N, stall_threshold=getattr(cfg, "l0_stall_steps", 0)):
         return "EXPLOITATION"
     return "PROPOSAL"
 
