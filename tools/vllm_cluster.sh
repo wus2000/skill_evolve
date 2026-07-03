@@ -36,8 +36,10 @@ RUN_DIR="${VLLM_CLUSTER_HOME:-$HOME/vllm_cluster}"   # pidfiles + logs
 HEALTH_TIMEOUT=900            # first start loads ~70GB weights; be patient
 STOP_TIMEOUT=60
 # Extra args every replica gets. Tool parser is REQUIRED by the Bird
-# function-calling agent; prefix caching is default-on in vLLM v1.
-EXTRA_ARGS=(--enable-auto-tool-choice --tool-call-parser hermes)
+# function-calling agent. Prefix caching MUST be explicit: the deployed vLLM
+# defaulted it OFF (measured 0.1% hit rate vs 42% on the old deployment),
+# which made 10K-token optimizer prompts fully re-prefill on every call.
+EXTRA_ARGS=(--enable-auto-tool-choice --tool-call-parser hermes --enable-prefix-caching)
 # ────────────────────────────────────────────────────────────────────────────
 
 mkdir -p "$RUN_DIR"
