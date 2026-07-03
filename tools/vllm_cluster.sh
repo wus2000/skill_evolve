@@ -29,8 +29,15 @@ MAX_MODEL_LEN=262144          # 256K context (model config must support it,
 GPU_UTIL=0.93
 MAX_NUM_SEQS=256              # per replica
 MAX_BATCHED_TOKENS=32768      # chunked-prefill budget per engine step
+TENSOR_PARALLEL=2             # TP size per replica
 REPLICA_GPUS=("0,1" "2,3")    # one entry per replica (CUDA_VISIBLE_DEVICES)
 REPLICA_PORTS=(8888 8889)     # must align with REPLICA_GPUS
+# FP8 single-GPU variant (Qwen3.6-35B-A3B-FP8, Marlin W8A16 on Ampere):
+#   TENSOR_PARALLEL=1
+#   REPLICA_GPUS=("0" "1" "2" "3")
+#   REPLICA_PORTS=(8888 8889 8890 8891)
+# Per replica then: ~38GB weights + ~33-36GB KV (~350K tokens) — holds ONE
+# full-256K sequence; add --kv-cache-dtype fp8 to EXTRA_ARGS to double KV.
 VLLM_BIN="${VLLM_BIN:-vllm}"
 RUN_DIR="${VLLM_CLUSTER_HOME:-$HOME/vllm_cluster}"   # pidfiles + logs
 HEALTH_TIMEOUT=900            # first start loads ~70GB weights; be patient
@@ -74,7 +81,7 @@ start_one() {  # start_one <index>
     CUDA_VISIBLE_DEVICES="$gpus" setsid nohup "$VLLM_BIN" serve "$MODEL_PATH" \
         --served-model-name "$SERVED_NAME" \
         --host "$HOST" --port "$port" \
-        --tensor-parallel-size 2 \
+        --tensor-parallel-size "$TENSOR_PARALLEL" \
         --max-model-len "$MAX_MODEL_LEN" \
         --gpu-memory-utilization "$GPU_UTIL" \
         --max-num-seqs "$MAX_NUM_SEQS" \
