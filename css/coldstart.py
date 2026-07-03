@@ -445,6 +445,23 @@ def cold_start(
     strategy_0 = ""
     _signals = _seed_failure_signals(library, analysis.l1_signals, cfg=cfg)
 
+    # Derivation checkpoint. cold_start can be re-entered by --resume while the
+    # initial val measurement is still running (the "coldstart" stage checkpoint
+    # is only written after it). Design + critique are stochastic LLM samples:
+    # re-running them deploys a DIFFERENT strategy on top of the half-filled val
+    # rollout cache, silently mixing two strategies in one measurement. The
+    # persisted strategy_0.md holds the deployed (post-critique) text — reuse it
+    # verbatim and skip regeneration. An existing-but-empty file means the
+    # previous run deployed the deterministic fallback; the fallback branch
+    # below reproduces that too.
+    _deriv_ckpt = _os.path.join(cold_dir, "derivation", "strategy_0.md")
+    _deriv_ckpt_hit = _os.path.exists(_deriv_ckpt)
+    if _deriv_ckpt_hit:
+        with open(_deriv_ckpt, encoding="utf-8") as _f:
+            strategy_0 = _f.read().strip()
+        _cs_log.info("Cold start: loaded strategy derivation from checkpoint "
+                     "(%d chars) — skipping design + critique", len(strategy_0))
+
     # Build the result lookup for representative trajectory rendering.
     _all_results: dict = {}
     for _g in groups:
@@ -496,20 +513,22 @@ def cold_start(
         except (_json.JSONDecodeError, ValueError):
             return None
 
-    try:
-        design_obj = complete_optimizer_json(
-            optimizer_client, _COLDSTART_DESIGN_SYSTEM, design_user,
-            parse=_parse_design, max_tokens=8192, stage="coldstart_design",
-        )
-    except Exception:
-        design_obj = None
+    design_obj = None
+    if not _deriv_ckpt_hit:
+        try:
+            design_obj = complete_optimizer_json(
+                optimizer_client, _COLDSTART_DESIGN_SYSTEM, design_user,
+                parse=_parse_design, max_tokens=8192, stage="coldstart_design",
+            )
+        except Exception:
+            design_obj = None
 
     if isinstance(design_obj, dict):
         strategy_0 = (design_obj.get("strategy_text") or "").strip()
 
     # 3c. Lightweight self-critique (safety + executability check).
     critique_obj = None
-    if strategy_0:
+    if strategy_0 and not _deriv_ckpt_hit:
         from css.trajectory import format_trajectory as _fmt_traj
         succ_trajs = [r for g in groups for r in g.rollouts if r.passed][:3]
         fail_trajs = [r for g in groups for r in g.rollouts if not r.passed][:3]
@@ -547,17 +566,18 @@ def cold_start(
                 if revised:
                     strategy_0 = revised
 
-    # Persist design artifacts.
-    _deriv_dir = _os.path.join(cold_dir, "derivation")
-    _os.makedirs(_deriv_dir, exist_ok=True)
-    with open(_os.path.join(_deriv_dir, "strategy_0.md"), "w", encoding="utf-8") as _f:
-        _f.write(strategy_0 or "")
-    if design_obj:
-        with open(_os.path.join(_deriv_dir, "design.json"), "w", encoding="utf-8") as _f:
-            _json.dump(design_obj, _f, ensure_ascii=False, indent=2)
-    if critique_obj:
-        with open(_os.path.join(_deriv_dir, "critique.json"), "w", encoding="utf-8") as _f:
-            _json.dump(critique_obj, _f, ensure_ascii=False, indent=2)
+    # Persist design artifacts (skip on checkpoint reuse: read-only replay).
+    if not _deriv_ckpt_hit:
+        _deriv_dir = _os.path.join(cold_dir, "derivation")
+        _os.makedirs(_deriv_dir, exist_ok=True)
+        with open(_os.path.join(_deriv_dir, "strategy_0.md"), "w", encoding="utf-8") as _f:
+            _f.write(strategy_0 or "")
+        if design_obj:
+            with open(_os.path.join(_deriv_dir, "design.json"), "w", encoding="utf-8") as _f:
+                _json.dump(design_obj, _f, ensure_ascii=False, indent=2)
+        if critique_obj:
+            with open(_os.path.join(_deriv_dir, "critique.json"), "w", encoding="utf-8") as _f:
+                _json.dump(critique_obj, _f, ensure_ascii=False, indent=2)
 
     if not strategy_0:
         strategy_0 = _fallback_strategy_0()

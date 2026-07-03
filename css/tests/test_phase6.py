@@ -496,6 +496,74 @@ def test_cold_start_seeds_single_root():
     assert res.n_patterns >= 0
 
 
+def test_cold_start_derivation_checkpoint_reuse():
+    """Re-entering cold_start on the same out_dir must NOT resample derivation.
+
+    Regression: --resume during the initial val measurement re-ran cold_start;
+    analysis loaded from its checkpoint but design+critique resampled, deploying
+    a DIFFERENT strategy over the half-filled val rollout cache (observed live:
+    'Proximal Heuristic...' replaced by 'Contextual-Heuristic...'). The second
+    run must reuse the persisted strategy_0.md verbatim.
+    """
+    design_calls = []
+    design_response = {"current": json.dumps(
+        {"paradigm_name": "A", "strategy_text": "## Strategy A\nAlpha body."}
+    )}
+
+    def _router(system: str, user: str) -> str:
+        s = system.lstrip()
+        if s.startswith("You are designing the FIRST"):
+            design_calls.append(1)
+            return design_response["current"]
+        if s.startswith("You are performing a final quality"):
+            return json.dumps({"verdict": "pass"})
+        return _optimizer_router(system, user)
+
+    cfg = CSSConfig(k_rollouts=1, max_api_workers=1, eps_dbscan=0.05, min_samples=2)
+    client = StubLLMClient(optimizer_fn=_router)
+    with tempfile.TemporaryDirectory() as out_dir:
+        res1 = cold_start(_cold_env(), client, client, cfg=cfg, out_dir=out_dir)
+        root1 = res1.tree.get(res1.tree.root_id)
+        assert "Strategy A" in root1.strategy
+        assert len(design_calls) == 1
+        ckpt = os.path.join(out_dir, "coldstart", "derivation", "strategy_0.md")
+        assert os.path.exists(ckpt)
+
+        # Simulate resample divergence: a rerun WOULD now design Strategy B.
+        design_response["current"] = json.dumps(
+            {"paradigm_name": "B", "strategy_text": "## Strategy B\nBeta body."}
+        )
+        res2 = cold_start(_cold_env(), client, client, cfg=cfg, out_dir=out_dir)
+        root2 = res2.tree.get(res2.tree.root_id)
+        assert "Strategy A" in root2.strategy      # checkpoint reused verbatim
+        assert "Strategy B" not in root2.strategy
+        assert len(design_calls) == 1              # design NOT re-invoked
+
+
+def test_cold_start_derivation_checkpoint_empty_uses_fallback():
+    """An existing-but-empty strategy_0.md replays the deterministic fallback."""
+    from css.coldstart import _fallback_strategy_0
+
+    def _router(system: str, user: str) -> str:
+        s = system.lstrip()
+        if s.startswith("You are designing the FIRST") or s.startswith(
+            "You are performing a final quality"
+        ):
+            raise AssertionError("design/critique must not run on checkpoint hit")
+        return _optimizer_router(system, user)
+
+    cfg = CSSConfig(k_rollouts=1, max_api_workers=1, eps_dbscan=0.05, min_samples=2)
+    client = StubLLMClient(optimizer_fn=_router)
+    with tempfile.TemporaryDirectory() as out_dir:
+        deriv = os.path.join(out_dir, "coldstart", "derivation")
+        os.makedirs(deriv)
+        with open(os.path.join(deriv, "strategy_0.md"), "w", encoding="utf-8") as f:
+            f.write("")
+        res = cold_start(_cold_env(), client, client, cfg=cfg, out_dir=out_dir)
+        root = res.tree.get(res.tree.root_id)
+        assert root.strategy.strip() == _fallback_strategy_0().strip()
+
+
 # ── 6. orchestrator.run_round ────────────────────────────────────────────────────
 
 
