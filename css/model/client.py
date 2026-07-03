@@ -23,6 +23,7 @@ not from backend-global state.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import urllib.error
@@ -434,34 +435,62 @@ class OpenAICompatLLMClient:
         # pipeline); bare-array prompts would be rejected under this mode.
         self.optimizer_json_mode = optimizer_json_mode
 
+    # ── Multi-replica sticky routing ────────────────────────────────────────
+    # ``base_url`` may be a comma-separated list of OpenAI-compatible replica
+    # endpoints (e.g. two `vllm serve` replicas). Requests are routed by a
+    # STICKY hash of the conversation head (system + first user message), so
+    # every turn of a multi-turn episode — and every rollout of the same task —
+    # lands on the same replica, preserving prefix-cache locality (session-
+    # affinity routing; the same policy as the vLLM production-stack "session"
+    # router). With a single URL, behavior is byte-identical to before.
+    def _urls(self) -> list[str]:
+        urls = [u.strip() for u in (self.base_url or "").split(",") if u.strip()]
+        out = []
+        for base in urls:
+            out.append(base if base.endswith("/chat/completions")
+                       else f"{base}/chat/completions")
+        return out
+
     def _chat_url(self) -> str:
-        base = self.base_url
-        if base.endswith("/chat/completions"):
-            return base
-        return f"{base}/chat/completions"
+        """First replica's chat URL (back-compat; multi-replica callers use ``_urls``)."""
+        return self._urls()[0]
+
+    @staticmethod
+    def _sticky_index(messages: list[dict], n: int) -> int:
+        """Replica index from the conversation head (stable across turns)."""
+        if n <= 1:
+            return 0
+        head = ""
+        for m in messages[:2]:
+            head += str(m.get("role", "")) + "\x00" + str(m.get("content", "")) + "\x01"
+        digest = hashlib.sha1(head.encode("utf-8", errors="replace")).digest()
+        return int.from_bytes(digest[:4], "big") % n
 
     def _post(
-        self, payload: dict[str, Any], timeout: float | None = None
+        self,
+        payload: dict[str, Any],
+        timeout: float | None = None,
+        url_index: int = 0,
     ) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        req = urllib.request.Request(
-            self._chat_url(),
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        urls = self._urls()
         effective_timeout = timeout or self.timeout_seconds
         last_err: Exception | None = None
         for attempt in range(self.retries):
+            # Sticky replica first; on connection-level failures fail over to
+            # the next replica (cache-cold there, but availability wins).
+            url = urls[(url_index + attempt) % len(urls)]
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
-                body = e.read().decode("utf-8", errors="replace")
+                err_body = e.read().decode("utf-8", errors="replace")
                 last_err = RuntimeError(
-                    f"OpenAI-compat API returned HTTP {e.code}: {body}"
+                    f"OpenAI-compat API returned HTTP {e.code}: {err_body}"
                 )
                 if 400 <= e.code < 500:
                     raise last_err
@@ -488,7 +517,10 @@ class OpenAICompatLLMClient:
         }
         if response_format is not None:
             payload["response_format"] = response_format
-        data = self._post(payload)
+        data = self._post(
+            payload,
+            url_index=self._sticky_index(messages, len(self._urls())),
+        )
         choices = data.get("choices") or []
         if not choices:
             raise RuntimeError(f"OpenAI-compat API returned no choices: {data}")
@@ -542,7 +574,10 @@ class OpenAICompatLLMClient:
             "tools": tools,
             "tool_choice": tool_choice,
         }
-        data = self._post(payload)
+        data = self._post(
+            payload,
+            url_index=self._sticky_index(messages, len(self._urls())),
+        )
         choices = data.get("choices") or []
         if not choices:
             raise RuntimeError(f"OpenAI-compat API returned no choices: {data}")
@@ -588,7 +623,10 @@ class OpenAICompatLLMClient:
             "tools": [tool],
             "tool_choice": {"type": "function", "function": {"name": func_name}},
         }
-        data = self._post(payload)
+        data = self._post(
+            payload,
+            url_index=self._sticky_index(messages, len(self._urls())),
+        )
         choices = data.get("choices") or []
         if not choices:
             raise RuntimeError(f"Tool call returned no choices: {data}")

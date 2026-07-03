@@ -53,7 +53,7 @@ class TestOpenAICompatLLMClient:
         c = self._make_client(enable_thinking=False)
         captured = {}
 
-        def mock_post(payload, timeout=None):
+        def mock_post(payload, timeout=None, **kwargs):
             captured.update(payload)
             return {
                 "choices": [{"message": {"content": "hello"}}],
@@ -76,7 +76,7 @@ class TestOpenAICompatLLMClient:
         c = self._make_client()
         captured = {}
 
-        def mock_post(payload, timeout=None):
+        def mock_post(payload, timeout=None, **kwargs):
             captured.update(payload)
             return {
                 "choices": [{"message": {"content": "multi-turn reply"}}],
@@ -100,7 +100,7 @@ class TestOpenAICompatLLMClient:
         c = self._make_client(temperature=0.9)
         captured = {}
 
-        def mock_post(payload, timeout=None):
+        def mock_post(payload, timeout=None, **kwargs):
             captured.update(payload)
             return {
                 "choices": [{"message": {"content": "opt reply"}}],
@@ -119,7 +119,7 @@ class TestOpenAICompatLLMClient:
         c = self._make_client()
         captured = {}
 
-        def mock_post(payload, timeout=None):
+        def mock_post(payload, timeout=None, **kwargs):
             captured.update(payload)
             return {
                 "choices": [{"message": {"content": "opt-msg reply"}}],
@@ -137,7 +137,7 @@ class TestOpenAICompatLLMClient:
         c = self._make_client(enable_thinking=True)
         captured = {}
 
-        def mock_post(payload, timeout=None):
+        def mock_post(payload, timeout=None, **kwargs):
             captured.update(payload)
             return {
                 "choices": [{"message": {"content": "thinking reply"}}],
@@ -152,7 +152,7 @@ class TestOpenAICompatLLMClient:
         c = self._make_client(max_tokens=100)
         captured = {}
 
-        def mock_post(payload, timeout=None):
+        def mock_post(payload, timeout=None, **kwargs):
             captured.update(payload)
             return {"choices": [{"message": {"content": "x"}}], "usage": {}}
 
@@ -163,7 +163,7 @@ class TestOpenAICompatLLMClient:
     def test_null_content_returns_empty(self):
         c = self._make_client()
 
-        def mock_post(payload, timeout=None):
+        def mock_post(payload, timeout=None, **kwargs):
             return {"choices": [{"message": {"content": None}}], "usage": {}}
 
         c._post = mock_post
@@ -173,7 +173,7 @@ class TestOpenAICompatLLMClient:
     def test_no_choices_raises(self):
         c = self._make_client()
 
-        def mock_post(payload, timeout=None):
+        def mock_post(payload, timeout=None, **kwargs):
             return {"choices": []}
 
         c._post = mock_post
