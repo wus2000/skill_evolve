@@ -24,6 +24,8 @@ _ALIASES = {
     "spreadsheet": "spreadsheetbench",
     "ssb": "spreadsheetbench",
     "bird": "bird",
+    "alfworld": "alfworld",
+    "alfred": "alfworld",
     # Scaffold env (css/envs/template) — toy QA task; used for mechanism smoke
     # tests and as the copy-me starting point for new benchmarks. See
     # docs/env_integration_guide.md.
@@ -56,6 +58,9 @@ def build_env(cfg: "CSSConfig", **kwargs) -> "TaskEnv":
     if name == "bird":
         from css.envs.bird.task_interface import BirdEnv
         return BirdEnv(cfg, **kwargs)
+    if name == "alfworld":
+        from css.envs.alfworld.task_interface import AlfworldEnv
+        return AlfworldEnv(cfg, **kwargs)
     if name == "template":
         from css.envs.template.task_interface import TemplateEnv
         return TemplateEnv(cfg, **kwargs)

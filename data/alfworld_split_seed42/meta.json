@@ -1,0 +1,11 @@
+{
+  "seed": 42,
+  "val_size": 400,
+  "data_root_note": "gamefile paths are relative to $ALFWORLD_DATA",
+  "counts": {
+    "test_seen": 140,
+    "test_unseen": 134,
+    "val": 400,
+    "train": 3153
+  }
+}
