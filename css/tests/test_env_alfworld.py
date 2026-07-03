@@ -38,6 +38,7 @@ def _cfg(**overrides) -> CSSConfig:
 
 # ── Action parsing ─────────────────────────────────────────────────────────
 @pytest.mark.parametrize("reply,expected,ok", [
+    ("<reasoning>x</reasoning><action>go to fridge 1</action>", "go to fridge 1", True),
     ("<think>x</think><action>go to fridge 1</action>", "go to fridge 1", True),
     ("<ACTION>Open Fridge 1</ACTION>", "open fridge 1", True),
     ("<action> 'take bread 1 from countertop 3'. </action>", "take bread 1 from countertop 3", True),
@@ -58,6 +59,8 @@ def test_system_prompt_contains_grammar_and_skill():
     assert "move (object) to (receptacle)" in text
     assert "Search systematically." in text
     assert "<action>" in text
+    # <reasoning>, NOT <think>: the endpoint strips the Qwen reserved token.
+    assert "<reasoning>" in text and "<think>" not in text
     # No admissible-commands leakage in the static prompt.
     assert "admissible" not in text.lower()
 
@@ -131,6 +134,26 @@ def test_worker_protocol_roundtrip(stub_worker):
     assert ev["done"] and ev["won"]
     w.close()
     assert w.proc.poll() is not None
+
+
+_STUB_GOLD_WORKER = textwrap.dedent("""
+    import json, sys
+    assert sys.argv[3] == "--gold", sys.argv
+    print(json.dumps({"event": "gold", "won": True, "steps": [
+        {"action": "go to desk 1", "obs": "You arrive at desk 1."},
+        {"action": "use lamp 1", "obs": "You turn on the lamp 1."},
+    ]}), flush=True)
+""")
+
+
+def test_gold_replay_protocol(tmp_path):
+    from css.envs.alfworld.agent import run_gold_replay
+    path = tmp_path / "stub_gold.py"
+    path.write_text(_STUB_GOLD_WORKER, encoding="utf-8")
+    gold = run_gold_replay("game.tw-pddl", python_exe=sys.executable,
+                           data_root="", worker_script=str(path))
+    assert gold["won"] is True and len(gold["steps"]) == 2
+    assert gold["steps"][1]["action"] == "use lamp 1"
 
 
 def test_worker_fatal_on_bad_script(tmp_path):
@@ -216,6 +239,27 @@ def test_run_one_success_trajectory_and_cache(tmp_path, fake_worker):
     missed = env.load_cached_result(_item(), str(tmp_path), rollout_index=0,
                                     skill_hash=skill_hash("OTHER"))
     assert missed is None
+
+
+def test_run_one_gt_mode_episode_annotation(tmp_path, fake_worker, monkeypatch):
+    import css.envs.alfworld.task_interface as ti_mod
+    monkeypatch.setattr(ti_mod, "run_gold_replay", lambda *a, **k: {
+        "won": True,
+        "steps": [{"action": "go to desk 1", "obs": "You arrive at desk 1."}],
+    })
+    cfg = _cfg()
+    cfg.extra["alfworld_gt_mode"] = "episode"
+    env = AlfworldEnv(cfg, items={"train": [_item()], "val": [], "test": []})
+    client = _ScriptedClient(["<reasoning>u</reasoning><action>use lamp 1</action>"])
+    res = env.run_one(_item(), "", client, str(tmp_path))
+    annotation = res.messages[-1]["content"]
+    assert "Gold episode replay" in annotation
+    assert "go to desk 1 -> You arrive at desk 1." in annotation
+    # Memoized: second rollout must not re-invoke the replay.
+    monkeypatch.setattr(ti_mod, "run_gold_replay",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("re-invoked")))
+    res2 = env.run_one(_item(), "", client, str(tmp_path), rollout_index=1)
+    assert "Gold episode replay" in res2.messages[-1]["content"]
 
 
 def test_run_one_step_limit_failure(tmp_path, fake_worker):

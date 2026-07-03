@@ -121,6 +121,10 @@ def main() -> None:
             "alfworld_max_steps": 50,
             "alfworld_temperature": 0.4,
             "alfworld_max_tokens": 16384,
+            # Eval-annotation GT richness (ablation knob): "episode" attaches
+            # the expert-executed gold trajectory (memoized, ~6s once per game)
+            # on top of the high-level plan; the ablation arm uses "plan".
+            "alfworld_gt_mode": "episode",
         },
     )
     cfg.validate()

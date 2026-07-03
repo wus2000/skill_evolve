@@ -6,7 +6,8 @@ the canonical flat ``[{role, content:str}, ...]`` transcript; the eval
 annotation is appended by ``task_interface.run_one`` (NOT here).
 
 Protocol (design discussion 2026-07-03):
-  * one LLM call per env step: ``<think>...</think><action>...</action>``;
+  * one LLM call per env step: ``<reasoning>...</reasoning><action>...</action>``
+    (NOT ``<think>`` — a Qwen reserved token the endpoint strips from content);
   * the action tag is the only rigid element — first match wins, content is
     conservatively normalized (strip / unquote / first line / lowercase), a
     missing tag falls back to the safe no-op ``look`` and is COUNTED, never
@@ -135,6 +136,67 @@ class AlfredWorker:
         finally:
             if self.proc.poll() is None:
                 self.proc.kill()
+
+
+# ── Gold-episode replay (optimizer-only ground truth; GT firewall intact:
+#    this is never invoked during the agent loop, only at annotation time) ───
+def run_gold_replay(
+    gamefile: str,
+    *,
+    python_exe: str,
+    data_root: str,
+    max_steps: int = 50,
+    timeout: float = 180.0,
+    worker_script: str = "",
+) -> dict:
+    """Execute the built-in expert in a one-shot worker; return the gold event.
+
+    Returns ``{"won": bool, "steps": [{"action", "obs"}, ...]}``. Raises on
+    worker failure/timeout — callers degrade to plan-only annotation.
+    """
+    worker_script = worker_script or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "worker.py")
+    env = dict(os.environ)
+    if data_root:
+        env["ALFWORLD_DATA"] = data_root
+    proc = subprocess.Popen(
+        [python_exe or sys.executable, worker_script, gamefile, str(max_steps), "--gold"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        bufsize=1,
+    )
+    try:
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise TimeoutError("gold replay timed out after %.0fs" % timeout)
+            readable, _, _ = select.select([proc.stdout], [], [], min(remaining, 5.0))
+            if not readable:
+                if proc.poll() is not None:
+                    raise RuntimeError("gold replay worker exited (code %s)" % proc.returncode)
+                continue
+            line = proc.stdout.readline()
+            if not line:
+                raise RuntimeError("gold replay worker closed stdout (code %s)" % proc.poll())
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event") == "gold":
+                return {"won": bool(event.get("won")), "steps": list(event.get("steps", []))}
+            if event.get("event") == "fatal":
+                raise RuntimeError("gold replay fatal: %s" % event.get("error", ""))
+    finally:
+        if proc.poll() is None:
+            proc.kill()
 
 
 # ── Action parsing (deterministic, conservative) ───────────────────────────

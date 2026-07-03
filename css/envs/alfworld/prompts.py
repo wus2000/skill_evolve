@@ -12,10 +12,15 @@ Protocol decisions (2026-07-03 design discussion):
     learnable surface the skill document is supposed to fill. A live A/B on
     qwen3.6-35b showed the list is not even beneficial (menu-picking replaced
     planning and lost the episode).
-  * Output protocol: exactly two tags, ``<think>`` and ``<action>``. Rigidity
-    lives only in ``<action>`` (parsed, fallback ``look`` on failure);
-    ``<think>`` is requested but tolerated when missing. No plan/checklist
+  * Output protocol: exactly two tags, ``<reasoning>`` and ``<action>``.
+    Rigidity lives only in ``<action>`` (parsed, fallback ``look`` on failure);
+    ``<reasoning>`` is requested but tolerated when missing. No plan/checklist
     tags — cognitive structure belongs to the L1 strategy, not the pipeline.
+    The tag is deliberately NOT ``<think>``: that is a Qwen reserved thinking
+    token — measured on the production endpoint (enable_thinking=false), a
+    literal ``<think>...</think>`` block is stripped from ``content`` entirely
+    (1/2645 survival), silently deleting the reasoning from trajectories.
+    ``<reasoning>`` survives verbatim (probe-verified 2026-07-03).
 """
 from __future__ import annotations
 
@@ -47,7 +52,7 @@ Use exact entity names with their numbers as observed (e.g. 'bread 1', \
 'countertop 2'). An invalid command returns 'Nothing happens.'.
 
 Respond with exactly:
-<think>brief reasoning</think>
+<reasoning>brief reasoning</reasoning>
 <action>one command</action>
 
 {skill_block}"""
@@ -71,7 +76,7 @@ def build_system_prompt(skill_text: str) -> str:
 ACTION_SPACE_DESCRIPTION = """\
 Interaction pattern: multi-turn text game (ReAct). Each turn the agent receives
 the environment observation as a user message and must reply with
-<think>reasoning</think><action>command</action>. Exactly one command per turn;
+<reasoning>...</reasoning><action>command</action>. Exactly one command per turn;
 a missing/unparseable action tag is executed as 'look'. The episode ends when
 the task goal is satisfied (success) or after the step limit (failure); there
 is no partial credit and no terminal 'answer' action.

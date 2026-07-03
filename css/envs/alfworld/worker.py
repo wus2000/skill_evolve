@@ -21,6 +21,15 @@ PROTOCOL (JSON lines):
        "admissible": [str, ...]}
       {"event": "fatal", "error": str}
 
+GOLD-REPLAY MODE (``--gold`` as the third argv): no stdin interaction — the
+worker itself follows the built-in handcoded expert (AlfredExpert) to the end
+and emits a single event, then exits:
+      {"event": "gold", "won": bool,
+       "steps": [{"action": str, "obs": str}, ...]}
+This produces the ground-truth EPISODE trajectory (executable commands + the
+observations they yield) used by the env's optimizer-only eval annotation in
+``alfworld_gt_mode="episode"`` (vs the high-level plan string in mode "plan").
+
   All other child output is silenced at the FD level: the engine (and the
   Fast Downward grounder it shells out to) prints noise to fd1/fd2, which
   would corrupt a line protocol. We dup the real stdout for the protocol,
@@ -53,11 +62,44 @@ def _emit(proto, payload: dict) -> None:
     proto.flush()
 
 
+def _gold_replay(proto, gamefile: str, max_steps: int) -> int:
+    """Follow the handcoded expert to the end; emit one ``gold`` event."""
+    import textworld
+    import textworld.gym
+    from alfworld.agents.environment.alfred_tw_env import (
+        AlfredDemangler, AlfredExpert, AlfredExpertType)
+
+    request = textworld.EnvInfos(
+        won=True, admissible_commands=True, extras=["expert_plan"])
+    env_id = textworld.gym.register_game(
+        gamefile, request, max_episode_steps=max_steps,
+        wrappers=[AlfredDemangler(),
+                  AlfredExpert(expert_type=AlfredExpertType.HANDCODED)])
+    env = textworld.gym.make(env_id)
+    _obs, infos = env.reset()
+    steps = []
+    won = False
+    for _ in range(max_steps):
+        plan = infos.get("extra.expert_plan") or []
+        if not plan:
+            break
+        action = str(plan[0])
+        obs, _score, done, infos = env.step(action)
+        steps.append({"action": action, "obs": obs})
+        if done:
+            won = bool(infos.get("won", False))
+            break
+    _emit(proto, {"event": "gold", "won": won, "steps": steps})
+    return 0
+
+
 def main() -> int:
     proto = _protocol_channel()
     try:
         gamefile = sys.argv[1]
         max_steps = int(sys.argv[2]) if len(sys.argv) > 2 else 50
+        if len(sys.argv) > 3 and sys.argv[3] == "--gold":
+            return _gold_replay(proto, gamefile, max_steps)
 
         import textworld
         import textworld.gym

@@ -15,6 +15,16 @@ Env-specific knobs (``cfg.extra``, all optional):
   alfworld_max_steps      episode step cap (default 50, community standard)
   alfworld_temperature    agent sampling temperature (default 0.4)
   alfworld_max_tokens     per-call completion cap (default 16384)
+  alfworld_gt_mode        eval-annotation ground-truth richness — the ablation
+                          knob for WHAT the optimizer sees (the mechanism only
+                          defines the annotation slot; content is env policy):
+                            "plan"    — high-level gold plan string from
+                                        traj_data.json (cheap, no env calls)
+                            "episode" — additionally REPLAY the built-in expert
+                                        once per game (memoized) and attach the
+                                        executed gold trajectory
+                                        (action -> observation per step).
+                          Default "plan"; degrade to "plan" on replay failure.
 
 Concurrency: each ``run_one`` isolates its episode in a worker subprocess
 (css/envs/alfworld/worker.py) — the engine is not thread-safe. The css
@@ -27,8 +37,10 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
+import threading
+
 from css.envs import common
-from css.envs.alfworld.agent import run_alfworld_agent
+from css.envs.alfworld.agent import run_alfworld_agent, run_gold_replay
 from css.envs.alfworld.prompts import ACTION_SPACE_DESCRIPTION
 from css.trajectory import eval_annotation_message
 
@@ -61,6 +73,12 @@ class AlfworldEnv:
         self.max_steps = int(extra.get("alfworld_max_steps", 50))
         self.temperature = float(extra.get("alfworld_temperature", 0.4))
         self.max_tokens = int(extra.get("alfworld_max_tokens", 16384))
+        self.gt_mode = str(extra.get("alfworld_gt_mode", "plan"))
+        # Per-game gold-replay memo (deterministic env + deterministic expert
+        # => one replay per game per process; K rollouts and later steps reuse
+        # it). Value: the annotation string, or "" for a failed replay.
+        self._gold_memo: dict = {}
+        self._gold_lock = threading.Lock()
 
     # ── Split accessors ────────────────────────────────────────────────────
     def _load_split_file(self, dirname: str) -> list[dict]:
@@ -140,7 +158,7 @@ class AlfworldEnv:
                 json.dumps(result["final_admissible"])
         conversation.append(eval_annotation_message(
             outcome="won=%s (%s)" % (won, "pass" if won else result["fail_reason"]),
-            ground_truth=self._gold_plan(item),
+            ground_truth=self._gold_reference(item),
             detail=detail,
         ))
 
@@ -157,6 +175,42 @@ class AlfworldEnv:
             result, pred_dir,
             rollout_index=rollout_index, epoch=epoch, node_id=node_id,
         )
+
+    def _gold_reference(self, item: dict) -> str:
+        """Compose the ground-truth reference per ``alfworld_gt_mode``.
+
+        Mode "plan": the high-level plan string only. Mode "episode": plan +
+        the expert-executed gold trajectory (memoized once per game; replay
+        failure degrades to plan-only — annotation is best-effort, never a
+        rollout failure source). This composition is deliberately env policy:
+        the mechanism defines only the annotation slot, not its content.
+        """
+        reference = self._gold_plan(item)
+        if self.gt_mode != "episode":
+            return reference
+        gamefile = str(item.get("gamefile", ""))
+        with self._gold_lock:
+            cached = self._gold_memo.get(gamefile)
+        if cached is None:
+            try:
+                gold = run_gold_replay(
+                    os.path.join(self.data_root, gamefile),
+                    python_exe=self.python_exe,
+                    data_root=self.data_root,
+                    max_steps=self.max_steps,
+                )
+                lines = ["%2d. %s -> %s" % (i, s.get("action", ""),
+                                            str(s.get("obs", "")).replace("\n", " "))
+                         for i, s in enumerate(gold.get("steps", []), 1)]
+                cached = "Gold episode replay (expert-executed, won=%s):\n%s" % (
+                    gold.get("won"), "\n".join(lines))
+            except Exception:  # noqa: BLE001 - degrade to plan-only
+                cached = ""
+            with self._gold_lock:
+                self._gold_memo[gamefile] = cached
+        if cached:
+            reference = (reference + "\n\n" + cached) if reference else cached
+        return reference
 
     def _gold_plan(self, item: dict) -> str:
         """High-level gold plan from traj_data.json (optimizer-only reference).
