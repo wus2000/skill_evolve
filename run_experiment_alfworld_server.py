@@ -94,11 +94,12 @@ def main() -> None:
         gate_screen_k=1,
         gate_escalation_k=3,
 
-        # Dataset-size subsets (0 = use all). Episodes cost ~15-40 LLM calls,
-        # ~3x a Bird task — subset sizes are scaled down accordingly.
-        coldstart_train_size=400,    # cold-start bare rollout
+        # Dataset-size subsets (0 = use all). Values agreed 2026-07-03:
+        # derivation failure-diversity and L1 evidence richness are prioritized
+        # over rollout cost at this stage.
+        coldstart_train_size=1000,   # cold-start bare rollout (one-time, ~30-45 min)
         exploitation_val_size=0,     # full val carve for the gate (400)
-        analysis_train_size=600,     # difficulty-weighted analysis rollout
+        analysis_train_size=1100,    # difficulty-weighted analysis rollout (per round, K=3)
 
         # L1 strategy cycle (v3)
         l1_diagnostic_tasks=64,
