@@ -38,7 +38,6 @@ from css.config import CSSConfig
 from css.envs.registry import build_env
 from css.model.client import build_clients
 from css.orchestrator import run_css
-from css.model.endpoints import resolve_base_url
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 
@@ -127,9 +126,13 @@ def main() -> None:
 
         extra={
             "llm_backend": "openai_compat",
-            # DEDICATED endpoint (no comma list): native tool-call parsing ON,
-            # so complete_target_tools gets structured tool_calls directly.
-            "base_url": resolve_base_url("http://127.0.0.1:8888/v1"),
+            # DEDICATED endpoint — a PLAIN string, deliberately NOT
+            # resolve_base_url(): the fleet registry (config/llm_endpoints.txt)
+            # overrides any launcher default, which re-routed the first launch
+            # onto the shared old pair (caught 2026-07-05). This arm is pinned
+            # to the new server-local endpoint (native tool-call parsing ON),
+            # shared only with the SpreadsheetBench arm.
+            "base_url": "http://127.0.0.1:8888/v1",
             "api_key": "token-abc123",
             "max_tokens": 16384,        # optimizer completion cap
             "temperature": 0.7,          # optimizer temperature
