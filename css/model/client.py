@@ -431,8 +431,9 @@ class OpenAICompatLLMClient:
         self.enable_thinking = enable_thinking
         self.retries = retries
         # Locality/balance trade-off for multi-replica routing (routing.py):
-        # 1.0 = strict fair share, +inf = pure sticky. 1.25 caps in-flight
-        # skew at ~56/44 on two replicas while keeping most sessions pinned.
+        # 1.0 = strict fair share, +inf = pure sticky. 1.25 caps any replica
+        # at 62.5% of total in-flight on two replicas (load_factor/N) while
+        # keeping most sessions pinned.
         self.route_load_factor = route_load_factor
         self.route_cooldown_s = route_cooldown_s
         # When True, optimizer (NOT target) calls request a structured JSON

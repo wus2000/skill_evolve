@@ -29,8 +29,9 @@ production LLM routers and Envoy's ring-hash + least-request hybrids):
     caller's retry loop owns the final failure).
 
 Locality/balance trade-off knob: ``load_factor`` (1.0 = strict least-loaded
-fair share, +inf = pure sticky). Default 1.25 caps the worst in-flight skew
-at ~56/44 on two replicas while leaving most sessions pinned.
+fair share, +inf = pure sticky). Default 1.25 caps any replica
+at load_factor/N of total in-flight (62.5% on two replicas) while leaving
+most sessions pinned.
 
 Future extension (documented, not built): heterogeneous replica weights via
 weighted rendezvous (score^(1/w)); plug in where the HRW score is computed.
