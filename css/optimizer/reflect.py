@@ -91,17 +91,22 @@ def _render_rejected_edits(edits: list["Edit"]) -> str:
         if key in seen:
             continue
         seen.add(key)
-        target = (e.target or "").strip().replace("\n", " ")
+        locator = (e.subject or e.target or "").strip().replace("\n", " ")
+        anchor = (e.anchor or "").strip().replace("\n", " ")
         content = (e.content or "").strip().replace("\n", " ")
-        if len(target) > 120:
-            target = target[:120] + "..."
+        if len(locator) > 120:
+            locator = locator[:120] + "..."
+        if len(anchor) > 120:
+            anchor = anchor[:120] + "..."
         if len(content) > 200:
             content = content[:200] + "..."
         piece = f"- op={e.op}"
-        if target:
-            piece += f" | target={target!r}"
+        if locator:
+            piece += f" | subject={locator!r}"
+        if anchor:
+            piece += f" | anchor={anchor!r}"
         if content:
-            piece += f" | content={content!r}"
+            piece += f" | body={content!r}"
         lines.append(piece)
     return "\n".join(lines)
 
@@ -110,7 +115,8 @@ def _edit_norm_key(e: "Edit") -> str:
     return "".join(
         (
             (e.op or "").strip().lower(),
-            (e.target or "").strip(),
+            (e.subject or e.target or "").strip(),
+            (e.anchor or "").strip(),
             (e.content or "").strip(),
         )
     )
@@ -186,22 +192,34 @@ def _coerce_edit_list(obj) -> list[dict] | None:
             if isinstance(inner, list):
                 return [e for e in inner if isinstance(e, dict)]
         # A single edit object emitted bare.
-        if obj.get("op") in EDIT_OPS:
+        if obj.get("op") in EDIT_OPS or obj.get("kind") in EDIT_OPS:
             return [obj]
     return None
 
 
 def _edit_from_dict(d: dict, source_type: str) -> "Edit | None":
-    """Build a validated :class:`Edit` from an analyst dict, tagging provenance."""
-    op = str(d.get("op", "")).strip().lower()
+    """Build a validated :class:`Edit` from an analyst dict, tagging provenance.
+
+    Accepts the v2 vocabulary (op + subject/anchor/body) and the legacy one
+    (op + target/content). Degradations preserve content: a refinement op
+    without any locator but WITH content demotes to add_point (the apply
+    stage appends within/creates the section); only a locator-less,
+    content-less edit is junk.
+    """
+    from css.data.edit import LEGACY_OP_TO_KIND
+
+    op = str(d.get("op", "") or d.get("kind", "")).strip().lower()
     if op not in EDIT_OPS:
         return None
+    op = LEGACY_OP_TO_KIND.get(op, op)
     edit = Edit(
         op=op,  # type: ignore[arg-type]
-        content=str(d.get("content", "") or ""),
+        content=str(d.get("body", "") or d.get("content", "") or ""),
         target=str(d.get("target", "") or ""),
         source_type=source_type if source_type in ("failure", "success", "contrastive", "synthesized") else "failure",
         reason=str(d.get("reason", "") or d.get("rationale", "") or ""),
+        subject=str(d.get("subject", "") or ""),
+        anchor=str(d.get("anchor", "") or ""),
     )
     # Parse source_tasks provenance from the LLM output.
     source_tasks = d.get("source_tasks", [])
@@ -209,8 +227,15 @@ def _edit_from_dict(d: dict, source_type: str) -> "Edit | None":
         source_tasks = []
     edit.source_tasks = [str(t) for t in source_tasks if t]
 
-    # An edit that needs an anchor but has none, and is not an append, is junk.
-    if edit.op in ("insert_after", "replace", "delete") and not edit.target:
+    point_ops = ("add_point", "edit_point", "remove_point")
+    has_locator = bool(edit.subject or edit.anchor or edit.target)
+    if edit.op in point_ops and not has_locator:
+        if edit.content.strip():
+            edit.op = "add_point"  # content survives; apply appends it
+        else:
+            return None  # nothing to locate AND nothing to say
+    if edit.op in ("remove_point", "remove_section") \
+            and not has_locator and not edit.content.strip():
         return None
     return edit
 
@@ -291,34 +316,37 @@ approach — specific techniques, formats, edge cases; never restate or contradi
 
 ## Edit operations — two tiers
 Structural (establish or restructure a theme):
-  - add_section     — a new `### Theme` section (the theme is not present yet).
-  - rewrite_section — rewrite one existing section in place, keeping its heading
+  - add_section     — a new section (the theme is not present yet).
+  - rewrite_section — replace one existing section's content, keeping its name
                       (the section is substantially wrong or disorganized).
-  - delete_section  — remove an obsolete or harmful section.
+  - remove_section  — remove an obsolete or harmful section.
 Refinement (a small change inside an existing section):
-  - insert_after    — add a point after a given spot.
-  - replace         — fix a phrase or rule.
-  - delete          — remove a line.
-  - append          — add at the end (last resort, when no section fits).
+  - add_point       — add a rule inside an existing section.
+  - edit_point      — fix a phrase or rule inside an existing section.
+  - remove_point    — remove a line from an existing section.
 Use a structural op to scaffold or restructure a theme; once a relevant section
 exists, refine inside it with a refinement op.
+
+## Edit fields — identity vs position
+- `subject` — WHICH section this edit defines or modifies. An IDENTITY, never
+  a position. For add_section, invent a descriptive name for the NEW section
+  from the edit's own theme (never reuse another section's name). For every
+  other op, copy an existing section name from the section index (no `###`
+  marker, no numeric prefixes: "Input Parsing", not "2. Input Parsing").
+- `anchor` — refinement ops only: a SEMANTIC pointer to the spot inside the
+  subject section (describe or approximately quote it; resolved by meaning).
+- `body` — the content (for add_*/edit_* ops). NEVER include a markdown
+  heading line in the body; the section heading is rendered from `subject`.
 
 ## Rules for every edit
 - ONE edit = ONE theme. Never bundle multiple themes.
 - Gap-fill: add only what is missing, fix only what is wrong. Never restate
   guidance already in `rules.md`; if a section already covers the theme, improve
   it — do not add a duplicate.
-- `target` is a SEMANTIC pointer for the apply tool: give the section heading, or
-  describe and approximately quote the spot. It is resolved by meaning, so be
-  clear — you need not copy exact text. (Omit `target` for add_section / append.)
 - Generalizable tactics only; never hardcode task-specific values (literal
   values, identifiers, or paths specific to a single task).
 - Direct and actionable: address the agent ("When you …, do …"), mechanically
   followable — not commentary.
-- Section headings MUST be descriptive names WITHOUT numeric prefixes.
-  Write "### Input Parsing", NOT "### 2. Input Parsing". strategy.md may use
-  numbered sub-headings internally — do NOT copy those numbers into rules.md
-  headings or edit targets.
 
 ## Budget
 Produce AT MOST L edits; fewer is better; emit an EMPTY list if `rules.md` already
@@ -341,7 +369,7 @@ rule_missing | rule_wrong | rule_ignored | data_exploration | code_error | other
 ## Output — only this JSON object (no fences, no prose)
 {
   "failure_summary": [{"type": "<one of the above>", "count": <int>, "description": "<one line>"}],
-  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the pattern this fixes + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
+  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the pattern this fixes + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
 }
 "source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
@@ -362,7 +390,7 @@ two or more trajectories; ignore one-off lucky moves.
 ## Output — only this JSON object (no fences, no prose)
 {
   "success_patterns": [{"count": <int>, "description": "<one line>"}],
-  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the behaviour this codifies + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
+  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the behaviour this codifies + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
 }
 "source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
@@ -384,7 +412,7 @@ to success while the failing one(s) went wrong.
 ## Output — only this JSON object (no fences, no prose)
 {
   "divergence": "<one line: what the passing rollout did that the failing did not>",
-  "edits": [{"op": "...", "target": "<omit for add_section/append>", "content": "<markdown, one theme; omit for delete/delete_section>", "rationale": "<the divergence this codifies, citing both paths>", "source_tasks": ["task_id_1", "task_id_2"]}]
+  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the divergence this codifies, citing both paths>", "source_tasks": ["task_id_1", "task_id_2"]}]
 }
 "source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 

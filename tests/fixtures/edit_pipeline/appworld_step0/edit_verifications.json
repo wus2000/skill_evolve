@@ -1,0 +1,584 @@
+[
+  {
+    "section_target": "### Authentication Protocol",
+    "delta_type": "new_section",
+    "content": "### Authentication Protocol\n- **Login Parameter Name**: Always use `username` for login APIs (Gmail, Spotify, Venmo, Simple Note, File System). Do NOT use `email` or `phone_number` unless explicitly documented. For the `phone` app, use the phone number as the `username`.\n- **Explicit Token Passing**: Access tokens are NOT automatically attached to subsequent calls. You MUST pass `access_token=<token>` as an explicit parameter to every API call that requires authentication.\n- **401 Recovery**: If an API call returns a 401 Unauthorized error, verify you are passing the `access_token` correctly. If the parameter is missing in your call, add it. If it is present, re-call the login API to get a new `access_token` and retry.\n- **Credential Retrieval**: Retrieve credentials using `apis.supervisor.show_account_passwords()`. Map the account name (e.g., 'phone', 'file_system') to the corresponding password.",
+    "target_tasks": [
+      "771d8fc_1",
+      "82e2fac_1",
+      "2a163ab_1",
+      "ce359b5_1",
+      "ce359b5_3",
+      "34d9492_2",
+      "76f2c72_3",
+      "287e338_1",
+      "cf6abd2_2",
+      "c901732_2",
+      "82e2fac_2",
+      "07b42fd_3",
+      "7d7fbf6_2",
+      "e7a10f8_2",
+      "07b42fd_2",
+      "ccb4494_1",
+      "ccb4494_1",
+      "3c13f5a_2",
+      "3c13f5a_3",
+      "302c169_2",
+      "76f2c72_1",
+      "3c13f5a_1"
+    ],
+    "passed": false,
+    "task_results": {
+      "82e2fac_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "76f2c72_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "287e338_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "771d8fc_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "cf6abd2_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "2a163ab_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "c901732_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "ccb4494_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.8333333333333334,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "7d7fbf6_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "07b42fd_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "e7a10f8_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "302c169_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "82e2fac_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "07b42fd_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "ce359b5_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.3333333333333333,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "3c13f5a_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "ce359b5_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "3c13f5a_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "3c13f5a_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "76f2c72_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "34d9492_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      }
+    },
+    "rationale": "Multiple trajectories failed due to incorrect login parameters (`email` vs `username`) and omitted `access_token` in subsequent calls. Successful rollouts consistently used `username` and explicitly passed tokens. This section consolidates all authentication-related fixes into one verifiable unit.",
+    "derivation": "Merged raw edits 24, 30, 33, 37, 38, 39, 44, 45, 49. All address login parameter names and token passing. Combined into a single comprehensive section.",
+    "verdict": "null"
+  },
+  {
+    "section_target": "### Pagination Discipline",
+    "delta_type": "new_section",
+    "content": "### Pagination Discipline\n- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.\n- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest').\n- **Stop Condition**: The loop ends when `len(results) < page_limit` or `results` is empty. Never assume a single page contains all data.\n- **Verification**: If the task requires 'all' items, verify completeness by ensuring you have fetched every page. Missing a page leads to incomplete action sets.",
+    "target_tasks": [
+      "771d8fc_2",
+      "771d8fc_3",
+      "287e338_3",
+      "aa8502b_1",
+      "aa8502b_3",
+      "6ea6792_1",
+      "302c169_1",
+      "229360a_1",
+      "6ea6792_2",
+      "6104387_2",
+      "6ea6792_3"
+    ],
+    "passed": true,
+    "task_results": {
+      "287e338_3": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "771d8fc_2": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "771d8fc_3": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "aa8502b_3": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "6ea6792_1": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "aa8502b_1": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "302c169_1": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 0.3333333333333333,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "6ea6792_3": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": false,
+        "cand_solvable": true,
+        "status": "GAINED"
+      },
+      "6ea6792_2": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.0,
+        "inc_solvable": false,
+        "cand_solvable": false,
+        "status": "STILL_UNSOLVED"
+      },
+      "6104387_2": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.0,
+        "inc_solvable": false,
+        "cand_solvable": false,
+        "status": "STILL_UNSOLVED"
+      },
+      "229360a_1": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 0.3333333333333333,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      }
+    },
+    "rationale": "A pervasive failure mode was stopping pagination after the first page, missing critical data. This section codifies the mandatory pagination pattern observed in all successful rollouts.",
+    "derivation": "Merged raw edits 1, 2, 5, 6, 7, 10, 12, 14, 17, 40, 42. All address the core pagination loop and accumulation strategy.",
+    "verdict": "clean_gain"
+  },
+  {
+    "section_target": "### Temporal Context Resolution",
+    "delta_type": "new_section",
+    "content": "### Temporal Context Resolution\n- **Never Hardcode Year/Date**: Tasks often say 'this year', 'last month', or 'recently', but the simulated environment may have a different system date. Never assume the current year matches the calendar year or the prompt generation time.\n- **Infer System Date**: Determine the current year dynamically:\n  1. Check `apis.supervisor.show_profile()` or `apis.supervisor.show_account_passwords()` for timestamps.\n  2. Inspect recent data (e.g., latest transactions, messages, songs) to find the most recent `created_at` or `release_date`. The current date is shortly after this timestamp.\n  3. Check API response metadata (e.g., token expiry times) for clues.\n- **Dynamic Filtering**: Use the dynamically obtained year/date to filter data (e.g., `release_date.startswith(str(current_year))`). Calculate relative thresholds (e.g., 'last N days') based on the inferred current date.\n- **Year and Month**: When filtering by 'this year' and a month, always check BOTH the month AND the year. Files from previous years with the same month belong to 'others' or a different category.",
+    "target_tasks": [
+      "e3d6c94_1",
+      "e3d6c94_2",
+      "d0b1f43_1",
+      "d0b1f43_2",
+      "34d9492_1",
+      "afc0fce_3",
+      "2a163ab_3",
+      "afc0fce_2"
+    ],
+    "passed": true,
+    "task_results": {
+      "d0b1f43_1": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "afc0fce_3": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "287e338_3": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "c901732_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "e3d6c94_1": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "2a163ab_3": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.0,
+        "inc_solvable": false,
+        "cand_solvable": false,
+        "status": "STILL_UNSOLVED"
+      },
+      "d0b1f43_2": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.0,
+        "inc_solvable": false,
+        "cand_solvable": false,
+        "status": "STILL_UNSOLVED"
+      },
+      "afc0fce_2": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.0,
+        "inc_solvable": false,
+        "cand_solvable": false,
+        "status": "STILL_UNSOLVED"
+      },
+      "60d0b5b_1": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": false,
+        "cand_solvable": true,
+        "status": "GAINED"
+      },
+      "e3d6c94_2": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "34d9492_1": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      }
+    },
+    "rationale": "Agents frequently hardcoded '2025' or the prompt's implied year, failing because the environment was set in 2023. This section enforces dynamic date inference from environment signals.",
+    "derivation": "Merged raw edits 13, 16, 19, 26, 34, 36. All address the critical need to infer the system's current date/year from data rather than assumptions.",
+    "verdict": "clean_gain"
+  },
+  {
+    "section_target": "### Entity Resolution and Filtering",
+    "delta_type": "new_section",
+    "content": "### Entity Resolution and Filtering\n- **Substring Search**: When a task refers to an entity by a descriptive name (e.g., 'go-to-sleep alarm', 'favorite song') that may not match the exact label, fetch ALL data (via pagination) and search by substring in the entity's label/name field (case-insensitive).\n- **ID-Based Resolution**: When searching for entities associated with a creator (e.g., 'songs by [Artist Name]'), do NOT use the creator's name as the search query string directly. Instead:\n  1. Resolve the ID first using the specific search API (e.g., `search_artists` with the name).\n  2. Use the resolved ID in subsequent data retrieval APIs (e.g., `search_songs(artist_id=...)`).\n- **Relationship Resolution**: When a task requires identifying entities by a relationship (e.g., 'coworkers', 'friends', 'roommates'), ALWAYS search the `phone` app contacts (`apis.phone.search_contacts`) using the `relationship` parameter. Do NOT use the target app's internal friends list (e.g., Venmo `search_friends`) as the source of truth.\n- **Contextual Filtering**: Filter retrieved data based on specific constraints in the user's prompt (e.g., 'movies by Tarantino', 'emails from John'). Do not return the entire dataset if the request implies a subset.\n- **Compound Sets**: For intersections (e.g., 'songs in album library which I have liked'), fetch IDs from both sources separately into sets, then compute the intersection. Do not assume 'liked albums' implies the songs inside them are the target unless explicitly stated.",
+    "target_tasks": [
+      "302c169_3",
+      "e85d92a_2",
+      "6ea6792_2",
+      "2a163ab_3",
+      "29caf6f_2",
+      "29caf6f_1",
+      "692c77d_3",
+      "27e1026_1",
+      "3c13f5a_2",
+      "3c13f5a_3",
+      "3c13f5a_1"
+    ],
+    "passed": false,
+    "task_results": {
+      "e85d92a_2": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "29caf6f_2": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "29caf6f_1": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 0.3333333333333333,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "3c13f5a_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "302c169_3": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "3c13f5a_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "27e1026_1": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "3c13f5a_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "692c77d_3": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 0.0,
+        "inc_solvable": true,
+        "cand_solvable": false,
+        "status": "LOST"
+      },
+      "6ea6792_2": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.0,
+        "inc_solvable": false,
+        "cand_solvable": false,
+        "status": "STILL_UNSOLVED"
+      },
+      "2a163ab_3": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.0,
+        "inc_solvable": false,
+        "cand_solvable": false,
+        "status": "STILL_UNSOLVED"
+      }
+    },
+    "rationale": "Agents failed to find specific entities due to naive search queries, ignoring relationship data in phone contacts, or failing to filter results. This section consolidates entity resolution and filtering best practices.",
+    "derivation": "Merged raw edits 8, 9, 11, 25, 27, 32, 41, 50. All address how to correctly identify and filter entities based on names, IDs, relationships, and constraints.",
+    "verdict": "clean_loss"
+  },
+  {
+    "section_target": "### API Discovery and Verification",
+    "delta_type": "new_section",
+    "content": "### API Discovery and Verification\n- **Stop Guessing Names**: When an expected API call fails with 'No API named X found' or a 422 error, do NOT try variations (e.g., `play_song`, `play`, `play_music`) sequentially. Immediately call `apis.api_docs.show_api_doc(app_name='...', api_name='...')` for the exact name you suspect or for likely candidates.\n- **Inspect Parameters**: Use the doc output to confirm the correct API name and required parameters. Use the names returned in the `parameters` list for the next attempt.\n- **Implicit Discovery**: The `show_api_descriptions` list may be truncated. If you suspect an API exists but isn't listed (e.g., `review_song`, `update_song_review`), try calling it or checking its doc in a `try` block. For tasks involving 'ratings', 'reviews', or 'scores', always check for `review_*`, `rate_*`, or `update_*` APIs specifically.\n- **Parameter Verification**: When a file-system or other API call fails with an 'Unexpected parameter' exception, do not guess the parameter names. Immediately call `show_api_doc` to retrieve the exact parameter schema.",
+    "target_tasks": [
+      "c901732_1",
+      "692c77d_1",
+      "692c77d_2",
+      "76f2c72_3",
+      "b7a9ee9_2",
+      "e3d6c94_3",
+      "34d9492_3",
+      "b7a9ee9_1",
+      "b7a9ee9_3",
+      "cf6abd2_3"
+    ],
+    "passed": false,
+    "task_results": {
+      "287e338_3": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "c901732_1": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "b7a9ee9_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "b7a9ee9_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "cf6abd2_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "76f2c72_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "b7a9ee9_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "692c77d_1": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 0.3333333333333333,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "692c77d_2": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 0.0,
+        "inc_solvable": true,
+        "cand_solvable": false,
+        "status": "LOST"
+      },
+      "34d9492_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.3333333333333333,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "e3d6c94_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      }
+    },
+    "rationale": "Agents wasted turns guessing API names and parameters after initial failures. Successful rollouts immediately consulted API documentation. This section enforces doc-first verification.",
+    "derivation": "Merged raw edits 18, 22, 29, 35, 37, 44, 45. All address the critical tactic of using `show_api_doc` to resolve name/parameter ambiguities instead of guessing.",
+    "verdict": "clean_loss"
+  }
+]

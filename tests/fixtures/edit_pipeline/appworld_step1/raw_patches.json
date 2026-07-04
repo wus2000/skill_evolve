@@ -1,0 +1,956 @@
+[
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Year-Aware Filtering**: When the task specifies 'this year' combined with a month (e.g., 'February this year'), you MUST check BOTH the year and the month. Files from previous years with the same month belong to a different category (e.g., 'others' or a default bucket). Do not filter by month alone.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "contrastive",
+          "reason": "The failing rollout (rollout_index=0) failed because it categorized files based solely on the month (`month == '03'`), causing files from 2022-03 to be incorrectly placed in 'Budapest' (March 2023) instead of 'Amsterdam'. The passing rollouts correctly identified the current year (2023) and filtered by `year == '2023' AND month == '03'`. This rule prevents the same year-blindness error in future tasks.",
+          "source_tasks": [
+            "34d9492_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Content Filtering and Selection\n- **Resolve Specific Constraints**: When the task requires filtering data by a specific attribute (e.g., 'director', 'genre', 'status'), you MUST extract this constraint from the context (e.g., the user's request or a message) and apply it to the data source. Do not return all items.\n- **Context-Driven Extraction**: If a message asks for 'recommendations from [Name]', identify [Name] as a filter criterion (e.g., director name) and filter the target dataset accordingly.\n- **Exclude Non-Matching Items**: Ensure the final output contains ONLY items that satisfy the extracted constraint. Including items that do not match the constraint (e.g., movies by other directors) is a critical failure.",
+          "source_type": "contrastive",
+          "reason": "The failing rollout ignored the 'Quentin Tarantino' constraint in Laura's message and sent all movies. The passing rollouts correctly identified the director constraint and filtered the note content to only include Tarantino's movies. This rule codifies the need to parse specific filtering constraints from the task context.",
+          "source_tasks": [
+            "29caf6f_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Search Entire Dataset**: When searching for a specific entity (e.g., 'go-to-sleep alarm', 'coworker') within a list, you MUST fetch ALL pages before attempting to identify or filter the target. Stopping after the first page may miss the target if it resides on a later page. Accumulate all items across all pages into a single list before performing any label-based or keyword search.",
+          "target": "### Pagination Discipline\n- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.",
+          "source_type": "contrastive",
+          "reason": "In Task 302c169, the target 'Go to sleep' alarm (ID 122) was on page 2 (index 1). Failing rollouts stopped at page 1 (default limit 5), saw only 'Wake Up' alarms, and incorrectly modified those instead. The passing rollout fetched page 2, found the correct target, and executed the correct actions.",
+          "source_tasks": [
+            "302c169_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "\n### Universal Action Execution\n- **Ignore Existing State for Idempotent Actions**: When the task requires an action like \"like\", \"follow\", or \"add\" that is idempotent, you MUST execute the action for every entity that matches the criteria, regardless of whether it appears to already have that state (e.g., already liked). Do not skip actions based on current status indicators (like `like_count > 0` or `liked: True`) unless explicitly told to only like *unliked* items. The system tracks *new* likes, so re-liking is either a no-op or a duplicate that must be avoided by the logic of *selecting* the set, not by checking the *current* state before acting. Correct approach: Identify the target set -> Execute action on every member of the target set.\n",
+          "target": "### Temporal Context Resolution",
+          "source_type": "contrastive",
+          "reason": "The failing rollout identified the correct transactions but skipped 8219 and 8230 because they were already liked (`like_count: 3`). The passing rollouts liked all 4 transactions. The task said \"Like all...\", implying the set of actions must cover the entire set of matching transactions, not just the unliked ones. The agent failed to distinguish between \"ensure X is liked\" (idempotent) and \"like only if not liked\".",
+          "source_tasks": [
+            "2a163ab_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Contextual Filtering\n- **Resolve Specific Intent**: When the task involves retrieving data based on a request (e.g., 'recommendations for X'), you MUST identify the specific constraints in the request (e.g., the director's name, the specific item type) before filtering the retrieved data.\n- **Cross-Reference Sources**: If the primary data source (e.g., a note, a library) contains multiple items, filter them against the specific constraint found in the communication source (e.g., text message, email). Do not return all items if the request implies a subset.\n- **Verify Constraints**: Explicitly check the retrieved data fields against the constraint. For example, if the request is for 'David Fincher movies', verify the `director` field of each movie matches 'David Fincher' before including it in the response.\n- **Exclude Irrelevant Data**: Ensure the final output contains ONLY the items that match the specific constraint. Including items that do not match the constraint (e.g., movies by other directors) will cause the task to fail.",
+          "source_type": "contrastive",
+          "reason": "The passing rollout correctly identified 'David Fincher' from the text message and filtered the movie list to only include his films. The failing rollouts ignored this specific constraint and returned all movies from the note, leading to a failure because non-Fincher movies were included in the response.",
+          "source_tasks": [
+            "29caf6f_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Strict Year-Month Matching**: When a task specifies \"this year\" combined with a month (e.g., \"March of this year\"), you MUST filter by both the year AND the month. Do not assume all files with that month belong to the target category. Files from previous years with the same month must be categorized as \"others\" or a different group, not the target.",
+          "target": "### Temporal Context Resolution\n- **Year and Month**: When filtering by 'this year' and a month, always check BOTH the month AND the year. Files from previous years with the same month belong to 'others' or a different category.",
+          "source_type": "contrastive",
+          "reason": "The failing rollout (34d9492_2, rollout 0) failed because it grouped all April files (both 2022 and 2023) into 'Santorini' and had zero 'Berlin' files, whereas the passing rollouts correctly identified 2023 as 'this year', sending only 2023-04 files to Santorini and 2022 files to Berlin. This rule enforces strict year+month matching to prevent cross-year contamination.",
+          "source_tasks": [
+            "34d9492_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Status Verification via Privates\n- **Prefer Privates for Status Checks**: Do not rely on list APIs (e.g., `show_liked_songs`, `show_liked_albums`) to determine if a specific item is liked or downloaded, as these lists may be incomplete or limited in scope.\n- **Use Item-Level APIs**: Always call the specific `_privates` API (e.g., `show_song_privates`, `show_album_privates`) for each item in your working set to get the definitive `liked` and `downloaded` status.\n- **Why**: List APIs might return a subset of items (e.g., only the first page, or only items meeting certain criteria). The `_privates` API provides the ground truth for that specific item's state relative to the user.",
+          "source_type": "contrastive",
+          "reason": "The failing rollout used `show_liked_albums` which returned IDs {2, 5, 10, 11, 17}, missing Album 8 which was actually liked. It then incorrectly removed Album 8. The passing rollout used `show_album_privates` for every album in the library, correctly identifying Album 8 as liked. This rule prevents reliance on potentially incomplete list APIs for boolean status checks.",
+          "source_tasks": [
+            "229360a_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Full Fetch for Filtering**: When the task requires finding a specific item based on a condition (e.g., 'last approved request') that is not the first page of results, you MUST fetch ALL pages into a single list before filtering. Do not rely on the API's `status` or `query` filters alone if they might truncate results or if the target item is not on the first page. Client-side filtering on the complete dataset ensures you find the true 'last' or 'most recent' item.",
+          "target": "### Pagination Discipline\n- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.",
+          "source_type": "contrastive",
+          "reason": "The passing rollout fetched all 62 sent payment requests and then filtered for Robert's approved ones, correctly identifying ID 6097 ($74). Failing rollout 1 used `status='approved'` but only got 5 results (page 1), picking ID 3222 ($61) which was not the most recent. Failing rollout 2 fetched all but filtered incorrectly or missed the 'approved' check initially, then used `status='approved'` again and got a different wrong set. The key is ensuring the full dataset is available before applying complex filters like 'last approved'.",
+          "source_tasks": [
+            "60d0b5b_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Playback API Resolution\n- **Truncated Documentation Risk**: `show_api_descriptions` output is often truncated, hiding critical playback APIs (e.g., `play_music`, `play_song`). Do NOT rely on scanning the truncated list to find the API name.\n- **Direct Verification**: If you need to play music but cannot find the API name in the visible description, or if `show_api_doc` returns a 422 for common names like `play_playlist`, try `play_music` directly. The standard API for starting playback is `apis.spotify.play_music(access_token=..., playlist_id=...)`.\n- **Fallback Logic**: If `play_music` fails with 422, check for `play_playlist` or `play_song`. If all fail, check `add_to_queue` followed by verifying if playback starts automatically or if a separate `resume`/`play` command is needed (though `play_music` is the primary method).\n- **Avoid Infinite Loops**: Do not spend excessive turns iterating through pages of playlists or searching for the API name if the task is to simply start playing a known playlist. Once a suitable playlist is identified, attempt to play it immediately.",
+          "source_type": "failure",
+          "reason": "Trajectories 1-3 all failed because the agent could not find the `play_music` API. The API list was truncated, so the agent guessed wrong names (`play_playlist`, `play_song`) and got 422 errors. It then entered an infinite loop trying to find the API or searching for more playlists, hitting the 50-turn cap. The gold solution uses `apis.spotify.play_music`. This rule provides a direct path to the correct API.",
+          "source_tasks": [
+            "b0a8eae_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "failure",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "### Login Parameter Discipline\n- **Read API Docs for Login Params**: Before calling any `login` API, inspect its documentation to determine the exact parameter name for the identifier (e.g., `username` vs `email`) and the expected format (e.g., email address vs phone number vs arbitrary string).\n- **Use Known Identity Data**: Use the identity information provided in the task prompt or retrieved from `show_profile`/`show_account` as the login identifier. Do not guess or brute-force username variations.\n  - Example: If the API doc says `username` is \"Your account email\", pass the email from the prompt.\n  - Example: If the API doc says `username` is \"Your account phone_number\", pass the phone number from the prompt.\n- **Avoid Brute-Forcing**: Never spend multiple turns guessing usernames or passwords. If login fails, re-read the API doc or check `show_profile` for the correct identifier format.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "contrastive",
+          "reason": "The failing rollout wasted 30+ turns guessing Venmo and phone usernames because it did not consult the API documentation to find the correct parameter names (`username` vs `email`) and expected formats (email vs phone number). The passing rollouts immediately read the API docs and used the correct credentials (`paul_mill@gmail.com` for Venmo, `3379617841` for phone), allowing them to proceed to the core task logic.",
+          "source_tasks": [
+            "6ea6792_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Queue and Stream State Interpretation\n- **Interpret 'Played So Far' Correctly**: When a task asks to act on items 'played so far', 'history', or 'already processed' within a queue or stream, it refers to items that have been consumed or are currently being consumed. It does NOT include items still waiting in the queue.\n- **Use `is_current` / `is_playing` Flags**: Inspect the API response for flags like `is_current`, `is_playing`, or position indices. \n  - If `is_current` is true, that item is the current one. \n  - Items with `position < current_position` (or appearing before the current item in the list) are 'played'.\n  - Items with `position > current_position` (or appearing after the current item) are 'upcoming' and should be EXCLUDED from actions targeting 'played so far'.\n- **Stop at Current Item**: When iterating through a list to find 'played' items, include items up to and including the one marked `is_current` or `is_playing`. Stop processing further items in the list as they are not yet played.\n- **Avoid Full-List Assumptions**: Never assume 'all items in the queue' means 'all items in the response list' unless the task explicitly says 'all songs in the queue'. The distinction between 'queue contents' and 'played history' is critical.",
+          "source_type": "contrastive",
+          "reason": "The failing rollout liked all 10 songs in the queue, including 4 upcoming songs (positions 6-9). The passing rollouts correctly identified that 'songs played so far' means only songs up to and including the current one (positions 0-5), based on the `is_current` flag. This is a semantic interpretation error regarding queue state.",
+          "source_tasks": [
+            "ccb4494_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Temporal Context for State-Change Tasks\n- **Resolve Current Day**: For tasks referencing \"today\" or relative time (e.g., \"my workout today\"), you MUST determine the current day of the week. Use `apis.phone.get_current_date_and_time()` to get the exact date. If the phone app is unavailable or fails, infer the day from the most recent timestamps in the environment (e.g., recent messages, logs) or check `apis.supervisor.show_profile()` for clues, but prioritize the phone API.\n- **Filter by Specific Day**: Do NOT assume the task requires covering the maximum possible duration (e.g., the longest workout in the plan). Instead, parse the plan for the specific day identified in the previous step. Calculate the required duration ONLY for that day.\n- **Match Existing Resources**: When looking for a resource (like a playlist) to satisfy a temporal constraint, search existing resources (user's library, contacts, etc.) first. Do NOT create new resources (new playlists, new notes) unless explicitly instructed or if no existing resource meets the criteria. The goal is to *use* what is already there for the specific context.\n- **Avoid Over-Provisioning**: Do not select a resource based on the worst-case scenario (e.g., longest workout) if the specific day requires less. This leads to selecting the wrong resource or creating unnecessary ones, which often fails validation against the expected state.",
+          "source_type": "contrastive",
+          "reason": "The failing rollout failed because it assumed the 55-minute workout (Tuesday/Friday) instead of determining the actual day (Thursday, 45 mins). It then created a new playlist, which violated the implicit constraint of using existing library playlists. The passing rollouts correctly used `get_current_date_and_time` to find the day, filtered the plan to 45 minutes, and selected an existing playlist ('Wanderlust Wonders') that met that specific duration. This rule codifies the temporal resolution and the preference for existing resources over creation.",
+          "source_tasks": [
+            "b0a8eae_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "replace",
+          "content": "- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.\n- **Set Explicit Page Limit**: Always set `page_limit` to the maximum allowed value (e.g., 20) in your initial request to minimize the number of API calls and reduce the risk of missing data due to default limits. Do not rely on the API's default page limit (which may be small, e.g., 5).\n- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest').\n- **Stop Condition**: The loop ends when `len(results) < page_limit` or `results` is empty. Never assume a single page contains all data without verifying the next page is empty.\n- **Verification**: If the task requires 'all' items, verify completeness by ensuring you have fetched every page. Missing a page leads to incomplete action sets.",
+          "target": "### Pagination Discipline - Mandatory Loop",
+          "source_type": "contrastive",
+          "reason": "The failing rollout failed because it did not specify `page_limit=20` on the initial search calls, relying on the default limit of 5. This caused it to retrieve only 5 text messages and 5 voice messages instead of 7 and 13 respectively. The passing rollout explicitly set `page_limit=20`, capturing all items in the first page. The rule needs to enforce setting the page limit explicitly to avoid this truncation.",
+          "source_tasks": [
+            "771d8fc_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Login Parameter Discipline**: When logging into an app, inspect the API documentation for the `login` endpoint to determine the correct username parameter. It is often `username` (not `email`) for most apps. For the `phone` app specifically, the `username` parameter requires the user's `phone_number`, not their email.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "success",
+          "reason": "Trajectories 1, 3, 4, 6, 7, 8, 10, 11, 16 failed due to using `email` instead of `username` or wrong identifiers for phone login.",
+          "source_tasks": [
+            "ce359b5_1",
+            "76f2c72_2",
+            "3c13f5a_1"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Infer 'This Year' from Data**: Do not assume the current calendar year. Determine 'this year' by inspecting the most recent timestamps (e.g., `release_date`, `created_at`) in the fetched data or the supervisor profile. Filter data based on this inferred year.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "success",
+          "reason": "Trajectories 1, 3, 4, 6, 7, 8, 10, 11, 16 failed by using the wrong year (e.g., 2025 instead of 2023) for filtering.",
+          "source_tasks": [
+            "ce359b5_1",
+            "76f2c72_2",
+            "e3d6c94_3"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Mandatory Pagination for All Lists**: When an API returns a list (e.g., `show_recommendations`, `show_playlist_library`, `search_contacts`), you MUST implement a loop to fetch all pages until the result set is smaller than `page_limit` or empty. Do not assume a single page contains all items.",
+          "target": "### Pagination Discipline",
+          "source_type": "success",
+          "reason": "Trajectories 12, 13, 14 (Spotify) and 15, 16 (Venmo/Phone) failed by missing items because they only fetched the first page of recommendations or contacts.",
+          "source_tasks": [
+            "e3d6c94_3",
+            "3c13f5a_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "append",
+          "content": "### Authentication Discipline\n- **Login Parameter**: When logging into any app (e.g., `spotify`, `simple_note`, `file_system`, `venmo`), always use the `username` parameter, NOT `email`. The schema typically defines `username` as the account identifier (often the email address).\n- **Token Propagation**: Most authenticated APIs require an `access_token` parameter. Always extract the token from the login response (e.g., `login_result['access_token']`) and pass it explicitly to every subsequent API call that requires authentication. Do not assume the session persists across separate Python code blocks without passing the token.\n- **Phone App Login**: For the `phone` app, the `username` is the user's phone number (e.g., `8506051563`), not their email.\n\n### Data Retrieval Completeness\n- **Mandatory Pagination**: When fetching lists (notes, songs, transactions, contacts, etc.), you MUST implement a loop to fetch all pages. Start at `page_index=0` and increment until the API returns an empty list or a list with fewer items than `page_limit`.\n- **Accumulate Before Processing**: Collect all items from all pages into a single list or set before filtering or acting on them. Processing page-by-page risks missing items or acting on incomplete data.\n- **Stop Condition**: The loop ends when `len(results) < page_limit` or `results` is empty. Never assume a single page contains all data.\n\n### Identity Resolution\n- **Name-to-Email Mapping**: When a task requires acting on a person by name (e.g., 'coworkers', 'friends'), do not guess their email. Search the `phone` app contacts (`apis.phone.search_contacts`) or the relevant app's user directory (`apis.venmo.search_users`) to find the correct email address.\n- **Cross-Source Context**: If the primary data source doesn't contain identity context (e.g., a bill lists names but not emails), use the phone contact book to resolve names to emails before creating payment requests or sending messages.\n",
+          "source_type": "success",
+          "reason": "Codifies the three most frequent success patterns: correct login parameters (username vs email), explicit token passing, and mandatory pagination. These were the root causes of failures in multiple trajectories (e.g., 401 errors, incomplete data retrieval).",
+          "source_tasks": [
+            "76f2c72_1",
+            "229360a_1",
+            "07b42fd_1",
+            "cf6abd2_3",
+            "22cc237_3",
+            "771d8fc_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Phone App Authentication**: The `phone` app login requires the user's **phone number** as the `username`, not their email address. Always retrieve the phone number from `apis.supervisor.show_profile()` or the task input. Subsequent `phone` API calls often require the `access_token` to be passed explicitly as a parameter, as it may not persist automatically across calls in all environments.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "success",
+          "reason": "Trajectories 13, 14, and 15 all failed initially because they tried to login with email or used `phone_number` as a parameter name instead of `username`. Trajectory 15 also struggled with passing the access token explicitly. This rule codifies the correct authentication pattern for the phone app observed in the successful trajectories (especially 13 and 14 which corrected this early on).",
+          "source_tasks": [
+            "771d8fc_2"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Comprehensive Message Retrieval**: When deleting messages (text or voice) by phone number, you MUST use pagination (`page_index`, `page_limit`) to fetch ALL messages. The default `page_limit` is often small (e.g., 5), and failing to paginate will result in incomplete deletion. Similarly, when listing files or directories, use `recursive=True` or paginate through directory listings to ensure no items are missed.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "success",
+          "reason": "Trajectory 15 failed because it only fetched the first page of text messages (5 items) and missed the remaining 6. Trajectories 13 and 14 succeeded by implementing a loop to fetch all pages. This rule prevents partial data retrieval.",
+          "source_tasks": [
+            "771d8fc_2"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Spotify Following Status Check**: If `show_following_artists` is not available or returns insufficient data, you can determine followed artists by iterating through all artists (via `search_artists` with pagination) and checking each with `show_artist_following`. However, prefer `show_following_artists` if available. When collecting artist IDs from liked songs, ensure you paginate through ALL liked songs (`show_liked_songs`) to get the complete set of artists with liked songs before computing the difference.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "success",
+          "reason": "Trajectories 10, 11, and 12 show that getting the full list of followed artists and liked songs is critical. Trajectory 10 used `show_following_artists`. Trajectories 11 and 12 used `search_artists` to get all artists and then checked following status. The key is ensuring complete data collection for both sets (followed and liked) via pagination.",
+          "source_tasks": [
+            "aa8502b_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "append",
+          "content": "### Authentication Token Passing\n- **Explicit Token Parameter**: Many APIs (e.g., `phone`, `spotify`) do NOT automatically use the session's access token. You MUST explicitly pass `access_token=<token>` as a keyword argument to every API call that requires authentication, including `show_alarms`, `search_text_messages`, `show_playlist_library`, etc.\n- **Login Parameter Discovery**: If login fails with a 401 or parameter error, inspect the login API doc (`apis.api_docs.show_api_doc(app_name=<app>, api_name='login')`). Common pitfalls:\n  - `phone` and `spotify` apps often use `username` (not `email` or `phone_number`) as the first argument.\n  - The `username` value is often the user's phone number (for phone app) or email (for spotify app), as indicated in the task description or profile.\n- **Re-login on 401**: If you receive a 401 error on a subsequent call, re-login immediately to refresh the token, then pass the new token explicitly.\n",
+          "source_type": "success",
+          "reason": "Trajectories 1, 3, 4, 5, 6, 7, 8, 10, 11, 15, 16 all show failures or inefficiencies due to missing or incorrect access_token passing or login parameter errors. Explicitly codifying the need for explicit token passing and username discovery addresses these recurring issues.",
+          "source_tasks": [
+            "771d8fc_1",
+            "302c169_2",
+            "e7a10f8_1",
+            "229360a_3",
+            "07b42fd_2",
+            "c901732_3"
+          ]
+        },
+        {
+          "op": "append",
+          "content": "### Comprehensive Data Retrieval\n- **Paginate All Lists**: For ANY API returning a list (e.g., `search_text_messages`, `show_alarms`, `show_playlist_library`, `show_song_library`, `search_artists`), you MUST implement a pagination loop. Start with `page_index=0` and increment until the returned list is empty or has fewer items than `page_limit`.\n- **Accumulate Results**: Store all paginated results in a single list/set before performing any filtering, sorting, or deletion logic. Processing page-by-page leads to incomplete actions (e.g., missing songs to delete, missing alarms to disable).\n- **Verify Completeness**: If the task asks for 'all' items (e.g., 'delete all spam', 'disable all alarms'), ensure your loop has fetched every page. Missing a page results in incomplete task execution.\n",
+          "source_type": "success",
+          "reason": "Trajectories 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 all involve fetching lists where incomplete pagination would lead to failure. This rule ensures the agent always retrieves the full dataset.",
+          "source_tasks": [
+            "771d8fc_1",
+            "302c169_2",
+            "e7a10f8_1",
+            "229360a_3",
+            "07b42fd_2",
+            "c901732_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Explicit Authentication Parameters**: Many APIs (e.g., Spotify, Simple Note) require `access_token` to be passed as an explicit parameter in *every* API call, even after successful login. Do not assume the token is stored in session context. If a call returns 401, verify you are passing `access_token=...` correctly.",
+          "target": "### Pagination Discipline\n- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.",
+          "source_type": "success",
+          "reason": "Trajectories 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 all show agents failing or retrying because they omitted `access_token` in subsequent calls after login. This is a recurring failure mode.",
+          "source_tasks": [
+            "cf6abd2_1",
+            "cf6abd2_2",
+            "82e2fac_1",
+            "82e2fac_2",
+            "e7a10f8_3"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Login Parameter Convention**: Login APIs in this environment (e.g., Spotify, Simple Note) almost universally use `username` (expecting an email address) rather than `email` as the parameter name. If login fails with a parameter error, try `username=...` instead of `email=...`.",
+          "target": "### Temporal Context Resolution\n- **Year and Month**: When filtering by 'this year' and a month, always check BOTH the month AND the year. Files from previous years with the same month belong to 'others' or a different category.",
+          "source_type": "success",
+          "reason": "Trajectories 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 show agents failing login attempts by using `email=` when `username=` was required. This is a consistent schema pattern.",
+          "source_tasks": [
+            "c901732_1",
+            "cf6abd2_1",
+            "cf6abd2_2",
+            "82e2fac_1",
+            "82e2fac_2",
+            "e7a10f8_3"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Response Type Awareness**: List-returning APIs (e.g., `show_song_library`, `show_playlist_library`) return the list directly, not a dict containing a key like 'songs' or 'results'. Access the result directly as a list (e.g., `result` or `result if isinstance(result, list) else result.get('key', [])`).",
+          "target": "### Pagination Discipline\n- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest').",
+          "source_type": "success",
+          "reason": "Trajectories 6, 8, 16 show agents failing with AttributeError because they assumed a dict response (e.g., `result.get('songs', [])`) for APIs that return a list directly. This prevents unnecessary traceback and retries.",
+          "source_tasks": [
+            "82e2fac_1",
+            "82e2fac_2",
+            "e7a10f8_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "append",
+          "content": "### Temporal Inference from Data\n- **Infer Current Date**: When a task involves relative dates ('this year', 'yesterday', 'recently'), do NOT assume the current calendar year. Instead, inspect the most recent `created_at`, `updated_at`, or `release_date` in the fetched data. The current system date is shortly after this most recent timestamp.\n- **Apply Inferred Date**: Use this inferred date to calculate relative thresholds (e.g., 'last year' = inferred year - 1). This prevents filtering errors in simulated environments where the system date differs from the real world.\n- **File System Specifics**: For file organization tasks, categorize files by checking their `created_at` timestamps against the inferred current date. Files from 'this year' vs 'previous years' must be distinguished using this inferred year.",
+          "source_type": "success",
+          "reason": "Trajectories 1-3 and 4-6 failed or struggled with 'this year' or 'January/April of this year' because the agent assumed 2023 or 2024 incorrectly, while the simulated data was from 2022/2023. The successful trajectories (4, 5, 6) correctly inferred the year from the file dates (2023).",
+          "source_tasks": [
+            "e3d6c94_2",
+            "34d9492_3"
+          ]
+        },
+        {
+          "op": "append",
+          "content": "### API Parameter Verification\n- **Check Docs on Error**: When an API call fails with a 422 error or unexpected parameter traceback, immediately call `apis.api_docs.show_api_doc(app_name='...', api_name='...')` to verify the correct parameter names and types.\n- **Common Pitfalls**: \n  - `file_system.show_directory` uses `directory_path`, not `path`.\n  - `file_system.move_file` uses `source_file_path` and `destination_file_path`, not `file_path` and `destination_path`.\n  - `phone.login` uses `username` (phone number), not email.\n  - `simple_note` and `venmo` login use `username` (email), not `email`.\n- **Retry with Correct Params**: After verifying, retry the call with the correct parameters. Do not guess.",
+          "source_type": "success",
+          "reason": "Trajectories 4, 5, and 6 all encountered multiple tracebacks due to incorrect API parameter names. The agents recovered by checking the docs. This pattern is critical for file_system and authentication APIs which are prone to parameter confusion.",
+          "source_tasks": [
+            "34d9492_3"
+          ]
+        },
+        {
+          "op": "append",
+          "content": "### Identity Resolution via Contacts\n- **Map Names to Emails**: When a task requires contacting or paying specific people (e.g., 'coworkers', 'friends'), use `apis.phone.search_contacts` to find their email addresses before making calls to other apps (like Venmo).\n- **Use Relationship Filters**: If available, use `relationship='coworker'` or similar filters in `search_contacts` to narrow down the list.\n- **Cross-Reference**: If multiple contacts match a name, use context (e.g., transaction history, notes) to identify the correct person.",
+          "source_type": "success",
+          "reason": "Trajectories 7, 8, and 9 successfully identified the correct Venmo users for payment requests by searching phone contacts for 'coworkers' or specific names. This avoided errors from using Venmo's internal search which might be less reliable or require different parameters.",
+          "source_tasks": [
+            "22cc237_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 9
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Entity Label Matching\n- **Strict Label Search**: When a task refers to a specific entity by name or label (e.g., \"go-to-sleep alarm\", \"favorite playlist\"), you MUST search for that exact string or a clear substring within the entity's label/title field. Do NOT guess based on position, enabled status, or other attributes.\n- **Case-Insensitive**: Perform label matching case-insensitively (e.g., \"Go to sleep\" matches \"go to sleep\").\n- **No Assumptions**: If the exact label is not found, do not assume another entity is the target. Check if you missed pages or if the entity is named differently. If truly ambiguous, state the assumption.\n",
+          "source_type": "failure",
+          "reason": "Trajectories 13-15 failed because the agent guessed the 'go-to-sleep' alarm was the first enabled one ('Wake Up') instead of searching for the label 'Go to sleep'. The gold solution explicitly searches for the substring 'Go to sleep'. This rule enforces strict label-based identification.",
+          "source_tasks": [
+            "302c169_3"
+          ]
+        },
+        {
+          "op": "add_section",
+          "content": "### Venmo Transaction Direction\n- **Sent vs. Received**: When the task asks about money \"received to\" someone or \"received from\" someone, you MUST filter Venmo transactions by `direction`.\n  - \"Received to [person]\" or \"sent to [person]\": Use `direction='sent'` and filter by `user_email=[person]` (or check receiver email).\n  - \"Received from [person]\" or \"sent from [person]\": Use `direction='received'` and filter by `user_email=[person]` (or check sender email).\n- **Explicit Check**: Never assume direction. If the task says \"received to coworkers\", it means transactions where the user SENT money TO coworkers (`direction='sent'`). If it says \"received from coworkers\", it means transactions where the user RECEIVED money FROM coworkers (`direction='received'`).\n",
+          "source_type": "failure",
+          "reason": "Trajectories 10-12 failed because the agent used `direction='sent'` when the task asked \"How much money have I received to my coworkers\". The gold solution uses `direction='received'` because 'received to' implies the coworkers received the money (i.e., the user sent it, but from the user's perspective of 'receiving the obligation' or simply the phrasing 'received to' meaning the money went TO them). Wait, looking at the gold solution for `d0b1f43_2`: it uses `direction='received'`. The task is \"How much money have I received to my coworkers\". This is ambiguous English, but the gold solution interprets it as 'received' (money coming in) but the filter is `direction='received'`. Actually, looking at the gold solution code: `direction=\"received\"`. The task says \"received to my coworkers\". This is a specific phrasing. The agent in Trajectories 10-12 used `direction='sent'`. The gold solution uses `direction='received'`. The failure is a misinterpretation of the preposition 'to' in the context of 'received'. The rule clarifies to check the specific direction parameter against the semantic meaning of 'received' vs 'sent' in the prompt, specifically noting the gold solution's pattern for this specific phrasing.\nActually, re-reading the gold solution for `d0b1f43_2`: `direction=\"received\"`. The task is \"How much money have I received to my coworkers\". The agent used `direction='sent'`. The error is using the wrong direction. I will add a rule to be explicit about checking direction.",
+          "source_tasks": [
+            "d0b1f43_2"
+          ]
+        },
+        {
+          "op": "add_section",
+          "content": "### Spotify Queue Subset Identification\n- **Played So Far**: When a task asks to act on songs \"played so far\" in a queue, you MUST identify the current playing song (where `is_current` is True or `is_playing` is True) and only include songs in the queue that appear BEFORE or AT the current song's position. Do NOT include songs that come after the current song in the queue list.\n- **Position Check**: Use the `position` field or iterate through the queue list until the current song is found. Include all songs up to and including the current song.\n",
+          "source_type": "failure",
+          "reason": "Trajectories 1-3 failed because the agent liked ALL songs in the queue, but the task was to like songs \"played so far\" (up to the current song). The gold solution iterates until it finds the current song and breaks. This rule enforces this subset logic.",
+          "source_tasks": [
+            "ccb4494_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "failure",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Complete Set Extraction**: When resolving roles (e.g., 'coworkers', 'roommates') via external apps like Phone, you MUST ensure the extracted set of identifiers (emails, IDs) is complete. Explicitly verify that the count of extracted identifiers matches the expected scope or that no pages were skipped. Incomplete sets lead to missing targets in subsequent filtering steps.",
+          "target": "### Contextual Enrichment (New)",
+          "source_type": "contrastive",
+          "reason": "The failing rollout failed because it missed 3 coworkers in the `coworker_emails` set. The passing rollout correctly included all 8 coworkers. This rule codifies the need for completeness in the enrichment phase to prevent partial matching failures.",
+          "source_tasks": [
+            "6ea6792_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Paginate Contact Searches**: When searching for entities like 'coworkers' or 'relatives' in external apps (e.g., phone contacts), you MUST paginate through all results. Do not assume a single page contains all matches. Use `page_index` and `page_limit` in a loop until no more results are returned. Missing a page leads to incomplete entity lists and missed actions.",
+          "target": "### Contextual Enrichment (New) ... Check other apps for this context *before* or *during* data retrieval.",
+          "source_type": "contrastive",
+          "reason": "The failing rollouts (1 and 2) failed because they only fetched the first page of phone contacts, missing 'Sherry Smith' (she_bailey@gmail.com) who was a coworker. The passing rollout (0) correctly paginated the phone search, found all 6 coworkers, and thus processed all 9 relevant transactions. The failing rollouts only found 5 coworkers and processed 6 transactions, missing the 3 transactions from Sherry Smith.",
+          "source_tasks": [
+            "afc0fce_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "### Source API Selection\n- **Match Task Semantics to API**: When the task refers to a \"library\" (e.g., \"album library\", \"song library\", \"playlist library\"), you MUST use the corresponding `show_*_library` API (e.g., `show_album_library`). Do NOT use `show_liked_*` or `search_*` APIs for library queries unless the task explicitly asks for \"liked\" items or a general search. The `show_liked_*` APIs return a subset of items (only those liked by the user), which may be incomplete for tasks requiring the full library.\n- **Verify Completeness**: If the task asks for \"all\" items in a library, ensure you are fetching from the correct library API. Using the wrong API (e.g., liked vs. library) will result in missing data and incorrect answers.",
+          "target": "### Pagination Discipline",
+          "source_type": "contrastive",
+          "reason": "The failing rollout used `show_liked_albums` instead of `show_album_library`, leading to an incomplete dataset and wrong answer. The passing rollouts correctly identified and used `show_album_library`. This rule codifies the semantic mapping between task terms ('library') and the correct API.",
+          "source_tasks": [
+            "82e2fac_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "append",
+          "content": "### Music Playback Execution\n- **Use `play_music` for Playback**: To play a specific song, album, or playlist, use `apis.spotify.play_music`. This is the only API that sets the music player to the `playing` state. Do not use queue manipulation APIs (`add_to_queue`, `move_song_in_queue`) as the sole method, as they may not trigger the `is_playing` state required for verification.\n- **Always Pass `access_token`**: When calling any Spotify API that modifies state or accesses private data (e.g., `play_music`, `show_song_privates`), you MUST pass the `access_token` parameter explicitly. Failure to do so results in 401 Unauthorized errors.\n- **API Discovery Strategy**: If you cannot find a `play` or `play_song` API, check the music player specific APIs. Look for `play_music` in the API documentation. If `play_music` is not found, check the `show_api_descriptions` output carefully for any API with a path like `/music_player/play` or description mentioning \"play\".",
+          "source_type": "contrastive",
+          "reason": "The failing rollouts (1 and 2) failed because they either got 401 errors by not passing `access_token` to `show_song_privates` (Rollout 2) or got stuck in an infinite loop trying to find non-existent `play`/`play_song` APIs (Rollouts 1 and 2). The passing rollout (0) successfully found and used `play_music` with the correct `access_token`. This rule codifies the correct API name and the critical need to pass credentials to avoid 401s.",
+          "source_tasks": [
+            "c901732_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "\n### Transaction Description Filtering\n- **Match by Description, Not Just Sender**: When identifying which users have already performed a specific action (e.g., 'paid for dinner'), do NOT rely solely on checking if a user appears in the transaction list. You MUST filter transactions by the specific description or context keyword mentioned in the task (e.g., 'Friends Dinner').\n- **Verify Action Context**: A user may have sent money to you previously for unrelated reasons (e.g., 'Yoga class zen', 'Book Club'). These do NOT count as completing the current task's obligation. Only transactions with a matching description or clear contextual link to the current event should be considered 'paid'.\n- **Implementation**: When fetching transactions, use the `query` parameter if available to filter by description, or manually filter the results to keep only those where `transaction['description']` matches the task's key phrase (e.g., 'Friends Dinner').",
+          "target": "### Temporal Context Resolution",
+          "source_type": "contrastive",
+          "reason": "The failing rollout (rollout_index=2) failed because it identified Katie Simpson as 'PAID' based on her general transaction history (she sent money for yoga, donuts, etc.), but she had NOT sent money for the 'Friends Dinner'. Consequently, the agent incorrectly excluded her from the payment requests. The passing rollouts (1 and 0) correctly identified that only 4 people had sent transactions with the description 'Friends Dinner', and thus only requested payment from the remaining 4 (Adrian, Katie, Melissa, Glenn). The failing agent requested payment from Robin instead of Katie. This rule codifies the need to filter by transaction description/context.",
+          "source_tasks": [
+            "22cc237_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **API Discovery Discipline**: When searching for an API to perform a specific action (e.g., 'rate', 'update'), inspect the full list of available APIs for the target app. If the exact name (e.g., `rate_song`) is not found, check for semantically equivalent verbs (e.g., `review_song`, `update_song_review`). Do not guess API names or waste turns checking irrelevant APIs (e.g., `show_premium_plans`) when the correct one is likely in the initial list or can be found by checking documentation for the entity type (e.g., `show_api_doc(app_name='spotify', api_name='review_song')`).",
+          "target": "### Temporal Context Resolution - Infer System Date",
+          "source_type": "contrastive",
+          "reason": "The failing rollout spent 20+ turns checking unrelated APIs (premium, login, account management) for a rating function because it didn't check `review_song`. The passing rollouts found `review_song` quickly. This rule prevents wasted turns on API discovery.",
+          "source_tasks": [
+            "692c77d_1"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Handle Existing Reviews**: When rating/reviewing content, check if a review already exists. If the creation API returns a conflict (e.g., 409), use the entity-specific 'show reviews' API (e.g., `show_song_reviews` with `user_email` filter) to find the existing review ID, then use the 'update review' API (e.g., `update_song_review`) to modify the rating. Do not attempt to create a new review if one already exists.",
+          "target": "### Temporal Context Resolution - Infer System Date",
+          "source_type": "contrastive",
+          "reason": "The passing rollouts handled the 409 conflict by checking `show_song_privates` or `show_song_reviews` to find existing reviews and then using `update_song_review`. The failing rollout never reached the execution phase, but this is a critical pattern for this task type.",
+          "source_tasks": [
+            "692c77d_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "### Multi-Source Data Aggregation\n- **Identify All Relevant Sources**: When a task requires 'all' items from a library (e.g., 'song and album library'), inspect the API documentation to find ALL list endpoints that contribute to that collection. Do not assume 'song library' covers everything.\n- **Fetch All Sources**: Explicitly fetch from every relevant source. For music tasks, this typically includes:\n  1. Song Library (`show_song_library`)\n  2. Album Library (`show_album_library`) - contains `song_ids` for songs in the user's albums\n  3. Playlist Library (`show_playlist_library`) - contains `song_ids` for songs in the user's playlists\n- **Deduplicate by ID**: Collect all unique `song_id` (or equivalent identifier) values from ALL sources into a single set. This prevents duplicates and ensures no source is missed.\n- **Fetch Details**: Use the unified set of IDs to fetch full details for each item. Do not rely on details from list endpoints if they are incomplete (e.g., playlist list endpoints may only provide IDs).\n- **Avoid Irrelevant Sources**: Do not fetch from 'liked' or 'recommended' sources unless explicitly requested. 'Library' usually refers to the user's owned/added collections (Song Library, Album Library, Playlists), not 'Liked' collections.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "contrastive",
+          "reason": "The failing rollout (Trajectory 2) missed the `show_album_library` source, resulting in 64 songs instead of the required 72. It incorrectly fetched `show_liked_songs` which is not part of the 'library'. The passing rollouts (Trajectories 0 and 1) correctly identified and fetched from `show_song_library`, `show_album_library`, and `show_playlist_library`, then deduplicated by song ID to get the complete set. This rule codifies the correct identification and aggregation of all library sources.",
+          "source_tasks": [
+            "6104387_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "append",
+          "content": "### Playlist Song Verification\n- **Do Not Trust Playlist Library Song IDs for Filtering**: The `show_playlist_library` API returns a list of `song_ids`, but these IDs may not directly correspond to the songs you need to filter (e.g., they might be references, or the list might be incomplete/different from the actual playlist content in some contexts). More importantly, you cannot determine the `release_date` from the library response alone.\n- **Fetch Full Playlist Details**: For each playlist in the library, you MUST call `apis.spotify.show_playlist(playlist_id=..., access_token=...)` to get the detailed list of songs. This ensures you have the correct set of songs to evaluate.\n- **Check Release Dates**: Once you have the detailed playlist songs, you must fetch the `release_date` for each song (using `show_song`) and filter/remove based on the task's temporal criteria. Do not assume that because a song ID is in the playlist library response, it is in the playlist, or vice versa.\n- **Cross-Reference with Library**: When removing songs, ensure you are removing them from the correct location (library vs. specific playlist). A song might be in the library but not in a specific playlist, or vice versa.",
+          "source_type": "contrastive",
+          "reason": "The failing rollout (rollout_index=1) incorrectly assumed that the `song_ids` provided in `show_playlist_library` were the definitive list of songs to check. It checked if the songs it identified for removal from the *library* (IDs 157, 81, etc.) were in the playlists, found they weren't, and stopped. However, the ground truth and passing rollouts show that the playlists contain *different* songs (e.g., song 4, 8, 9, etc.) that also needed to be checked for release dates and removed. The agent failed to call `show_playlist` to get the actual song list within each playlist, relying instead on the summary from `show_playlist_library`. This is a critical data retrieval error.",
+          "source_tasks": [
+            "ce359b5_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "### Authentication Parameter Resolution\n- **Spotify Login**: The `login` API uses `username` (which is the email address), NOT `email`. Always call `apis.spotify.login(username=email, password=password)`.\n- **Phone Login**: The `login` API uses `username` (which is the phone number), NOT `email`. Always call `apis.phone.login(username=phone_number, password=password)`.\n- **Explicit Access Tokens**: Many APIs (Spotify, Phone, Venmo, File System) require an explicit `access_token` parameter even after login. Do not rely on session state. Pass the token retrieved from `login()` to every subsequent API call that requires it.\n- **Pagination Constraints**: When paginating, strictly adhere to API constraints. For example, `page_limit` for Spotify `show_playlist_library` and `show_liked_songs` must be <= 20. Using values like 50 will cause 422 errors.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "success",
+          "reason": "Codifies the recurring login parameter errors (email vs username) and missing access token parameters seen across multiple successful trajectories (1-16). Also captures the pagination constraint error in trajectory 4.",
+          "source_tasks": [
+            "e7a10f8_3",
+            "b7a9ee9_3",
+            "7d7fbf6_3",
+            "29caf6f_3",
+            "aa8502b_1",
+            "3c13f5a_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "append",
+          "content": "### Contextual Identity Resolution\n- **Cross-App Lookup**: When a task refers to a relationship (e.g., 'siblings', 'coworkers', 'family') that is not explicitly available in the primary target app, you MUST check other apps (e.g., phone contacts, email contacts) to resolve these identities before processing the primary data.\n- **Store Resolved IDs/Emails**: Extract the unique identifiers (e.g., email addresses, user IDs) for all resolved entities into a list/set. Use this set to filter the primary data source.\n- **Handle Ambiguity**: If the primary app's user list does not match the resolved identities, rely on the cross-app lookup as the ground truth for identity. Do not assume the primary app's friend list is exhaustive or accurate for relationship-based queries.",
+          "source_type": "contrastive",
+          "reason": "The failing rollout attempted to identify siblings but struggled with authentication flow; however, the critical failure was in data retrieval. The passing rollout correctly used phone contacts to get sibling emails. While the failing rollout also got sibling emails, it failed to retrieve the full social feed. This rule reinforces the necessity of cross-app identity resolution which is a prerequisite for the data filtering step that failed due to incomplete pagination. Note: The primary divergence is pagination, but the identity resolution is a key contextual step that supports the filtering logic. I will focus the pagination edit as the primary one. This section is already partially covered by strategy.md, so I will refine the pagination rule instead.",
+          "source_tasks": [
+            "2a163ab_2"
+          ]
+        },
+        {
+          "op": "replace",
+          "content": "### Pagination Discipline\n- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.\n- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest').\n- **Stop Condition**: The loop ends when `len(results) < page_limit` or `results` is empty. Never assume a single page contains all data.\n- **Verification**: If the task requires 'all' items, verify completeness by ensuring you have fetched every page. Missing a page leads to incomplete action sets.\n- **Complete Aggregation Before Filtering**: Always fetch the ENTIRE dataset (all pages) into a single collection BEFORE applying filters (e.g., by date or identity). Filtering page-by-page is dangerous because relevant items may be on subsequent pages. Only fetch subsequent pages if the current page is not empty.",
+          "target": "### Pagination Discipline",
+          "source_type": "contrastive",
+          "reason": "The failing rollout failed because it only checked the first two pages of the social feed and manually inferred the rest, missing 4 transactions. The passing rollout fetched all 1498 transactions into a single list before filtering. This rule explicitly mandates aggregating all pages before filtering to prevent missing items on deeper pages.",
+          "source_tasks": [
+            "2a163ab_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Spotify Library Collection\n- **Mandatory Data Sources**: For any task involving Spotify songs (e.g., 'newest', 'oldest', 'export'), you MUST fetch data from three sources: `show_song_library`, `show_album_library`, and `show_playlist_library`.\n- **Do NOT use Liked APIs**: Do NOT use `show_liked_songs`, `show_liked_albums`, or `show_liked_playlists` as primary data sources. These only return items the user has explicitly liked, which may be a subset of the full library. The task usually refers to the user's entire library.\n- **Pagination**: For each of the three mandatory sources, implement a pagination loop (`page_index` starting at 0) until an empty list or fewer results than `page_limit` is returned. Accumulate all results.\n- **Artist Resolution**: When you have a list of song IDs from any source, fetch the full details for each song using `apis.spotify.show_song(song_id=...)`. For each artist ID in the song details, fetch the full artist details using `apis.spotify.show_artist(artist_id=...)` to ensure you have the correct artist name. Do not rely on the artist name provided in the library list response, as it may be incomplete or missing.\n- **Deduplication**: Maintain a set of `song_id`s across all three sources. Only fetch details for unique song IDs. Build the final result set (e.g., for CSV export or date comparison) from the deduplicated, fully detailed song objects.",
+          "source_type": "failure",
+          "reason": "Trajectories 10-16 (Spotify backup/export tasks) consistently failed because agents used `show_liked_albums` or `show_liked_songs` instead of `show_album_library` and `show_playlist_library`. This resulted in missing songs that were in the library but not liked. Additionally, agents often failed to call `show_artist`, leading to incorrect or missing artist names in the CSV output. The rule enforces the correct API sources and artist resolution.",
+          "source_tasks": [
+            "6104387_1",
+            "6104387_3"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Authentication Parameters**: Many Spotify APIs (e.g., `show_song_library`, `show_album_library`, `show_playlist_library`) require an `access_token` parameter. Always pass the access token obtained from login as `access_token=<token>` in the API call. Do not rely on session state or implicit authentication.",
+          "target": "### Pagination Discipline",
+          "source_type": "failure",
+          "source_tasks": [
+            "27e1026_2",
+            "692c77d_3",
+            "692c77d_2",
+            "6ea6792_2",
+            "6104387_3",
+            "6104387_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "failure",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "append",
+          "content": "### Temporal Context Resolution (Day-of-Week Determination)\n- **Determine Current Day**: When a task references \"today\" or a specific day of the week, do NOT assume the day based on the prompt text alone. Instead, derive the current date from system signals:\n  1. **Token Expiry**: Check `access_token` expiry timestamps (e.g., from login responses) to estimate the current date. Convert Unix timestamps to dates to find the current day of the week.\n  2. **Recent Data**: Inspect the most recent `created_at` or `updated_at` timestamps in the data (e.g., notes, transactions, songs). The current date is typically shortly after the most recent timestamp.\n  3. **Profile/Metadata**: Check `apis.supervisor.show_profile()` or API responses for any date-related metadata.\n- **Filter by Day**: Once the current day of the week is determined (e.g., 'Tuesday'), filter the relevant data (e.g., workout plans, schedules) to match that specific day. Do not assume a default day or use the longest/shortest duration unless specified.\n- **Duration Calculation**: Calculate the required duration based on the specific day's data. Ensure the chosen resource (e.g., playlist) has a total duration equal to or greater than this specific day's requirement.",
+          "source_type": "contrastive",
+          "reason": "The passing rollout succeeded by correctly identifying 'today' as Tuesday (via token expiry May 23, 2023) and selecting a playlist long enough for the 85-minute Tuesday workout. The failing rollouts either guessed the day (Rollout 1 chose Wednesday/90 mins and failed to find a long enough playlist, or guessed incorrectly), or failed to determine the day and searched public playlists unnecessarily (Rollout 2). This rule codifies the correct method for temporal resolution and day-specific filtering.",
+          "source_tasks": [
+            "b0a8eae_1"
+          ]
+        },
+        {
+          "op": "append",
+          "content": "### Playlist Selection Strategy\n- **Prioritize User's Library**: When looking for a playlist, always check the user's own playlist library (`show_playlist_library`) and liked playlists (`show_liked_playlists`) first. Do not waste turns searching public playlists unless the user explicitly asks for public recommendations or the library lacks sufficient options.\n- **Verify Total Duration**: Before selecting a playlist, calculate its total duration by summing the `duration` of all songs in the playlist. Compare this total against the required duration (e.g., workout duration). Do not rely on song count alone, as song lengths vary.\n- **Select Sufficient Option**: Choose the first playlist from the user's library that meets the duration requirement. If no single playlist is sufficient, consider creating a new playlist or combining songs, but only if the task allows or no existing option works.",
+          "source_type": "contrastive",
+          "reason": "The passing rollout correctly prioritized the user's library, calculated the total duration of the 'Rock Revival' playlist (86.2 mins), and verified it was sufficient for the 85-minute Tuesday workout. The failing rollouts wasted turns searching public playlists (Rollout 2) or failed to verify that their selected playlist (Rollout 1's 38-min playlist) was actually long enough for the workout duration, leading to failure.",
+          "source_tasks": [
+            "b0a8eae_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "contrastive",
+    "batch_size": 3
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "insert_after",
+          "content": "- **Infer from Data**: When no explicit system date is available, infer the current year from the most recent timestamps in the data (e.g., latest file creation date, most recent song release date, latest transaction date). The current date is typically shortly after the most recent data point.",
+          "target": "### Temporal Context Resolution\n- **Never Hardcode Year/Date**: Tasks often say 'this year', 'last month', or 'recently', but the simulated environment may have a different system date. Never assume the current year matches the calendar year or the prompt generation time.",
+          "source_type": "success",
+          "reason": "Trajectories 12-16 (Spotify/FileSystem) successfully inferred the current year (2023) from the most recent file names or song release dates. Trajectories 3-4 (Venmo) inferred the date from transaction dates. This pattern is critical for tasks involving 'this year' or relative dates.",
+          "source_tasks": [
+            "task_id=76f2c72_3",
+            "task_id=ce359b5_1",
+            "task_id=e3d6c94_1",
+            "task_id=afc0fce_3",
+            "task_id=3c13f5a_2"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **File Name Parsing**: For file-based tasks, parse year/month from file names (e.g., `2023-04.txt`). If the task asks for 'this year', filter files by the inferred current year. Ensure you check both the inferred year and the file content if the name is ambiguous.",
+          "target": "### Temporal Context Resolution\n- **Infer System Date**: Determine the current year dynamically:\n  1. Check `apis.supervisor.show_profile()` or `apis.supervisor.show_account_passwords()` for timestamps.\n  2. Inspect recent data (e.g., latest transactions, messages, songs) to find the most recent `created_at` or `release_date`. The current date is shortly after this timestamp.\n  3. Check API response metadata (e.g., token expiry times) for clues.",
+          "source_type": "success",
+          "reason": "Trajectories 12-14 (Bill Task) relied on parsing '2023' from file names like `2023-04.txt` to determine 'this year'. The existing rules mention inferring from timestamps but do not explicitly cover parsing structured file names, which is a common pattern in these tasks.",
+          "source_tasks": [
+            "task_id=76f2c72_3"
+          ]
+        },
+        {
+          "op": "insert_after",
+          "content": "- **Detail Enrichment for Filtering**: When a list API (e.g., `show_song_library`, `show_playlist_library`) returns items without the necessary filtering fields (e.g., `release_date`), you MUST call the detail API (e.g., `show_song`, `show_album`) for each item to get the required fields. Do not assume the list response contains all necessary data for filtering.",
+          "target": "### Pagination Discipline\n- **Verification**: If the task requires 'all' items, verify completeness by ensuring you have fetched every page. Missing a page leads to incomplete action sets.",
+          "source_type": "success",
+          "reason": "Trajectories 15-16 (Spotify) failed initially because `show_song_library` did not return `release_date`. The agents had to call `show_song` for each song to get the release date before filtering. This is a critical step for tasks requiring filtering by attributes not present in the list view.",
+          "source_tasks": [
+            "task_id=ce359b5_1"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "append",
+          "content": "### Access Token Handling\n- **Explicit Parameter**: For most apps (Spotify, file_system, phone, venmo), the `access_token` MUST be passed as an explicit keyword argument to every API call (e.g., `apis.spotify.show_playlist_library(access_token=token)`). Do not rely on implicit session state or cookies.\n- **Retrieval**: Retrieve credentials via `apis.supervisor.show_account_passwords()`. Extract the password for the specific app. Use the user's email (from `apis.supervisor.show_profile()['email']`) or phone number (from `apis.supervisor.show_profile()['phone_number']`) as the `username` for login, depending on the app's requirement.\n- **Spotify Specifics**: The Spotify `login` API expects `username` (email) and `password`. The `access_token` returned must be passed to all subsequent Spotify API calls.\n- **File System Specifics**: The file_system `login` API expects `username` (email) and `password`. The `access_token` returned must be passed to all subsequent file_system API calls.\n- **Phone Specifics**: The phone `login` API expects `username` (phone_number) and `password`. The `access_token` returned must be passed to all subsequent phone API calls.",
+          "source_type": "success",
+          "reason": "Multiple trajectories (1, 3, 4, 6, 7, 8, 10, 11, 16) failed with 401 errors because agents either used `email` instead of `username` for login, or failed to pass `access_token` explicitly to APIs that require it. This rule codifies the correct login parameters and the explicit token passing requirement.",
+          "source_tasks": [
+            "c901732_3",
+            "d0b1f43_3",
+            "ce359b5_3",
+            "b7a9ee9_2",
+            "aa8502b_3",
+            "7d7fbf6_2"
+          ]
+        },
+        {
+          "op": "append",
+          "content": "### Contextual Identity Resolution\n- **Roommates/Coworkers/Relatives**: When the task requires identifying entities like 'roommates', 'coworkers', or 'relatives', use `apis.phone.search_contacts(relationship='<type>')` to get their contact details (name, email, phone). Do NOT rely on `apis.venmo.search_friends()` or other app-specific friend lists, as these may not contain the correct relationship tags or all relevant people.\n- **Cross-App Lookup**: After identifying the person via phone contacts, use their email/phone to filter transactions or data in other apps (e.g., Venmo, Gmail).\n- **Ambiguity**: If `search_contacts` returns multiple people for a relationship, include all of them in the aggregation unless the task specifies otherwise.",
+          "source_type": "success",
+          "reason": "Trajectories 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16 failed or were inefficient because they used Venmo friends or other sources to identify roommates/coworkers instead of the authoritative phone contacts. This rule ensures the correct data source is used.",
+          "source_tasks": [
+            "d0b1f43_3"
+          ]
+        },
+        {
+          "op": "append",
+          "content": "### Spotify Library and Playlist Discovery\n- **Comprehensive Fetching**: When a task involves 'my songs', 'my library', or 'my playlists', fetch from ALL relevant sources: `show_song_library`, `show_playlist_library`, and potentially `show_album_library` if available. Do not assume a single API call or source contains all data.\n- **Pagination**: Always implement pagination loops for list APIs (`show_song_library`, `show_playlist_library`, `show_liked_songs`) until fewer results than `page_limit` are returned or an empty list is received.\n- **Detail Enrichment**: List APIs often return IDs but not all fields (e.g., release dates, genres). Use detail APIs (`show_song`, `show_album`, `show_artist`) to retrieve the specific fields needed for filtering or sorting.",
+          "source_type": "success",
+          "reason": "Trajectories 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 failed because they missed songs by not fetching from all library sources (e.g., only checking song library but not playlists, or not paginating fully). This rule ensures complete data collection.",
+          "source_tasks": [
+            "c901732_3",
+            "ce359b5_3",
+            "b7a9ee9_2",
+            "aa8502b_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "add_section",
+          "content": "### Search and Sort Optimization\n- **Use `sort_by` for Ranking Queries**: When the task asks for the 'most played', 'least played', 'most liked', or 'highest rated' item, use the `sort_by` parameter in the search API (e.g., `search_songs`, `search_artists`). Use `-attribute` for descending order (most/highest) and `attribute` for ascending order (least/lowest). Fetch the first result (or last, depending on sort) to identify the target item.\n- **Filter with API Parameters**: When the task specifies attributes like genre, follower count, or release year, use the corresponding filter parameters in the search API (e.g., `genre='reggae'`, `min_follower_count=21`) rather than fetching all items and filtering locally. This reduces data transfer and simplifies logic.\n- **Search by Name for Entity ID**: When the task provides a name (e.g., artist name, album title) but not an ID, use `search_*` APIs (e.g., `search_artists`, `search_albums`) with the name as the `query` parameter to find the entity and extract its ID. Do not assume IDs are known or try to guess them.",
+          "source_type": "success",
+          "reason": "The successful trajectories consistently used `sort_by` to find 'most/least played' songs and used filter parameters like `genre` and `min_follower_count` to narrow down search results. They also used `search_*` APIs to resolve names to IDs. This pattern was present in all 16 trajectories.",
+          "source_tasks": [
+            "e85d92a_1",
+            "e85d92a_3",
+            "287e338_1",
+            "287e338_3",
+            "07b42fd_3",
+            "c901732_1"
+          ]
+        },
+        {
+          "op": "add_section",
+          "content": "### Authentication Handling\n- **Use `username` for Login**: When calling `login` APIs, always use the `username` parameter with the user's email address. Do not use `email` as the parameter name, as this causes a 422 error. The password is retrieved from `show_account_passwords`.\n- **Retrieve Credentials Before Auth**: Always call `apis.supervisor.show_account_passwords()` to get the password for the target app before attempting to login. Store the access token for subsequent authenticated calls.",
+          "source_type": "success",
+          "reason": "Trajectories 7-15 all encountered and recovered from `login` errors where `email` was used instead of `username`. Codifying this prevents repeated login failures. All successful trajectories eventually retrieved credentials and logged in correctly.",
+          "source_tasks": [
+            "287e338_1",
+            "287e338_3",
+            "07b42fd_3",
+            "c901732_1"
+          ]
+        },
+        {
+          "op": "add_section",
+          "content": "### Aggregation and Counting\n- **Use `Counter` for Frequency Analysis**: When the task asks for the 'most recommended', 'most frequent', or 'most common' item, use Python's `collections.Counter` to tally occurrences from a list of results. This is more efficient and less error-prone than manual counting loops.\n- **Accumulate Paginated Results**: When fetching paginated data (e.g., recommendations, search results), always use a loop to fetch all pages. Check if the returned list is empty or shorter than `page_limit` to determine if more pages exist. Extend a single accumulator list with each page's results before processing.",
+          "source_type": "success",
+          "reason": "Trajectories 7-15 all used `Counter` to find the most recommended artist. All successful trajectories used a pagination loop to ensure complete data retrieval. This ensures no data is missed due to incomplete pagination.",
+          "source_tasks": [
+            "287e338_1",
+            "287e338_3"
+          ]
+        }
+      ]
+    },
+    "source_type": "success",
+    "batch_size": 16
+  },
+  {
+    "patch": {
+      "reasoning": "",
+      "edits": [
+        {
+          "op": "rewrite_section",
+          "content": "### Contextual Identity Resolution\n- **Phone Contacts as Source of Truth**: When the task requires identifying people by relationship (e.g., 'friends', 'roommates', 'coworkers', 'relatives'), you MUST use `apis.phone.search_contacts` with the appropriate `relationship` filter. Do NOT use Venmo's `search_friends` or social feed friends, as these may not match the task's definition.\n- **Pagination for Contacts**: When fetching contacts, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list. Store results from all pages in a single list/set before processing. Missing a page leads to incomplete identity sets and missed actions.\n- **Extract Emails**: From the contact results, extract the `email` field. Use these emails to filter transactions, payment requests, or other Venmo/Gmail data.\n\n### Temporal Context Resolution\n- **Never Hardcode Year/Date**: Tasks often say 'this year', 'last month', or 'recently', but the simulated environment may have a different system date. Never assume the current year matches the calendar year or the prompt generation time.\n- **Infer System Date**: Determine the current year dynamically:\n  1. Check `apis.supervisor.show_profile()` or `apis.supervisor.show_account_passwords()` for timestamps.\n  2. Inspect recent data (e.g., latest transactions, messages, songs) to find the most recent `created_at` or `release_date`. The current date is shortly after this timestamp.\n  3. Check API response metadata (e.g., token expiry times) for clues.\n- **Dynamic Filtering**: Use the dynamically obtained year/date to filter data (e.g., `release_date.startswith(str(current_year))`). Calculate relative thresholds (e.g., 'last N days') based on the inferred current date.\n- **Year and Month**: When filtering by 'this year' and a month, always check BOTH the month AND the year. Files from previous years with the same month belong to 'others' or a different category.",
+          "target": "### Temporal Context Resolution",
+          "source_type": "failure",
+          "reason": "Trajectories 15 and 16 failed because the agent used Venmo's `search_friends` API instead of `apis.phone.search_contacts` to identify 'friends and roommates'. The task explicitly asks for 'friends and roommates', which are defined in the phone contacts app. Additionally, the agent did not paginate phone contacts, potentially missing some. The new section enforces using phone contacts for relationship-based identity resolution and mandates pagination for contacts. It also retains the existing temporal resolution rules.",
+          "source_tasks": [
+            "6ea6792_2"
+          ]
+        },
+        {
+          "op": "add_section",
+          "content": "### Spotify Library Completeness\n- **Three Sources**: For any task involving songs in a Spotify account, you MUST fetch data from three distinct sources: `show_song_library`, `show_album_library`, and `show_playlist_library`. Do NOT rely solely on `show_liked_songs` or `show_song_library`.\n- **Album and Playlist Songs**: Songs in `show_album_library` and `show_playlist_library` are part of the user's library. You must iterate through all albums and playlists, extract all `song_ids`, and then fetch details for each song to determine properties like `release_date`.\n- **Pagination**: For all three sources (`show_song_library`, `show_album_library`, `show_playlist_library`), you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list. Accumulate all results before processing.\n- **Unique Song IDs**: Collect all unique `song_id`s from all three sources. Then, for each unique song ID, call `show_song` to get the `release_date`. Find the oldest (minimum `release_date`) among all fetched songs.",
+          "source_type": "failure",
+          "reason": "Trajectories 12, 13, and 14 failed because the agent either missed `show_album_library` and `show_playlist_library` or failed to paginate through them, leading to an incomplete set of songs. The gold solution explicitly uses all three libraries. This new rule ensures comprehensive data collection from all Spotify library sources and mandates pagination.",
+          "source_tasks": [
+            "27e1026_3",
+            "27e1026_1"
+          ]
+        },
+        {
+          "op": "add_section",
+          "content": "### Authentication Parameter Discipline\n- **Venmo Login**: Always use `username` (which is the email address) and `password` parameters for `apis.venmo.login`. Do NOT use `email`.\n- **Phone Login**: Always use `username` (which is the phone number) and `password` parameters for `apis.phone.login`. Do NOT use `email`.\n- **Pass Access Tokens**: When calling APIs that require authentication (e.g., `show_social_feed`, `search_contacts`, `show_transactions`), you MUST pass the `access_token` obtained from the login response as a parameter. Do not assume the token is automatically attached.\n- **Re-login on 401**: If you receive a 401 Unauthorized error, re-login to get a fresh token and retry the request.",
+          "source_type": "failure",
+          "reason": "Multiple trajectories (1, 3, 4, 6, 7, 8, 10, 11, 16) failed due to incorrect login parameters (using `email` instead of `username` for Venmo, or email instead of phone number for Phone) or failing to pass `access_token` to subsequent API calls. This rule explicitly corrects these parameter usage patterns.",
+          "source_tasks": [
+            "2a163ab_3",
+            "60d0b5b_3",
+            "6ea6792_2",
+            "27e1026_3",
+            "27e1026_1",
+            "afc0fce_2"
+          ]
+        }
+      ]
+    },
+    "source_type": "failure",
+    "batch_size": 16
+  }
+]

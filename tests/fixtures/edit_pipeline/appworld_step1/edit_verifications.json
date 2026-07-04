@@ -1,0 +1,374 @@
+[
+  {
+    "section_target": "### Pagination Discipline",
+    "delta_type": "point_add",
+    "content": "- **Explicit Page Limit**: Always set `page_limit` to the maximum allowed value (e.g., 20) in your initial request to minimize API calls and avoid truncation from small defaults. Do not rely on the API's default page limit.",
+    "target_tasks": [
+      "771d8fc_3",
+      "e3d6c94_3",
+      "229360a_1",
+      "07b42fd_1",
+      "cf6abd2_3",
+      "22cc237_3",
+      "3c13f5a_1"
+    ],
+    "passed": true,
+    "task_results": {
+      "cf6abd2_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "07b42fd_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "82e2fac_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "82e2fac_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "771d8fc_3": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "c901732_2": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "3c13f5a_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "229360a_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "e3d6c94_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "22cc237_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "692c77d_2": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.3333333333333333,
+        "inc_solvable": false,
+        "cand_solvable": true,
+        "status": "GAINED"
+      }
+    },
+    "rationale": "Agents failed by relying on small default page limits (e.g., 5), missing items. Setting an explicit max limit (e.g., 20) ensures completeness and efficiency.",
+    "derivation": "Merged Raw 13 (explicit page limit) and Raw 16 (mandatory pagination). The existing rules cover the loop, but not the explicit limit setting which was a critical failure point.",
+    "verdict": "clean_gain"
+  },
+  {
+    "section_target": "### Authentication and Action Discipline",
+    "delta_type": "new_section",
+    "content": "### Authentication and Action Discipline\n- **Explicit Authentication Parameters**: Many APIs (e.g., Spotify, Simple Note) require `access_token` to be passed as an explicit parameter in *every* API call, even after successful login. Do not assume the token is stored in session context. If a call returns 401, verify you are passing `access_token=...` correctly.\n- **Login Parameter Discipline**: Before calling any `login` API, inspect its documentation to determine the exact parameter name for the identifier (e.g., `username` vs `email`) and the expected format. Use the identity information from the task prompt or `show_profile`. Never brute-force usernames. For the `phone` app, `username` is the phone number; for others (Spotify, Venmo, Simple Note), it is the email.\n- **Idempotent Action Execution**: For actions like 'like', 'follow', or 'add' that are idempotent, execute the action for every entity matching the criteria, regardless of current state (e.g., already liked). Do not skip based on status indicators unless explicitly told to only act on unliked items. The task likely implies ensuring the entire set is acted upon.\n- **Entity Label Matching**: When a task refers to a specific entity by name or label (e.g., 'go-to-sleep alarm'), search for that exact string or a clear substring within the entity's label/title field. Do NOT guess based on position, enabled status, or other attributes. Perform case-insensitive matching.",
+    "target_tasks": [
+      "cf6abd2_1",
+      "cf6abd2_2",
+      "82e2fac_1",
+      "82e2fac_2",
+      "e7a10f8_3",
+      "771d8fc_1",
+      "302c169_2",
+      "e7a10f8_1",
+      "229360a_3",
+      "07b42fd_2",
+      "c901732_3",
+      "6ea6792_3",
+      "ce359b5_1",
+      "76f2c72_2",
+      "3c13f5a_1",
+      "e3d6c94_3",
+      "771d8fc_2",
+      "c901732_1",
+      "82e2fac_1",
+      "e7a10f8_3",
+      "2a163ab_1",
+      "302c169_3",
+      "302c169_1"
+    ],
+    "passed": true,
+    "task_results": {
+      "e7a10f8_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.8333333333333334,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "cf6abd2_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "82e2fac_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "82e2fac_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "cf6abd2_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "07b42fd_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "302c169_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "c901732_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "e7a10f8_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "302c169_1": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "771d8fc_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "771d8fc_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "76f2c72_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "e3d6c94_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "3c13f5a_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "6ea6792_3": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "302c169_3": {
+        "inc_pr": 0.0,
+        "cand_pr": 1.0,
+        "inc_solvable": false,
+        "cand_solvable": true,
+        "status": "GAINED"
+      },
+      "c901732_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "2a163ab_1": {
+        "inc_pr": 0.6666666666666666,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "ce359b5_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "229360a_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      }
+    },
+    "rationale": "Combined authentication, login parameter, idempotency, and entity matching rules which are all distinct tactical behaviors not covered by existing sections.",
+    "derivation": "Merged E#2, E#3, E#4 into a single new section 'Authentication and Action Discipline' to resolve structural conflict and semantic misplacement.",
+    "verdict": "clean_gain"
+  },
+  {
+    "section_target": "### Playback API Resolution",
+    "delta_type": "new_section",
+    "content": "### Playback API Resolution\n- **Direct API Usage**: `show_api_descriptions` output is often truncated. Do NOT rely on scanning it to find playback APIs. If you need to play music, try `apis.spotify.play_music(access_token=..., playlist_id=...)` directly.\n- **Fallback Logic**: If `play_music` fails with 422, check for `play_playlist` or `play_song`. If all fail, check `add_to_queue` followed by verifying if playback starts automatically.\n- **Avoid Infinite Loops**: Do not spend excessive turns iterating through pages of playlists or searching for the API name. Once a suitable playlist is identified, attempt to play it immediately.",
+    "target_tasks": [
+      "b0a8eae_2",
+      "c901732_2"
+    ],
+    "passed": true,
+    "task_results": {
+      "c901732_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "287e338_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 0.6666666666666666,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "e85d92a_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "287e338_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "c901732_1": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "60d0b5b_2": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.0,
+        "inc_solvable": false,
+        "cand_solvable": false,
+        "status": "STILL_UNSOLVED"
+      },
+      "302c169_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "c901732_2": {
+        "inc_pr": 0.3333333333333333,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "cf6abd2_2": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "22cc237_3": {
+        "inc_pr": 1.0,
+        "cand_pr": 1.0,
+        "inc_solvable": true,
+        "cand_solvable": true,
+        "status": "RETAINED"
+      },
+      "b0a8eae_2": {
+        "inc_pr": 0.0,
+        "cand_pr": 0.3333333333333333,
+        "inc_solvable": false,
+        "cand_solvable": true,
+        "status": "GAINED"
+      }
+    },
+    "rationale": "Playback API handling is a distinct tactical area requiring specific fallback and loop-avoidance strategies.",
+    "derivation": "Refined E#5 content into a proper new_section with correct heading.",
+    "verdict": "clean_gain"
+  }
+]

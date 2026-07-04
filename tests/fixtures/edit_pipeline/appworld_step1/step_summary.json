@@ -1,0 +1,34 @@
+{
+  "step": 1,
+  "n_merged": 3,
+  "n_survived": 3,
+  "final_action": "accept",
+  "score_before": 0.6666666666666666,
+  "score_after": 0.6666666666666666,
+  "verifications": [
+    {
+      "section": "### Pagination Discipline",
+      "delta_type": "point_add",
+      "passed": true,
+      "n_target_tasks": 7,
+      "n_gained": 1,
+      "n_lost": 0
+    },
+    {
+      "section": "### Authentication and Action Discipline",
+      "delta_type": "new_section",
+      "passed": true,
+      "n_target_tasks": 23,
+      "n_gained": 1,
+      "n_lost": 0
+    },
+    {
+      "section": "### Playback API Resolution",
+      "delta_type": "new_section",
+      "passed": true,
+      "n_target_tasks": 2,
+      "n_gained": 1,
+      "n_lost": 0
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "step": 2,
+  "n_merged": 5,
+  "n_survived": 2,
+  "final_action": "reject",
+  "score_before": 0.5833333333333334,
+  "score_after": 0.5666666666666667,
+  "verifications": [
+    {
+      "section": "### Computed Values over Formulas",
+      "delta_type": "section_rewrite",
+      "passed": true,
+      "n_target_tasks": 28,
+      "n_gained": 3,
+      "n_lost": 0
+    },
+    {
+      "section": "### Sheet and Range Fidelity",
+      "delta_type": "section_rewrite",
+      "passed": false,
+      "n_target_tasks": 13,
+      "n_gained": 0,
+      "n_lost": 0
+    },
+    {
+      "section": "### Data Processing and Lookup Logic",
+      "delta_type": "section_rewrite",
+      "passed": false,
+      "n_target_tasks": 10,
+      "n_gained": 0,
+      "n_lost": 0
+    },
+    {
+      "section": "### Answer Position Awareness",
+      "delta_type": "new_section",
+      "passed": true,
+      "n_target_tasks": 1,
+      "n_gained": 0,
+      "n_lost": 0
+    },
+    {
+      "section": "### Leveraging Visual Cues and Reference Sheets",
+      "delta_type": "new_section",
+      "passed": false,
+      "n_target_tasks": 1,
+      "n_gained": 0,
+      "n_lost": 0
+    }
+  ]
+}

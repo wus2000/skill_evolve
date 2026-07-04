@@ -20,20 +20,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-# The four supported edit operations on rules.md free-form text.
-#   append        : add content at the end of rules.md
-#   insert_after   : insert content on the line after `target`
-#   replace        : replace the first occurrence of `target` with content
-#   delete         : remove the first occurrence of `target`
+# Raw-edit operations. The v2 vocabulary is orthogonal (see
+# css/optimizer/editpipe/schema.py): kind describes WHAT, ``subject``
+# describes WHICH section (identity), ``anchor`` describes WHERE inside it.
+#   add_section / rewrite_section / remove_section : whole-section ops
+#   add_point / edit_point / remove_point          : localized ops
+# Legacy ops (append, insert_after, replace, delete, delete_section) are
+# still accepted on read for old run data and map 1:1 onto the v2 kinds.
 EditOp = Literal[
-    "append", "insert_after", "replace", "delete",
-    "add_section", "rewrite_section", "delete_section",
+    "add_section", "rewrite_section", "remove_section",
+    "add_point", "edit_point", "remove_point",
+    # legacy vocabulary (read compatibility)
+    "append", "insert_after", "replace", "delete", "delete_section",
 ]
 
 EDIT_OPS: tuple[str, ...] = (
-    "append", "insert_after", "replace", "delete",
-    "add_section", "rewrite_section", "delete_section",
+    "add_section", "rewrite_section", "remove_section",
+    "add_point", "edit_point", "remove_point",
+    "append", "insert_after", "replace", "delete", "delete_section",
 )
+
+# legacy -> v2 kind mapping (pure rename; no information change)
+LEGACY_OP_TO_KIND: dict[str, str] = {
+    "append": "add_section",
+    "insert_after": "add_point",
+    "replace": "edit_point",
+    "delete": "remove_point",
+    "delete_section": "remove_section",
+}
 
 
 @dataclass
@@ -75,6 +89,10 @@ class Edit:
     merge_level: int | None = None
     reason: str = ""
     source_tasks: list[str] = field(default_factory=list)
+    # v2 orthogonal fields (empty on legacy data; ``target`` then carries the
+    # mixed position/identity pointer that v2 splits into these two):
+    subject: str = ""   # identity — the section this edit defines or modifies
+    anchor: str = ""    # point ops — the in-section text it targets
 
     @classmethod
     def from_dict(cls, d: dict) -> "Edit":
@@ -83,19 +101,25 @@ class Edit:
             raw_tasks = []
         return cls(
             op=d.get("op", "append"),
-            content=d.get("content", ""),
+            content=d.get("content", "") or d.get("body", ""),
             target=d.get("target", ""),
             support_count=d.get("support_count"),
             source_type=d.get("source_type"),
             merge_level=d.get("merge_level"),
             reason=d.get("reason", ""),
             source_tasks=[str(t) for t in raw_tasks if t],
+            subject=str(d.get("subject", "") or ""),
+            anchor=str(d.get("anchor", "") or ""),
         )
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {"op": self.op, "content": self.content}
         if self.target:
             d["target"] = self.target
+        if self.subject:
+            d["subject"] = self.subject
+        if self.anchor:
+            d["anchor"] = self.anchor
         if self.support_count is not None:
             d["support_count"] = self.support_count
         if self.source_type is not None:

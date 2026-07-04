@@ -1,0 +1,50 @@
+{
+  "step": 0,
+  "n_merged": 5,
+  "n_survived": 2,
+  "final_action": "accept_new_best",
+  "score_before": 0.6257309941520467,
+  "score_after": 0.6666666666666666,
+  "verifications": [
+    {
+      "section": "### Authentication Protocol",
+      "delta_type": "new_section",
+      "passed": false,
+      "n_target_tasks": 22,
+      "n_gained": 0,
+      "n_lost": 0
+    },
+    {
+      "section": "### Pagination Discipline",
+      "delta_type": "new_section",
+      "passed": true,
+      "n_target_tasks": 11,
+      "n_gained": 1,
+      "n_lost": 0
+    },
+    {
+      "section": "### Temporal Context Resolution",
+      "delta_type": "new_section",
+      "passed": true,
+      "n_target_tasks": 8,
+      "n_gained": 1,
+      "n_lost": 0
+    },
+    {
+      "section": "### Entity Resolution and Filtering",
+      "delta_type": "new_section",
+      "passed": false,
+      "n_target_tasks": 11,
+      "n_gained": 0,
+      "n_lost": 1
+    },
+    {
+      "section": "### API Discovery and Verification",
+      "delta_type": "new_section",
+      "passed": false,
+      "n_target_tasks": 10,
+      "n_gained": 0,
+      "n_lost": 1
+    }
+  ]
+}

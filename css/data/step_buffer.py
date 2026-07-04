@@ -51,6 +51,11 @@ class EditVerification:
     # Outcome category (see compute_verdict). "" on entries written before
     # the verdict system existed — consumers call compute_verdict() then.
     verdict: str = ""
+    # Placement/anchor carried through verification so the surviving edit
+    # rebuilt for the collective apply keeps its position information
+    # (empty on entries written before these fields existed).
+    after_section: str = ""
+    point_anchor: str = ""
 
     def gained_tasks(self) -> list[str]:
         return [t for t, r in self.task_results.items()
@@ -95,6 +100,10 @@ class EditVerification:
         }
         if self.verdict:
             d["verdict"] = self.verdict
+        if self.after_section:
+            d["after_section"] = self.after_section
+        if self.point_anchor:
+            d["point_anchor"] = self.point_anchor
         return d
 
     @classmethod
@@ -115,6 +124,8 @@ class EditVerification:
             rationale=str(d.get("rationale", "")),
             derivation=str(d.get("derivation", "")),
             verdict=str(d.get("verdict", "")),
+            after_section=str(d.get("after_section", "")),
+            point_anchor=str(d.get("point_anchor", "")),
         )
 
 
