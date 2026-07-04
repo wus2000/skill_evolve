@@ -146,7 +146,15 @@ class ScienceworldEnv:
     def extra_metrics(self, results: "list") -> "dict[str, float]":
         """SR + PR (with easy/hard breakdown) for the AgentBoard split; average
         native score for the secondary split. Partitions by result tag so it is
-        correct whether called per-split or on a mixed list."""
+        correct whether called per-split or on a mixed list.
+
+        Aggregation note (alignment audit, 2026-07-04): SR/PR here are MEANS
+        over all K rollouts (matches the mechanism's task_hard convention).
+        WorldEvolver reports best-of-5 instead; the comparison aggregation is
+        deliberately left undecided for now (user call) — best-of-K can be
+        recomputed OFFLINE from the persisted per-rollout results at paper
+        time, no re-run needed.
+        """
         ab = [r for r in results if _get_extra(r, "agentboard_sr") is not None]
         native = [r for r in results if _get_extra(r, "agentboard_sr") is None]
         out: "dict[str, float]" = {}
