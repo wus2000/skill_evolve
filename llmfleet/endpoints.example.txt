@@ -1,0 +1,19 @@
+# llmfleet fleet registry — copy to endpoints.txt and edit.
+# One OpenAI-compatible base URL per line; "#" comments ignored.
+#
+# Optional per-node annotations (space-separated after the URL):
+#   w            = rate PRIOR (relative speed; adaptive throughput estimation
+#                  takes over once the node runs busy). Default 1.0.
+#   max_inflight = hard per-node concurrency cap (client-side shadow of the
+#                  node's max_num_seqs; tail-latency fuse for weak nodes).
+#   key          = per-node API key override.
+#   metrics      = vllm (default: poll /metrics for server-truth load) or
+#                  none (degrade to local signals + prior).
+#
+# Examples:
+#   http://a100-host:8888/v1   w=1.0  max_inflight=256
+#   http://h20-host:8888/v1    w=0.5  max_inflight=320
+#   http://other-host:8000/v1  key=that-nodes-token  metrics=none
+#
+# Verify:  llmfleet probe --registry endpoints.txt --model <served-name> --api-key <key>
+http://127.0.0.1:8888/v1
