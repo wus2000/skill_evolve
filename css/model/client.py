@@ -325,6 +325,69 @@ class TargetOnlyClient:
         raise RuntimeError("target-only client cannot call optimizer")
 
 
+_TOOL_CALL_BLOCK_RE = None  # compiled lazily (avoid import-order noise)
+
+
+def parse_qwen_xml_tool_calls(content: str) -> "list[dict]":
+    """Parse Qwen-style XML tool calls out of assistant TEXT content.
+
+    A vLLM endpoint launched without ``--enable-auto-tool-choice
+    --tool-call-parser`` returns ``tool_calls=[]`` and emits the calls verbatim
+    in ``content``::
+
+        <tool_call>
+        <function=get_weather>
+        <parameter=city>
+        Paris
+        </parameter>
+        </function>
+        </tool_call>
+
+    Returns OpenAI-shaped ``[{"id", "type", "function": {"name", "arguments"}}]``
+    (arguments JSON-encoded; values parsed with ``json.loads`` when they look
+    like JSON scalars/containers, else kept as strings). Empty list when no
+    well-formed block is present — the caller then treats content as plain text.
+    """
+    import re
+
+    global _TOOL_CALL_BLOCK_RE
+    if _TOOL_CALL_BLOCK_RE is None:
+        _TOOL_CALL_BLOCK_RE = {
+            "block": re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL),
+            "func": re.compile(r"<function=([\w.\-]+)>\s*(.*?)\s*(?:</function>|\Z)", re.DOTALL),
+            "param": re.compile(r"<parameter=([\w.\-]+)>\s*(.*?)\s*</parameter>", re.DOTALL),
+        }
+    rx = _TOOL_CALL_BLOCK_RE
+    calls: "list[dict]" = []
+    for block in rx["block"].findall(content or ""):
+        m = rx["func"].search(block)
+        if not m:
+            continue
+        name, body = m.group(1), m.group(2)
+        args: "dict[str, Any]" = {}
+        for key, raw in rx["param"].findall(body):
+            val: Any = raw.strip()
+            try:  # recover JSON types the schema likely wants (ints, bools, lists)
+                val = json.loads(val)
+            except (ValueError, TypeError):
+                pass
+            args[key] = val
+        calls.append({
+            "id": "xmlfb_%d" % len(calls),
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
+        })
+    return calls
+
+
+def _strip_tool_call_blocks(content: str) -> str:
+    """Remove parsed ``<tool_call>...</tool_call>`` blocks, keeping surrounding
+    prose (mirrors what a native parser leaves in ``content``)."""
+    import re
+
+    return re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL).strip()
+
+
 def _inject_firewall_system(system: str) -> str:
     """Append the train/test ground-truth firewall to an optimizer system prompt."""
     if not system:
@@ -631,9 +694,20 @@ class OpenAICompatLLMClient:
         if not choices:
             raise RuntimeError(f"OpenAI-compat API returned no choices: {data}")
         message = choices[0].get("message") or {}
+        content = message.get("content")
+        tool_calls = message.get("tool_calls")
+        if not tool_calls:
+            # Endpoint-drift fallback (found 2026-07-04): a vLLM instance
+            # launched without ``--tool-call-parser`` returns tool_calls=[] and
+            # leaves the calls as Qwen XML text in ``content``. Recover them so
+            # function-calling envs (Bird, BFCL) survive server config drift.
+            parsed = parse_qwen_xml_tool_calls(content or "")
+            if parsed:
+                tool_calls = parsed
+                content = _strip_tool_call_blocks(content or "")
         return {
-            "content": message.get("content"),
-            "tool_calls": message.get("tool_calls"),
+            "content": content,
+            "tool_calls": tool_calls,
         }
 
     def complete_optimizer(
