@@ -240,13 +240,33 @@ def test_apply_resolver_scoped_to_section():
 
     def resolver(subject, body, edit):
         calls.append(subject)
-        return body + "\n- resolver added this."
+        return body + "\n" + edit.body      # contract-abiding insertion
 
     edits = [_edit(kind="add_point", subject="Pagination Discipline",
-                   body="- x", anchor="NO SUCH ANCHOR")]
+                   body="- resolver added this.", anchor="NO SUCH ANCHOR")]
     res = apply_edits(base, edits, resolver=resolver)
     assert calls == ["Pagination Discipline"]
     assert "- resolver added this." in res.text
+    assert res.assertion_failures == []
+
+
+def test_apply_resolver_hallucination_rejected():
+    """A resolver returning unrelated text (dropping the section's existing
+    lines / omitting the edit body) must be rejected by the sanity guard,
+    degrading to a content-preserving append."""
+    base = _load_rules("appworld_step1")
+
+    def bad_resolver(subject, body, edit):
+        return "completely unrelated hallucinated text"
+
+    edits = [_edit(kind="add_point", subject="Pagination Discipline",
+                   body="- the real new rule.", anchor="NO SUCH ANCHOR")]
+    res = apply_edits(base, edits, resolver=bad_resolver)
+    assert "hallucinated" not in res.text          # rejected
+    assert "- the real new rule." in res.text      # content preserved
+    assert "**Mandatory Loop**" in res.text        # original body intact
+    assert any(a.fate == "degraded" and "sanity" in a.reason
+               for a in res.audits)
     assert res.assertion_failures == []
 
 

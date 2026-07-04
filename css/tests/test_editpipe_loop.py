@@ -339,7 +339,13 @@ def test_run_pipeline_end_to_end_stub():
         if "edit validator" in system:
             return _valid_response()
         if "precise text editor" in system:
-            return json.dumps({"body": "resolver-was-here"})
+            # Contract-abiding resolver: keep the section body, insert the
+            # edit content (extract both from the user prompt).
+            sec_body = user.split("## Section:", 1)[1].split("\n", 1)[1] \
+                .split("\n\n## Edit", 1)[0]
+            edit_body = user.rsplit("body:\n", 1)[1]
+            return json.dumps(
+                {"body": sec_body + "\n" + edit_body + " (resolver-was-here)"})
         return _valid_response()
 
     client = StubLLMClient(optimizer_fn=opt)

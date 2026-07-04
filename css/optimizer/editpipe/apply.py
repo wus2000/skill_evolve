@@ -83,6 +83,38 @@ def _find_anchor_span(body: str, anchor: str) -> tuple[int, int] | None:
     return None
 
 
+def _resolver_output_sane(e: SectionEdit, old_body: str, new_body: str) -> bool:
+    """Mechanical guard against resolver hallucination: the output must
+    actually reflect the edit's intent on THIS section.
+
+    - add_point/edit_point: the edit's content must appear in the output
+      (whitespace-normalized substring), and the output must retain at least
+      half of the original body's lines (an unrelated rewrite fails both).
+    - remove_point: the output must be a subset-ish of the original (no new
+      material) — removal never introduces text.
+    """
+    norm = _norm_ws
+    if e.kind in ("add_point", "edit_point"):
+        if e.body.strip() and norm(e.body) not in norm(new_body):
+            return False
+        old_lines = [ln for ln in
+                     (norm(x) for x in old_body.split("\n")) if ln]
+        if old_lines:
+            new_norm = norm(new_body)
+            retained = sum(1 for ln in old_lines if ln in new_norm)
+            if e.kind == "add_point" and retained < len(old_lines):
+                return False       # an insertion must not lose existing text
+            if e.kind == "edit_point" and retained * 2 < len(old_lines):
+                return False       # a point edit must not rewrite the section
+        return True
+    if e.kind == "remove_point":
+        new_lines = [ln for ln in
+                     (norm(x) for x in new_body.split("\n")) if ln]
+        old_norm = norm(old_body)
+        return all(ln in old_norm for ln in new_lines)
+    return True
+
+
 def _sanitize_body(edit_id: str, subject: str, body: str,
                    audits: list[EditAudit]) -> str:
     """Bodies must be heading-free at apply time. If any heading line slipped
@@ -212,7 +244,8 @@ def _apply_point(
 
     if span is None and resolver is not None:
         resolved = resolver(sec.subject, body, e)
-        if resolved is not None and resolved.strip():
+        if resolved is not None and resolved.strip() \
+                and _resolver_output_sane(e, body, resolved):
             new_body, n = demote_headings(resolved)
             if n:
                 audits.append(EditAudit(
@@ -226,7 +259,8 @@ def _apply_point(
             return
         audits.append(EditAudit(
             edit_id, e.subject, "degraded",
-            "semantic resolver could not locate the anchor", "apply"))
+            "semantic resolver failed (no output, or output failed the "
+            "sanity check); falling back", "apply"))
 
     if span is None:
         # Content-preserving fallbacks.
