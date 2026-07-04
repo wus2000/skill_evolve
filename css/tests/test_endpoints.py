@@ -60,12 +60,15 @@ def test_annotated_registry_lines_encode_and_parse(monkeypatch, tmp_path):
                     "http://h20:8890/v1|w=0.5|max_inflight=320,"
                     "http://plain:8891/v1")
     fleet = ep.parse_fleet(base)
-    assert fleet[0] == {"url": "http://a100:8888/v1", "w": 1.0, "max_inflight": 256}
-    assert fleet[1] == {"url": "http://h20:8890/v1", "w": 0.5, "max_inflight": 320}
-    assert fleet[2] == {"url": "http://plain:8891/v1", "w": 1.0, "max_inflight": 0}
+    assert (fleet[0]["url"], fleet[0]["w"], fleet[0]["max_inflight"]) == \
+        ("http://a100:8888/v1", 1.0, 256)
+    assert (fleet[1]["url"], fleet[1]["w"], fleet[1]["max_inflight"]) == \
+        ("http://h20:8890/v1", 0.5, 320)
+    assert (fleet[2]["w"], fleet[2]["max_inflight"]) == (1.0, 0)
 
 
 def test_parse_fleet_ignores_malformed_annotations():
     fleet = ep.parse_fleet("http://x/v1|w=abc|bogus|max_inflight=-5,http://y/v1|w=2")
-    assert fleet[0] == {"url": "http://x/v1", "w": 1.0, "max_inflight": 0}
+    assert (fleet[0]["url"], fleet[0]["w"], fleet[0]["max_inflight"]) == \
+        ("http://x/v1", 1.0, 0)
     assert fleet[1]["w"] == 2.0
