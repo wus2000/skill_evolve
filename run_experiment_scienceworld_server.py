@@ -96,7 +96,12 @@ def main() -> None:
         # single-core-busy only during step(); concurrency is LLM-bound.
         max_api_workers=128,
         concurrency_limit=1,
-        task_timeout_s=600,    # <=50 steps x worst-case LLM latency; env step is ms
+        task_timeout_s=900,    # <=50 steps x worst-case LLM latency; env step is ms.
+                               # Raised 600->900 on 2026-07-04 (launch decision):
+                               # three experiments share the two vLLM endpoints, so
+                               # per-call tail latency inflates; a timeout wastes the
+                               # whole rollout AND injects a false failure. Revisit
+                               # down when endpoint contention clears.
         max_turns=50,          # generic mirror of the native step budget
         k_rollouts=3,
 
