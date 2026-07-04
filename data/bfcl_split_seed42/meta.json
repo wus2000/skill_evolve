@@ -1,0 +1,36 @@
+{
+  "pinned_commit": "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8",
+  "seed": 42,
+  "n_scenario_indices": 200,
+  "split_index_counts": {
+    "train": 120,
+    "val": 40,
+    "test": 40
+  },
+  "manifest_counts": {
+    "train": 480,
+    "val": 160,
+    "test": 160,
+    "composite_probe": 40
+  },
+  "per_category_per_split": {
+    "train": {
+      "base": 120,
+      "miss_func": 120,
+      "miss_param": 120,
+      "long_context": 120
+    },
+    "val": {
+      "base": 40,
+      "miss_func": 40,
+      "miss_param": 40,
+      "long_context": 40
+    },
+    "test": {
+      "base": 40,
+      "miss_func": 40,
+      "miss_param": 40,
+      "long_context": 40
+    }
+  }
+}

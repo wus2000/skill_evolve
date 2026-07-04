@@ -29,6 +29,8 @@ _ALIASES = {
     "appworld": "appworld",
     "scienceworld": "scienceworld",
     "sciworld": "scienceworld",
+    "bfcl": "bfcl",
+    "berkeley_function_calling": "bfcl",
     # Scaffold env (css/envs/template) — toy QA task; used for mechanism smoke
     # tests and as the copy-me starting point for new benchmarks. See
     # docs/env_integration_guide.md.
@@ -70,6 +72,9 @@ def build_env(cfg: "CSSConfig", **kwargs) -> "TaskEnv":
     if name == "scienceworld":
         from css.envs.scienceworld.task_interface import ScienceworldEnv
         return ScienceworldEnv(cfg, **kwargs)
+    if name == "bfcl":
+        from css.envs.bfcl.task_interface import BfclEnv
+        return BfclEnv(cfg, **kwargs)
     if name == "template":
         from css.envs.template.task_interface import TemplateEnv
         return TemplateEnv(cfg, **kwargs)
