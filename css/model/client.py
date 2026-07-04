@@ -418,6 +418,8 @@ class OpenAICompatLLMClient:
         enable_thinking: bool = False,
         retries: int = 5,
         optimizer_json_mode: bool = False,
+        route_load_factor: float = 1.25,
+        route_cooldown_s: float = 15.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -428,6 +430,11 @@ class OpenAICompatLLMClient:
         self.timeout_seconds = timeout_seconds
         self.enable_thinking = enable_thinking
         self.retries = retries
+        # Locality/balance trade-off for multi-replica routing (routing.py):
+        # 1.0 = strict fair share, +inf = pure sticky. 1.25 caps in-flight
+        # skew at ~56/44 on two replicas while keeping most sessions pinned.
+        self.route_load_factor = route_load_factor
+        self.route_cooldown_s = route_cooldown_s
         # When True, optimizer (NOT target) calls request a structured JSON
         # object via ``response_format`` — engine-level guarantee for backends
         # like Qwen/vLLM that honor it. Enable only when every optimizer prompt
@@ -435,14 +442,15 @@ class OpenAICompatLLMClient:
         # pipeline); bare-array prompts would be rejected under this mode.
         self.optimizer_json_mode = optimizer_json_mode
 
-    # ── Multi-replica sticky routing ────────────────────────────────────────
+    # ── Multi-replica routing (locality-aware, bounded loads) ───────────────
     # ``base_url`` may be a comma-separated list of OpenAI-compatible replica
-    # endpoints (e.g. two `vllm serve` replicas). Requests are routed by a
-    # STICKY hash of the conversation head (system + first user message), so
-    # every turn of a multi-turn episode — and every rollout of the same task —
-    # lands on the same replica, preserving prefix-cache locality (session-
-    # affinity routing; the same policy as the vLLM production-stack "session"
-    # router). With a single URL, behavior is byte-identical to before.
+    # endpoints (e.g. N `vllm serve` replicas). Each request carries a SESSION
+    # KEY (system + first user message — shared by every turn of an episode
+    # and by K-rollout siblings); css/model/routing.py maps it to a replica
+    # via rendezvous hashing WITH per-replica in-flight load bounds. Pure
+    # sticky hashing measured 80/20 busy-seconds on 2 replicas (heavy-tailed
+    # episode weights); the bound caps that while preserving prefix-cache
+    # locality. With a single URL, behavior is byte-identical to before.
     def _urls(self) -> list[str]:
         urls = [u.strip() for u in (self.base_url or "").split(",") if u.strip()]
         out = []
@@ -456,34 +464,57 @@ class OpenAICompatLLMClient:
         return self._urls()[0]
 
     @staticmethod
-    def _sticky_index(messages: list[dict], n: int) -> int:
-        """Replica index from the conversation head (stable across turns)."""
-        if n <= 1:
-            return 0
+    def _session_key(messages: list[dict]) -> str:
+        """Session identity from the conversation head (stable across turns).
+
+        system + first user message: shared by every turn of an episode (so
+        the router can keep the episode on one replica for prefix-cache
+        locality) and by K-rollout siblings; distinct tasks differ in the
+        first user message. The ROUTER owns load balance; this only names
+        the session (see css/model/routing.py).
+        """
         head = ""
         for m in messages[:2]:
             head += str(m.get("role", "")) + "\x00" + str(m.get("content", "")) + "\x01"
-        digest = hashlib.sha1(head.encode("utf-8", errors="replace")).digest()
-        return int.from_bytes(digest[:4], "big") % n
+        return head
+
+    @property
+    def _replica_router(self):
+        router = getattr(self, "_router", None)
+        if router is None:
+            from css.model.routing import ReplicaRouter
+
+            router = ReplicaRouter(
+                self._urls(),
+                load_factor=self.route_load_factor,
+                cooldown_s=self.route_cooldown_s,
+            )
+            self._router = router
+        return router
 
     def _post(
         self,
         payload: dict[str, Any],
         timeout: float | None = None,
-        url_index: int = 0,
+        session_key: str = "",
     ) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         urls = self._urls()
+        router = self._replica_router
         effective_timeout = timeout or self.timeout_seconds
         last_err: Exception | None = None
         for attempt in range(self.retries):
-            # Sticky replica first; on connection-level failures fail over to
-            # the next replica (cache-cold there, but availability wins).
-            url = urls[(url_index + attempt) % len(urls)]
+            # Locality-aware bounded-load routing (css/model/routing.py):
+            # the session's preferred replica while under its load bound,
+            # deterministic spill otherwise; a connection-level failure puts
+            # the replica on cooldown, so the retry lands elsewhere.
+            index = router.acquire(session_key)
+            url = urls[index]
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            t0 = time.time()
             try:
                 with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
@@ -495,7 +526,10 @@ class OpenAICompatLLMClient:
                 if 400 <= e.code < 500:
                     raise last_err
             except (urllib.error.URLError, OSError) as e:
+                router.mark_unhealthy(index)
                 last_err = RuntimeError(f"OpenAI-compat API request failed: {e}")
+            finally:
+                router.release(index, time.time() - t0)
             time.sleep(min(2 ** attempt, 30))
         raise last_err  # type: ignore[misc]
 
@@ -519,7 +553,7 @@ class OpenAICompatLLMClient:
             payload["response_format"] = response_format
         data = self._post(
             payload,
-            url_index=self._sticky_index(messages, len(self._urls())),
+            session_key=self._session_key(messages),
         )
         choices = data.get("choices") or []
         if not choices:
@@ -576,7 +610,7 @@ class OpenAICompatLLMClient:
         }
         data = self._post(
             payload,
-            url_index=self._sticky_index(messages, len(self._urls())),
+            session_key=self._session_key(messages),
         )
         choices = data.get("choices") or []
         if not choices:
@@ -625,7 +659,7 @@ class OpenAICompatLLMClient:
         }
         data = self._post(
             payload,
-            url_index=self._sticky_index(messages, len(self._urls())),
+            session_key=self._session_key(messages),
         )
         choices = data.get("choices") or []
         if not choices:
