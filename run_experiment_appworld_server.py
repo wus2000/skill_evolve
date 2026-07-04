@@ -150,9 +150,11 @@ def main() -> None:
             # Median agent turn is a short code block; 4096 bounds runaway
             # generations that would zombie-hold a vLLM slot (agreed default).
             "appworld_max_tokens": 4096,
-            # PROVISIONAL (agreed 2026-07-04): calibrate from live output-size
-            # distributions once real runs exist, then re-negotiate.
-            "appworld_obs_max_chars": 6000,
+            # Agreed 2026-07-05: NO observation truncation for AppWorld (the
+            # provisional 6000-char cap is retired). 0 = unlimited — the
+            # worker passes outputs through verbatim; the prompt still
+            # steers the agent toward narrow queries to keep context lean.
+            "appworld_obs_max_chars": 0,
             # RAM-bound engine cap; holds across concurrent batches via the
             # env-internal EngineSlotLimiter. Calibrate after RAM measurement.
             "appworld_engine_slots": 128,

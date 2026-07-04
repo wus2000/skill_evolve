@@ -16,8 +16,8 @@ Env-specific knobs (``cfg.extra``, all optional):
                             minimal-ReAct notebook value, = our ALFWorld cap)
   appworld_temperature      agent sampling temperature (default 0.4)
   appworld_max_tokens       per-call completion cap (default 4096)
-  appworld_obs_max_chars    per-turn output truncation (default 6000 —
-                            PROVISIONAL, to be calibrated from live runs)
+  appworld_obs_max_chars    per-turn output truncation; 0 = unlimited
+                            (agreed 2026-07-05 default: NO truncation)
   appworld_engine_slots     max concurrent worker processes (default 128;
                             RAM-bound: each loaded world ~300-500MB)
   appworld_gt_mode          eval-annotation ground-truth richness (the ablation

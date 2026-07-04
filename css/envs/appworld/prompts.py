@@ -40,8 +40,8 @@ their APIs, called as: apis.<app_name>.<api_name>(...)
     print(apis.api_docs.show_api_descriptions(app_name='supervisor'))
     print(apis.api_docs.show_api_doc(app_name='supervisor', api_name='show_account_passwords'))
 - Your supervisor's account credentials are available through the supervisor \
-app. Long outputs may be truncated — query narrowly (use the APIs' filter and \
-pagination parameters).
+app. Outputs can be very long — query narrowly (use the APIs' filter and \
+pagination parameters) to keep your context focused.
 - The task is complete ONLY when you call apis.supervisor.complete_task(). \
 If the task asks a question, submit the result with \
 apis.supervisor.complete_task(answer=...). The episode never ends on its own.
