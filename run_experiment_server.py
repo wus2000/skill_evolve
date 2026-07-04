@@ -66,17 +66,37 @@ def main() -> None:
         target_model="qwen3.6-35b-a3b",
         optimizer_model="qwen3.6-35b-a3b",
 
-        # Runtime
-        max_api_workers=320,
+        # Runtime. Workers = 256 (agreed 2026-07-05, user decision for this
+        # from-scratch run on the dedicated new endpoint; replaces 320).
+        max_api_workers=256,
         concurrency_limit=1,   # ONE tree node per round — new PROPOSAL nodes get inf UCB
                                # (n_steps=0) so they are always selected first for exploitation.
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
         bash_timeout_s=180,    # per single bash command (3 min); kills hung commands fast (+ their whole tree)
         max_turns=50,          # 99.84% of rollouts finish <=50 turns (median 5); halves the long-tail budget
 
+        # L0 exploitation. batch = 40 (the historical SpreadsheetBench value,
+        # now explicit; ~29% of the 140 pool, 3-4 steps/epoch).
+        batch_size=40,
+        # Edit pipeline v2 (default since 2026-07-05 but pinned explicit): the
+        # raw->merged overhaul validated on real replays incl. a
+        # spreadsheetbench_step2 fixture. See docs/edit_pipeline_v2.md.
+        edit_pipeline="v2",
+        # Budget-bounded L0 (V3.4) — same policy as the Bird/ALFWorld/AppWorld/
+        # ScienceWorld arms (supersedes this launcher's earlier implicit
+        # min_l0_epochs=1 / unlimited steps).
+        min_l0_epochs=0,
+        max_l0_steps=20,
+        l0_stall_steps=8,
+
         # Reflect pipeline (three-way analysis -> unified edit generator)
         reflect_mode="plan_a",
         merger_granularity="point",   # ablation knob: "point" | "section"
+
+        # Analysis prompt-shape fixes (ON for this fresh run, matching the
+        # AppWorld/ScienceWorld arms; earlier spreadsheet runs predate them).
+        json_list_wrap=True,
+        analysis_env_context=True,
 
         # L0 val gate: two-stage item-paired sign test.
         # The val set is small (60) — a K=1 screen misses too many real flips
@@ -96,10 +116,13 @@ def main() -> None:
         # Output
         out_root=out_root,
 
-        # OpenAI-compatible LLM backend
+        # OpenAI-compatible LLM backend. Dedicated NEW endpoint (agreed
+        # 2026-07-05): server-local ssh tunnel to the new vLLM instance —
+        # single URL, no comma list; the old 10.77.110.162 pair stays with the
+        # AppWorld/ALFWorld/ScienceWorld experiments (zero contention).
         extra={
             "llm_backend": "openai_compat",
-            "base_url": "http://10.77.110.162:8888/v1,http://10.77.110.162:8889/v1",
+            "base_url": "http://127.0.0.1:8889/v1",
             "api_key": "token-abc123",
             "max_tokens": 16384,
             "temperature": 0.7,
