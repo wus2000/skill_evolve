@@ -443,27 +443,42 @@ def _purify_impure_edits(
 ) -> list[Violation]:
     """One focused purge call per content_purity edit; on success the
     violation is resolved, on failure it stays for the fallback's honest
-    accepted-risk audit."""
+    accepted-risk audit. The per-edit purge calls are independent and run
+    CONCURRENTLY (each touches only its own edit's body)."""
+    from concurrent.futures import ThreadPoolExecutor
+
     remaining: list[Violation] = []
     by_id = {f"E#{i}": e for i, e in enumerate(edits)}
+
+    jobs: "list[tuple[Violation, str, SectionEdit]]" = []
     for v in blocking:
         if v.vtype != "content_purity":
             remaining.append(v)
             continue
-        resolved_all = True
         for ref in v.edit_ids:
             e = by_id.get(ref)
-            if e is None or not e.body.strip():
-                continue
-            try:
-                text, _usage = client.complete_optimizer(
-                    _PURGE_SYSTEM,
-                    f"## Problem\n{v.detail}\n\n## Edit body\n{e.body}",
-                    max_tokens=4096)
-                obj = _parse_json_obj(text, "body")
-            except Exception:
-                obj = None
-            new_body = (obj or {}).get("body")
+            if e is not None and e.body.strip():
+                jobs.append((v, ref, e))
+
+    if not jobs:
+        return remaining
+
+    def _purge(job):
+        v, ref, e = job
+        try:
+            text, _usage = client.complete_optimizer(
+                _PURGE_SYSTEM,
+                f"## Problem\n{v.detail}\n\n## Edit body\n{e.body}",
+                max_tokens=4096)
+            obj = _parse_json_obj(text, "body")
+        except Exception:
+            obj = None
+        new_body = (obj or {}).get("body")
+        return job, new_body
+
+    unresolved: "set[int]" = set()
+    with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+        for (v, ref, e), new_body in pool.map(_purge, jobs):
             if isinstance(new_body, str) and new_body.strip():
                 e.body = new_body.strip()
                 audits.append(EditAudit(
@@ -471,8 +486,9 @@ def _purify_impure_edits(
                     "content_purity purge applied by a focused LLM call "
                     "before delivery", "adjudicator"))
             else:
-                resolved_all = False
-        if not resolved_all:
+                unresolved.add(id(v))
+    for v in blocking:
+        if v.vtype == "content_purity" and id(v) in unresolved:
             remaining.append(v)
     return remaining
 

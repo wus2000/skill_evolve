@@ -28,7 +28,7 @@ from css.optimizer.editpipe.render import (
     assert_structure,
     demote_headings,
 )
-from css.optimizer.editpipe.schema import EditAudit, SectionEdit
+from css.optimizer.editpipe.schema import POINT_KINDS, EditAudit, SectionEdit
 
 _log = logging.getLogger(__name__)
 
@@ -158,7 +158,13 @@ def apply_edits(
     order = {"rewrite_section": 0, "add_section": 1,
              "edit_point": 2, "remove_point": 2, "add_point": 2,
              "remove_section": 3}
-    for e in sorted(edits, key=lambda x: order.get(x.kind, 2)):
+    ordered = sorted(edits, key=lambda x: order.get(x.kind, 2))
+    point_edits = [e for e in ordered if e.kind in POINT_KINDS]
+    removals = [e for e in ordered if e.kind == "remove_section"]
+    section_stage = [e for e in ordered
+                     if e.kind not in POINT_KINDS and e.kind != "remove_section"]
+
+    def _apply_section_op(e: SectionEdit) -> None:
         if e.kind == "remove_section":
             idx = doc.index_of(e.subject)
             if idx < 0:
@@ -166,7 +172,7 @@ def apply_edits(
                     eid(e), e.subject, "degraded",
                     "remove_section target absent at apply time (idempotent "
                     "no-op)", "apply"))
-                continue
+                return
             del doc.sections[idx]
             audits.append(EditAudit(
                 eid(e), e.subject, "kept", "section removed", "apply"))
@@ -197,7 +203,7 @@ def apply_edits(
                     eid(e), e.subject, "degraded",
                     "add_section subject already present at apply time; "
                     "appended body to the existing section", "apply"))
-                continue
+                return
             new_sec = DocSection(e.subject, body)
             if e.placement == "start":
                 doc.sections.insert(0, new_sec)
@@ -216,13 +222,78 @@ def apply_edits(
             audits.append(EditAudit(
                 eid(e), e.subject, "kept", "section added", "apply"))
 
-        else:  # point ops
-            _apply_point(doc, e, eid(e), audits, resolver)
+    # Stage 1: rewrites + additions. Stage 2: point edits, section-grouped
+    # (concurrent across sections when an LLM resolver is in play). Stage 3:
+    # whole-section removals LAST — the removal is always the final word
+    # (F1: never delete-then-resurrect).
+    for e in section_stage:
+        _apply_section_op(e)
+    _apply_points_grouped(doc, point_edits, eid, audits, resolver)
+    for e in removals:
+        _apply_section_op(e)
 
     notes = doc.normalize()
     text = doc.render()
     failures = assert_structure(text)
     return ApplyResult(text, audits, failures, notes)
+
+
+def _apply_points_grouped(
+    doc: RulesDoc,
+    point_edits: list[SectionEdit],
+    eid,
+    audits: list[EditAudit],
+    resolver: Resolver | None,
+) -> None:
+    """Apply point edits grouped by subject section.
+
+    WITHIN a section the input order is a real dependency (a later anchor
+    may live in text an earlier edit produced), so groups run sequentially
+    inside. ACROSS sections the groups touch disjoint DocSection objects
+    and are independent — when an LLM resolver is present (each anchor miss
+    may cost 1-2 network calls) the groups run CONCURRENTLY. Groups whose
+    target section is absent mutate doc.sections structurally (create the
+    section) and therefore run in the sequential pass. Note: the apply
+    order runs remove_section LAST, so the section set is stable during
+    the point phase."""
+    if not point_edits:
+        return
+
+    groups: "dict[str, list[SectionEdit]]" = {}
+    for e in point_edits:
+        groups.setdefault(e.key, []).append(e)
+
+    sequential: "list[list[SectionEdit]]" = []
+    concurrent: "list[list[SectionEdit]]" = []
+    for key, group in groups.items():
+        if resolver is not None and doc.find(group[0].subject) is not None \
+                and len(groups) > 1:
+            concurrent.append(group)
+        else:
+            sequential.append(group)
+
+    for group in sequential:
+        for e in group:
+            _apply_point(doc, e, eid(e), audits, resolver)
+
+    if not concurrent:
+        return
+    if len(concurrent) == 1:
+        for e in concurrent[0]:
+            _apply_point(doc, e, eid(e), audits, resolver)
+        return
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _run_group(group: "list[SectionEdit]") -> "list[EditAudit]":
+        local: "list[EditAudit]" = []
+        for e in group:
+            _apply_point(doc, e, eid(e), local, resolver)
+        return local
+
+    with ThreadPoolExecutor(max_workers=min(8, len(concurrent))) as pool:
+        for local in pool.map(_run_group, concurrent):
+            audits.extend(local)
 
 
 def _apply_point(

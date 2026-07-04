@@ -297,6 +297,68 @@ def test_apply_heading_in_body_demoted():
     assert "**Sneaky Sub Heading**" in res.text
 
 
+def test_apply_point_groups_run_concurrently_and_match_sequential():
+    """Cross-section point groups with a resolver run concurrently (observed
+    via overlapping in-flight windows) and produce the same document as the
+    sequential path; within-section order is preserved."""
+    import threading
+    import time
+
+    base = "\n\n".join(f"### Sec{i}\n- base {i}" for i in range(4)) + "\n"
+    in_flight = []
+    lock = threading.Lock()
+    overlap_seen = []
+
+    def slow_resolver(subject, body, edit, feedback=""):
+        with lock:
+            in_flight.append(subject)
+            if len(in_flight) > 1:
+                overlap_seen.append(tuple(in_flight))
+        time.sleep(0.05)
+        with lock:
+            in_flight.remove(subject)
+        return body + "\n" + edit.body
+
+    def mk_edits():
+        return [
+            _edit(kind="add_point", subject=f"Sec{i}",
+                  body=f"- resolved {i}", anchor="NO MATCH")
+            for i in range(4)
+        ]
+
+    t0 = time.time()
+    res = apply_edits(base, mk_edits(), resolver=slow_resolver)
+    dur = time.time() - t0
+    assert res.assertion_failures == []
+    for i in range(4):
+        assert f"- resolved {i}" in res.text
+    assert overlap_seen, "resolver calls never overlapped — not concurrent"
+    assert dur < 0.05 * 4, "took as long as sequential"
+
+    seq = apply_edits(base, mk_edits(),
+                      resolver=lambda s, b, e, f="": b + "\n" + e.body)
+    assert seq.text == res.text          # concurrent == sequential result
+
+
+def test_apply_same_section_points_stay_ordered_under_resolver():
+    base = "### S\n- base\n\n### Other\n- o\n"
+    calls = []
+
+    def resolver(subject, body, edit, feedback=""):
+        calls.append(edit.body)
+        return body + "\n" + edit.body
+
+    edits = [
+        _edit(kind="add_point", subject="S", body="- first", anchor="NOPE"),
+        _edit(kind="add_point", subject="S", body="- second", anchor="NOPE"),
+        _edit(kind="add_point", subject="Other", body="- other", anchor="NOPE"),
+    ]
+    res = apply_edits(base, edits, resolver=resolver)
+    assert res.text.index("- first") < res.text.index("- second")
+    assert calls.index("- first") < calls.index("- second")
+    assert res.assertion_failures == []
+
+
 def test_apply_add_when_subject_exists_appends():
     base = "### S\n- old\n"
     res = apply_edits(base, [_edit(subject="S", body="- new")])
