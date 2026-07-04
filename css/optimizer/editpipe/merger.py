@@ -92,7 +92,7 @@ from its CONTENT's theme, and use the raw target at most as a placement hint.
       "placement": "<add_section only: end | start | existing section name>",
       "anchor": "<point ops only: verbatim text from the section>",
       "body": "<the content; NEVER include any markdown heading line>",
-      "target_tasks": ["task_id_1", ...],
+      "source_raw_edits": [<numbers of the raw edits this consolidates>],
       "rationale": "<DETAILED — see Principle 5>",
       "derivation": "<DETAILED — see Principle 5>"
     }
@@ -133,8 +133,11 @@ from its CONTENT's theme, and use the raw target at most as a placement hint.
     sub-grouping inside a section.
   - subject: plain section name — "Input Parsing", never "### Input Parsing"
     and never "2. Input Parsing".
-  - target_tasks: union of source_tasks from contributing raw edits;
-    non-empty.
+  - source_raw_edits: the numbers ("### Raw edit N") of ALL raw edits this
+    output edit consolidates — non-empty, and complete (every raw edit that
+    contributed evidence or content must be listed). The supporting task
+    set is derived from these references mechanically; you do not write
+    task IDs.
   - anchor: copied VERBATIM from the current rules.md text shown below —
     not paraphrased, not abbreviated.
   - Point ops require an EXISTING section (in the Section index). Text seen
@@ -170,9 +173,11 @@ from its CONTENT's theme, and use the raw target at most as a placement hint.
    exists and is broadly named; give it its own add_section instead.
 
 5. DERIVATION TRANSPARENCY. rationale and derivation are detailed audit
-   records. rationale: what insight was discovered, which task IDs support
-   it, what behavior change is expected. derivation: which raw edit numbers
-   contributed, what was kept vs dropped, how overlaps were resolved.
+   records. rationale: what insight was discovered, what evidence supports
+   it, what behavior change is expected. derivation: HOW the cited raw
+   edits were consolidated — what was kept vs refined, how overlaps and
+   contradictions were resolved (the WHICH is already structured in
+   source_raw_edits; do not repeat the number list).
 
 6. RESOLVE CONTRADICTIONS. Conflicting raw edits → keep the version with
    more supporting patches; explain in derivation.
@@ -239,6 +244,12 @@ def required_fields_missing(edits: list[dict]) -> list[str]:
     Only fields whose absence blocks downstream stages outright. Everything
     else (bad kinds, colliding subjects, headings in bodies) is either
     losslessly normalized or adjudicated — not a repair trigger here.
+
+    Provenance: an edit must carry EITHER ``source_raw_edits`` (the v2
+    structured references, from which target_tasks is derived mechanically)
+    OR an explicit non-empty ``target_tasks`` (read compatibility with older
+    responses and repair payloads). Missing both means the edit cannot be
+    verified and triggers a feedback repair.
     """
     out: list[str] = []
     for i, d in enumerate(edits or []):
@@ -259,12 +270,79 @@ def required_fields_missing(edits: list[dict]) -> list[str]:
             out.append(
                 f"{tag} ({kind}) is missing required 'anchor' — set it to "
                 "the exact text in the section this edit targets")
+        sre = d.get("source_raw_edits")
+        has_refs = isinstance(sre, list) and any(
+            isinstance(x, (int, str)) for x in sre)
         tt = d.get("target_tasks")
-        if not (isinstance(tt, list) and len(tt) > 0):
+        has_tasks = isinstance(tt, list) and len(tt) > 0
+        if not has_refs and not has_tasks:
             out.append(
-                f"{tag} is missing required non-empty 'target_tasks' — the "
-                "union of the source_tasks of the raw edits it consolidates")
+                f"{tag} is missing required non-empty 'source_raw_edits' — "
+                "the numbers of the raw edits (\"### Raw edit N\") this "
+                "edit consolidates")
     return out
+
+
+def resolve_provenance(
+    raw_edit_dicts: list[dict],
+    numbered_tasks: dict[int, list[str]],
+) -> list[str]:
+    """Mechanically derive target_tasks from source_raw_edits references.
+
+    Bookkeeping, not judgement: for each edit dict, the union of the cited
+    raw edits' source_tasks REPLACES any hand-written target_tasks (the
+    live cross-check showed hand-written task lists miss up to 30 of 43
+    supporting tasks). Hand-written target_tasks survive only as a
+    fallback when no valid reference exists (older responses, repair
+    payloads). Returns audit notes about invalid references.
+    """
+    notes: list[str] = []
+    for i, d in enumerate(raw_edit_dicts or []):
+        if not isinstance(d, dict):
+            continue
+        refs = d.get("source_raw_edits")
+        if not isinstance(refs, list):
+            continue
+        valid: list[int] = []
+        invalid: list[object] = []
+        for r in refs:
+            try:
+                n = int(r)
+            except (TypeError, ValueError):
+                invalid.append(r)
+                continue
+            if n in numbered_tasks:
+                valid.append(n)
+            else:
+                invalid.append(r)
+        if invalid:
+            notes.append(
+                "edits[%d] cited %d invalid raw-edit reference(s): %s"
+                % (i, len(invalid), invalid[:5]))
+        if valid:
+            union: list[str] = []
+            for n in valid:
+                for t in numbered_tasks[n]:
+                    if t not in union:
+                        union.append(t)
+            d["target_tasks"] = union
+            d["source_raw_edits"] = valid
+    return notes
+
+
+def number_raw_edits(raw_patches: list[RawPatch]) -> dict[int, "Edit"]:
+    """The canonical 1-based numbering, identical to the prompt rendering
+    in ``_format_raw_edits`` (single source of numbering truth)."""
+    numbered: dict[int, Edit] = {}
+    idx = 0
+    for rp in raw_patches:
+        if rp is None or rp.patch is None:
+            continue
+        for e in rp.patch.edits:
+            if isinstance(e, Edit):
+                idx += 1
+                numbered[idx] = e
+    return numbered
 
 
 # ── Prompt assembly (reuses the proven legacy user-prompt skeleton) ─────────
@@ -278,6 +356,9 @@ def _section_index(rules: str) -> str:
 
 
 def _format_raw_edits(raw_patches: list[RawPatch]) -> str:
+    # NOTE: the "### Raw edit N" numbering below MUST stay identical to
+    # number_raw_edits() — it is what source_raw_edits references resolve
+    # against.
     entries: list[str] = []
     edit_idx = 0
     for rp_idx, rp in enumerate(raw_patches):
@@ -430,9 +511,19 @@ def run_merger(
         return [], [], [], stats
     stats["parsed_edits"] = len(raw_edits)
 
+    # Mechanical provenance: derive target_tasks from source_raw_edits
+    # references (bookkeeping belongs to the program, not the model).
+    numbered_tasks = {n: list(e.source_tasks)
+                      for n, e in number_raw_edits(raw_patches).items()}
+    audits: list[EditAudit] = []
+    for note in resolve_provenance(raw_edits, numbered_tasks):
+        audits.append(EditAudit("*", "*", "normalized",
+                                f"provenance: {note}", "gate"))
+
     doc = RulesDoc.parse(rules)
     edits = [SectionEdit.from_dict(d) for d in raw_edits]
-    kept, violations, audits = syntax_gate(edits, doc)
+    kept, violations, gate_audits = syntax_gate(edits, doc)
+    audits += gate_audits
     violations += detect_conflicts(kept, doc)
     violations += detect_restatements(kept, doc)
 
@@ -453,6 +544,10 @@ def run_merger(
         )
         repaired = parse_merger_output(repaired_text) if repaired_text else None
         if repaired:
+            for note in resolve_provenance(repaired, numbered_tasks):
+                audits.append(EditAudit("*", "*", "normalized",
+                                        f"provenance (coherence): {note}",
+                                        "gate"))
             new_edits = [SectionEdit.from_dict(d) for d in repaired]
             new_kept, new_violations, new_audits = syntax_gate(new_edits, doc)
             new_violations += detect_conflicts(new_kept, doc)

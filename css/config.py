@@ -56,7 +56,10 @@ class CSSConfig:
     l0_stall_steps: int = 8            # saturation: consecutive steps without accept_new_best (0 = disabled)
     batch_size: int = 40                # tasks per batch in batch-step architecture
     num_generators: int = 3             # deprecated (plan_a v1 N-generator stage); unused by per-minibatch plan_a
-    l0_edit_budget: int = 3             # max edits each minibatch proposer may emit (L)
+    l0_edit_budget: int = 3             # per-minibatch edit guideline (L) injected into the
+                                        # proposer prompt ("AT MOST L"); NOT mechanically
+                                        # enforced — over-budget proposals are kept and the
+                                        # merger de-duplicates with an unused-signal ledger
     max_edits_per_step: int = 0          # deprecated — merger now self-determines edit count
     exploitation_val_k: int = 1          # K for val gate in exploitation (1=fast; train K stays at k_rollouts)
     test_k_rollouts: int = 1             # K for test-set evaluation (bare baseline + per-round test)

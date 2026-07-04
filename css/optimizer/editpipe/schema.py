@@ -70,6 +70,12 @@ class SectionEdit:
     target_tasks: list[str] = field(default_factory=list)
     rationale: str = ""
     derivation: str = ""
+    # Structured provenance: 1-based numbers of the raw edits this edit
+    # consolidates (prompt rendering "### Raw edit N"). target_tasks is
+    # mechanically derived as the union of the cited raw edits'
+    # source_tasks — the model points at contributors, the program keeps
+    # the books. Empty on legacy data (target_tasks then stands alone).
+    source_raw_edits: list[int] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -92,6 +98,8 @@ class SectionEdit:
             d["placement"] = self.placement
         if self.anchor:
             d["anchor"] = self.anchor
+        if self.source_raw_edits:
+            d["source_raw_edits"] = list(self.source_raw_edits)
         return d
 
     def to_merged(self):
@@ -149,6 +157,14 @@ class SectionEdit:
             d.get("placement", "") or d.get("after_section", "")).strip()
         if placement in ("_end", "_start"):
             placement = placement.lstrip("_")
+        raw_refs = d.get("source_raw_edits", [])
+        refs: list[int] = []
+        if isinstance(raw_refs, list):
+            for r in raw_refs:
+                try:
+                    refs.append(int(r))
+                except (TypeError, ValueError):
+                    continue
         return cls(
             kind=str(d.get("kind", "") or d.get("delta_type", "")).strip(),
             subject=normalize_subject(
@@ -160,6 +176,7 @@ class SectionEdit:
             target_tasks=[str(t) for t in raw_tasks if t],
             rationale=str(d.get("rationale", "")),
             derivation=str(d.get("derivation", "")),
+            source_raw_edits=refs,
         )
 
 
@@ -335,6 +352,9 @@ def syntax_gate(
             merged_tasks = [t for t in e.target_tasks
                             if t not in keeper.target_tasks]
             keeper.target_tasks.extend(merged_tasks)
+            keeper.source_raw_edits.extend(
+                r for r in e.source_raw_edits
+                if r not in keeper.source_raw_edits)
             audits.append(EditAudit(
                 eid, e.subject, "dropped",
                 f"byte-identical duplicate of {keeper_eid}"

@@ -32,9 +32,6 @@ OUT_DIR = os.environ.get(
     "CSS_REPLAY_OUT",
     os.path.join(REPO, "runs", "editpipe_replays"))
 
-# Signal-coverage probes: high-support themes from the real step1 raw edits
-# that the OLD pipeline lost. Presence = any final edit whose subject+body
-# matches the keyword group (case-insensitive, any-of).
 STEP1_SIGNALS = {
     "spotify_multi_source": ["song_library", "album_library", "three source",
                              "album library", "song library"],
@@ -192,11 +189,25 @@ def run_v2(case, seed_tag):
                     if d["actor"] == "gate"
                     and "byte-identical" not in d["reason"]]
 
+    from css.optimizer.editpipe.merger import number_raw_edits
+    numbered = number_raw_edits(patches)
+    used = set()
+    for e in cons.edits:
+        used.update(e.source_raw_edits)
+    n_with_refs = sum(1 for e in cons.edits if e.source_raw_edits)
     metrics = {
         "pipeline": "v2", "case": case, "tag": seed_tag,
         "n_raw": n_raw,
         "n_parsed": cons.stats.get("merger", {}).get("parsed_edits"),
         "n_final": len(cons.edits),
+        "provenance": {
+            "edits_with_refs": n_with_refs,
+            "raw_edits_cited": len(used),
+            "raw_edits_unused": len(numbered) - len(used),
+            "mean_target_tasks": round(
+                sum(len(e.target_tasks) for e in cons.edits)
+                / max(1, len(cons.edits)), 1),
+        },
         "final_kinds": sorted(e.kind for e in cons.edits),
         "final_subjects": [e.subject for e in cons.edits],
         "converged": cons.converged,

@@ -91,7 +91,7 @@ start_one() {  # start_one <index>
         --enable-auto-tool-choice \
         --tool-call-parser qwen3_coder \
         --language-model-only \
-        --enable-prefix \
+        --enable-prefix-caching \
         --max-model-len "$MAX_MODEL_LEN" \
         --gpu-memory-utilization "$GPU_UTIL" \
         --max-num-seqs "$MAX_NUM_SEQS" \

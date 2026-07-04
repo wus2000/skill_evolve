@@ -339,6 +339,13 @@ def _apply_ops(
                     if t not in seen:
                         seen.append(t)
             e.target_tasks = seen
+        if not e.source_raw_edits and inherit_from:
+            refs: list[int] = []
+            for src in inherit_from:
+                for r in src.source_raw_edits:
+                    if r not in refs:
+                        refs.append(r)
+            e.source_raw_edits = refs
         return e
 
     for op in ops:

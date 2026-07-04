@@ -101,6 +101,23 @@ anchor:    point ops — text located inside the subject section
 body:      content, heading-free
 ```
 
+Mechanism metadata riding on each edit (never enters rules.md):
+
+```
+source_raw_edits: numbers of the raw edits this edit consolidates — the
+                  model POINTS at contributors; the program KEEPS THE BOOKS
+target_tasks:     the verification target set — mechanically derived as the
+                  union of the cited raw edits' source_tasks (a live
+                  cross-check showed hand-written task lists miss up to
+                  30/43 supporting tasks, directly under-powering per-edit
+                  verification); hand-written values survive only as a
+                  read-compat fallback when no valid reference exists
+rationale:        the insight narrative — consumed by merger history
+                  injection (LEARN FROM HISTORY) and the insight digest
+derivation:       HOW the cited edits were consolidated (kept/refined/
+                  conflict resolution); the WHICH is structured above
+```
+
 Legacy vocabulary (`new_section`/`section_rewrite`/`point_add`/...,
 `append`/`insert_after`/..., `section_target`/`content`/`point_anchor`/
 `after_section`) is accepted on read everywhere (old checkpoints, old run
@@ -140,7 +157,13 @@ reflector (v2 vocabulary, per-minibatch raw edits)
 Artifacts per step: `merged_edits.json` (wire format, unchanged) plus
 `edit_audit.json` — the fate of every edit (kept / normalized / converted /
 merged_into / demoted / dropped / degraded) with actor and reason, the
-accepted risks, and convergence stats.
+accepted risks, convergence stats, per-edit provenance
+(`edit_provenance`: subject -> cited raw edits -> derived target set), and
+the **unused-raw-edits ledger**: every raw edit no merged edit cites, with
+its content head and supporting tasks. "Every signal either enters
+verification or is accounted for" is a mechanical query, not a forensic
+investigation. `apply_audit.json` records the apply stage (degradations,
+normalize notes, assertions) on both the per-edit and collective paths.
 
 ## 5. Validation evidence
 
@@ -222,7 +245,7 @@ content to preserve — they are retried by the JSON-repair layer and logged).
 |---|---|
 | reflector: unparseable proposer output -> `[]` | unchanged (repair retry + log) |
 | reflector: bad op / locator-less refinement edit dropped | locator-less edit WITH content demotes to add_point (content survives); only content-less AND locator-less is junk |
-| reflector: `raw_edits[:budget]` truncation | kept (deliberate budget) but now logged with counts |
+| reflector: `raw_edits[:budget]` truncation | REMOVED — the budget is a prompt guideline only; over-budget proposals flow to the merger, which de-duplicates against the unused-signal ledger |
 | merger: `_validate_merged_edits` drops — invalid delta_type / content not `### ` / empty target_tasks / from_dict raises | all become violations or lossless normalizations; missing fields go through the required-field repair hook; **no mechanical drops** |
 | merger: duplicate section_target drop (the massacre) | identity_collision violation -> semantic adjudication; byte-identical duplicates are the only mechanical kill |
 | merger: silent auto-convert rewrite-of-missing -> new_section | kept (mechanically lossless) but audited as `converted` |

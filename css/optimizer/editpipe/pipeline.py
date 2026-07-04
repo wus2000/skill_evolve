@@ -178,17 +178,49 @@ def consolidate_to_merged(
     cons = consolidate(client, rules, raw_patches, history_text)
     if audit_path:
         try:
+            from css.optimizer.editpipe.merger import number_raw_edits
+
+            # Signal-completeness ledger: which raw edits reached a merged
+            # edit (structured references) and which did not. "Every signal
+            # either enters verification or is accounted for" becomes a
+            # mechanical query instead of a forensic investigation.
+            numbered = number_raw_edits(raw_patches)
+            used: set[int] = set()
+            for e in cons.edits:
+                used.update(e.source_raw_edits)
+            unused = [
+                {
+                    "raw_edit": n,
+                    "op": ed.op,
+                    "subject": ed.subject or ed.target,
+                    "content_head": " ".join(ed.content.split())[:120],
+                    "source_tasks": list(ed.source_tasks),
+                }
+                for n, ed in sorted(numbered.items()) if n not in used
+            ]
             payload = {
                 "audits": cons.audit_dicts(),
                 "accepted_risks": [v.to_dict() for v in cons.accepted_risks],
                 "converged": cons.converged,
                 "stats": cons.stats,
+                "edit_provenance": [
+                    {"subject": e.subject, "kind": e.kind,
+                     "source_raw_edits": list(e.source_raw_edits),
+                     "target_tasks": list(e.target_tasks)}
+                    for e in cons.edits
+                ],
+                "unused_raw_edits": unused,
             }
             os.makedirs(os.path.dirname(audit_path), exist_ok=True)
             tmp = audit_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=1)
             os.replace(tmp, audit_path)
+            if unused:
+                _log.info(
+                    "editpipe: %d/%d raw edit(s) not referenced by any "
+                    "merged edit (see unused_raw_edits in the audit ledger)",
+                    len(unused), len(numbered))
         except Exception:
             _log.warning("editpipe: failed to persist audit trail",
                          exc_info=True)

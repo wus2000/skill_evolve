@@ -268,11 +268,12 @@ def test_run_merger_coherence_round_fixes_collisions():
     assert not [v for v in violations if v.vtype == "identity_collision"]
 
 
-def test_sb_accident_shape_batch_target_tasks_omission_recovers():
-    """The recorded SpreadsheetBench failure mode: the merger omits
-    target_tasks on EVERY edit (which under the legacy validator collapsed a
+def test_sb_accident_shape_batch_provenance_omission_recovers():
+    """The recorded SpreadsheetBench failure mode: the merger omits ALL
+    provenance on every edit (which under the legacy validator collapsed a
     whole step to merged_edits == []). The required-field hook must recover
-    it with one feedback repair call."""
+    it with one feedback repair call; the repaired references then derive
+    target_tasks mechanically."""
     patches = _load_patches("spreadsheetbench_step2")
     with open(os.path.join(FIX, "spreadsheetbench_step2", "base_rules.md"),
               encoding="utf-8") as f:
@@ -289,29 +290,160 @@ def test_sb_accident_shape_batch_target_tasks_omission_recovers():
                  "anchor": "**Answer Position Alignment**",
                  "body": "- align."},
             ]})
-        assert "target_tasks" in user      # repair feedback names the field
+        assert "source_raw_edits" in user  # repair feedback names the field
         return json.dumps({"edits": [
             {"kind": "add_section", "subject": "Computed Values Refinement",
-             "body": "- compute in python.", "target_tasks": ["49801"]},
+             "body": "- compute in python.", "source_raw_edits": [1, 2]},
             {"kind": "add_point", "subject": "Sheet and Range Fidelity",
              "anchor": "**Answer Position Alignment**", "body": "- align.",
-             "target_tasks": ["168-17"]},
+             "source_raw_edits": [3]},
         ]})
 
     client = StubLLMClient(optimizer_fn=opt)
     edits, violations, audits, stats = run_merger(client, base, patches)
     assert len(edits) == 2
-    assert all(e.target_tasks for e in edits)
+    # target_tasks were derived mechanically from the cited raw edits:
+    from css.optimizer.editpipe.merger import number_raw_edits
+    numbered = number_raw_edits(patches)
+    expected_0 = []
+    for n in (1, 2):
+        for t in numbered[n].source_tasks:
+            if t not in expected_0:
+                expected_0.append(t)
+    assert edits[0].target_tasks == expected_0
+    assert edits[1].target_tasks == list(numbered[3].source_tasks)
+    assert edits[0].source_raw_edits == [1, 2]
     assert not [v for v in violations if v.vtype == "missing_target_tasks"]
     assert state["n"] == 2                 # merger + exactly one repair
 
 
+def test_provenance_union_overrides_handwritten_tasks():
+    """The live cross-check showed hand-written target_tasks miss up to
+    30/43 supporting tasks; the mechanical union from source_raw_edits is
+    authoritative and REPLACES any hand-written list."""
+    patches = _load_patches("appworld_step1")
+    with open(os.path.join(FIX, "appworld_step1", "base_rules.md"),
+              encoding="utf-8") as f:
+        base = f.read()
+    from css.optimizer.editpipe.merger import number_raw_edits
+    numbered = number_raw_edits(patches)
+    expected = []
+    for n in (13, 41):
+        for t in numbered[n].source_tasks:
+            if t not in expected:
+                expected.append(t)
+
+    def opt(system, user):
+        assert '"source_raw_edits"' in system   # new schema is in the prompt
+        return json.dumps({"reasoning": "ok", "edits": [{
+            "kind": "add_point", "subject": "Pagination Discipline",
+            "anchor": "- **Mandatory Loop**", "body": "- set page_limit.",
+            "source_raw_edits": [13, 41],
+            "target_tasks": ["hand-written-and-wrong"],
+        }]})
+
+    client = StubLLMClient(optimizer_fn=opt)
+    edits, violations, audits, stats = run_merger(client, base, patches)
+    assert len(edits) == 1
+    assert edits[0].target_tasks == expected     # union, not the hand list
+    assert edits[0].source_raw_edits == [13, 41]
+
+
+def test_provenance_invalid_refs_audited_and_fallback_kept():
+    """Out-of-range/garbage references are discarded with an audit note;
+    an edit citing ONLY invalid refs keeps its hand-written target_tasks."""
+    patches = _load_patches("appworld_step1")
+    with open(os.path.join(FIX, "appworld_step1", "base_rules.md"),
+              encoding="utf-8") as f:
+        base = f.read()
+
+    def opt(system, user):
+        return json.dumps({"reasoning": "ok", "edits": [{
+            "kind": "add_section", "subject": "Some Topic",
+            "body": "- rule.", "source_raw_edits": [9999, "banana"],
+            "target_tasks": ["fallback_task"],
+        }]})
+
+    client = StubLLMClient(optimizer_fn=opt)
+    edits, violations, audits, stats = run_merger(client, base, patches)
+    assert len(edits) == 1
+    assert edits[0].target_tasks == ["fallback_task"]
+    assert any("invalid raw-edit reference" in a.reason for a in audits)
+
+
+def test_unused_raw_edits_ledger_persisted(tmp_path):
+    """The audit ledger enumerates every raw edit no merged edit cites."""
+    from types import SimpleNamespace
+    from css.optimizer.editpipe.pipeline import consolidate_to_merged
+
+    patches = _load_patches("appworld_step1")
+    with open(os.path.join(FIX, "appworld_step1", "base_rules.md"),
+              encoding="utf-8") as f:
+        base = f.read()
+
+    def opt(system, user):
+        if "You are the MERGER" in system:
+            return json.dumps({"reasoning": "ok", "edits": [{
+                "kind": "add_section", "subject": "Only One Topic",
+                "body": "- rule.", "source_raw_edits": [1, 2, 3]}]})
+        return _valid_response()
+
+    client = StubLLMClient(optimizer_fn=opt)
+    cfg = SimpleNamespace(merger_inject_history=False)
+    audit_path = str(tmp_path / "edit_audit.json")
+    merged = consolidate_to_merged(
+        client, base, patches, SimpleNamespace(entries=[]), cfg,
+        audit_path=audit_path)
+    assert len(merged) == 1
+    ledger = json.load(open(audit_path))
+    assert len(ledger["edit_provenance"]) == 1
+    assert ledger["edit_provenance"][0]["source_raw_edits"] == [1, 2, 3]
+    # 59 raw edits total, 3 cited -> 56 accounted for as unused:
+    assert len(ledger["unused_raw_edits"]) == 56
+    entry = ledger["unused_raw_edits"][0]
+    assert {"raw_edit", "op", "subject", "content_head",
+            "source_tasks"} <= set(entry)
+
+
+def test_reflector_budget_is_guideline_not_truncation():
+    """Over-budget proposer output is kept in full (the merger de-dupes
+    with a ledger); the budget only shapes the prompt."""
+    from types import SimpleNamespace
+    from css.optimizer.reflect import (
+        _SYSTEM_FAILURE_PROPOSER,
+        _run_minibatch_proposer,
+    )
+
+    edits_json = json.dumps({"edits": [
+        {"op": "add_point", "subject": "S", "anchor": f"a{i}",
+         "body": f"- rule {i}", "source_tasks": [f"t{i}"]}
+        for i in range(7)
+    ]})
+    client = StubLLMClient(optimizer_fn=lambda s, u: edits_json)
+    rollouts = [SimpleNamespace(
+        task_id="t0", rollout_index=0, task_type="", task_description="d",
+        passed=False, hard=0, soft=0.0, n_pass=0, n_cases=1, n_turns=1,
+        fail_reason="", messages=[])]
+    cfg = SimpleNamespace(l0_edit_budget=3, tool_trunc=2000, seed=0)
+    rp = _run_minibatch_proposer(
+        client, "strategy", "### S\n- x\n", rollouts,
+        _SYSTEM_FAILURE_PROPOSER, "failure", cfg=cfg)
+    assert rp is not None and len(rp.patch.edits) == 7   # nothing beheaded
+
+
 def test_required_fields_hook_matches_gate_blockers():
-    edits = [{"kind": "add_point", "subject": "S"}]  # no anchor, body, tasks
+    edits = [{"kind": "add_point", "subject": "S"}]  # no anchor, body, refs
     missing = required_fields_missing(edits)
     assert any("anchor" in m for m in missing)
     assert any("body" in m for m in missing)
-    assert any("target_tasks" in m for m in missing)
+    assert any("source_raw_edits" in m for m in missing)
+    # Either provenance form satisfies the hook:
+    assert required_fields_missing([{
+        "kind": "add_section", "subject": "S", "body": "- x",
+        "source_raw_edits": [1]}]) == []
+    assert required_fields_missing([{
+        "kind": "add_section", "subject": "S", "body": "- x",
+        "target_tasks": ["t"]}]) == []
 
 
 def test_parse_merger_output_variants():

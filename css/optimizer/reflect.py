@@ -489,14 +489,18 @@ def _run_minibatch_proposer(
     except Exception:  # noqa: BLE001 — a proposer failure must not crash the step
         raw_edits = []
 
+    # The edit budget (L) is a PROMPT guideline, not a mechanical truncation:
+    # positionally beheading over-budget proposals is an unaudited signal
+    # drop, and de-duplication is the merger's job (which keeps a full
+    # unused-signal ledger). Over-budget output is kept and logged.
     if len(raw_edits) > budget:
         _log.info(
-            "reflect: proposer emitted %d edits; enforcing per-minibatch "
-            "budget L=%d (dropping the %d lowest-priority tail edits)",
-            len(raw_edits), budget, len(raw_edits) - budget,
+            "reflect: proposer emitted %d edits (budget guideline L=%d); "
+            "keeping all — the merger de-duplicates with an audit trail",
+            len(raw_edits), budget,
         )
     edits: list[Edit] = []
-    for d in raw_edits[:budget]:  # enforce the per-minibatch budget
+    for d in raw_edits:
         edit = _edit_from_dict(d, source_type)
         if edit is not None:
             edits.append(edit)
