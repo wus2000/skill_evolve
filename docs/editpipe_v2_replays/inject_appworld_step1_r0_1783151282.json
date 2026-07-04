@@ -1,0 +1,312 @@
+{
+ "metrics": {
+  "pipeline": "v2_inject_accident",
+  "case": "appworld_step1",
+  "tag": "inject_appworld_step1_r0_1783151282",
+  "n_raw": 59,
+  "n_injected": 13,
+  "n_final": 10,
+  "final_subjects": [
+   "Pagination Discipline",
+   "Temporal Context Resolution",
+   "Playback API Resolution",
+   "Queue and Stream State Interpretation",
+   "Venmo Transaction Direction",
+   "Transaction Description Filtering",
+   "Spotify Library Completeness",
+   "Playlist Song Verification",
+   "Contextual Identity Resolution",
+   "Search and Sort Optimization"
+  ],
+  "final_kinds": [
+   "add_point",
+   "add_point",
+   "add_section",
+   "add_section",
+   "add_section",
+   "add_section",
+   "add_section",
+   "add_section",
+   "add_section",
+   "add_section"
+  ],
+  "converged": true,
+  "adjudication_rounds": 3,
+  "coherence_rounds": 0,
+  "n_drops_audited": 1,
+  "n_silent_drops": 0,
+  "drop_reasons": [
+   "Content about authentication ('Explicit Authentication Parameters') is semantically unrelated to the subject 'Pagination"
+  ],
+  "accepted_risks": [],
+  "assertion_failures": [],
+  "signal_coverage": {
+   "spotify_multi_source": true,
+   "identity_resolution": true,
+   "sort_by_ranking": true,
+   "authentication": true,
+   "pagination": true,
+   "playback": true,
+   "temporal": false
+  },
+  "candidate_sections": [
+   "Pagination Discipline",
+   "Temporal Context Resolution",
+   "Playback API Resolution",
+   "Queue and Stream State Interpretation",
+   "Venmo Transaction Direction",
+   "Transaction Description Filtering",
+   "Spotify Library Completeness",
+   "Playlist Song Verification",
+   "Contextual Identity Resolution",
+   "Search and Sort Optimization"
+  ],
+  "wall_s": 184.5,
+  "llm_calls": 6,
+  "llm_seconds": 184.5,
+  "tokens_in": 43981,
+  "tokens_out": 5688,
+  "truncations": 0
+ },
+ "detail": {
+  "final_edits": [
+   {
+    "kind": "add_point",
+    "subject": "Pagination Discipline",
+    "body": "- **Explicit Page Limit**: Always set `page_limit` to the maximum allowed value (e.g., 20) in your initial request to minimize API calls and avoid truncation from small defaults. Do not rely on the API's default page limit.",
+    "target_tasks": [
+     "771d8fc_3",
+     "e3d6c94_3",
+     "229360a_1",
+     "07b42fd_1",
+     "cf6abd2_3",
+     "22cc237_3",
+     "3c13f5a_1"
+    ],
+    "rationale": "Agents failed by relying on small default page limits (e.g., 5), missing items. Setting an explicit max limit (e.g., 20) ensures completeness and efficiency.",
+    "derivation": "Merged Raw 13 (explicit page limit) and Raw 16 (mandatory pagination). The existing rules cover the loop, but not the explicit limit setting which was a critical failure point.",
+    "anchor": "- **Verification**: If the task requires 'all' items, verify completeness by ensuring you have fetched every page. Missing a page leads to incomplete action sets."
+   },
+   {
+    "kind": "add_point",
+    "subject": "Temporal Context Resolution",
+    "body": "- **Entity Label Matching**: When a task refers to a specific entity by name or label (e.g., 'go-to-sleep alarm'), search for that exact string or a clear substring within the entity's label/title field. Do NOT guess based on position, enabled status, or other attributes. Perform case-insensitive matching.",
+    "target_tasks": [
+     "6ea6792_3",
+     "ce359b5_1",
+     "76f2c72_2",
+     "3c13f5a_1",
+     "e3d6c94_3",
+     "771d8fc_2",
+     "c901732_1",
+     "cf6abd2_1",
+     "82e2fac_1",
+     "e7a10f8_3",
+     "2a163ab_1",
+     "302c169_3",
+     "302c169_1"
+    ],
+    "rationale": "Retains the only point loosely related to resolution/identification within temporal context (filtering entities), while dropping clearly misplaced authentication and general action logic points.",
+    "derivation": "Filtered original E#2 body to keep only the third point.",
+    "anchor": "- **Year and Month**: When filtering by 'this year' and a month, always check BOTH the month AND the year. Files from previous years with the same month belong to 'others' or a different category."
+   },
+   {
+    "kind": "add_section",
+    "subject": "Playback API Resolution",
+    "body": "- **Direct API Usage**: `show_api_descriptions` output is often truncated. Do NOT rely on scanning it to find playback APIs. If you need to play music, try `apis.spotify.play_music(access_token=..., playlist_id=...)` directly.\n- **Fallback Logic**: If `play_music` fails with 422, check for `play_playlist` or `play_song`. If all fail, check `add_to_queue` followed by verifying if playback starts automatically.\n- **Avoid Infinite Loops**: Do not spend excessive turns iterating through pages of playlists or searching for the API name. Once a suitable playlist is identified, attempt to play it immediately.",
+    "target_tasks": [
+     "b0a8eae_2",
+     "c901732_2"
+    ],
+    "rationale": "Agents got stuck in infinite loops trying to find the correct playback API name from truncated docs. Direct usage of `play_music` is the standard solution.",
+    "derivation": "Raw 9, Raw 35. This is a specific API resolution rule for playback tasks.",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Queue and Stream State Interpretation",
+    "body": "- **Played So Far**: When a task asks to act on items 'played so far', 'history', or 'already processed', it refers to items consumed or currently being consumed. It does NOT include items still waiting in the queue.\n- **Use Flags**: Inspect the API response for flags like `is_current`, `is_playing`, or position indices. Include items up to and including the one marked `is_current` or `is_playing`. Stop processing further items.\n- **Avoid Full-List Assumptions**: Never assume 'all items in the queue' means 'all items in the response list' unless the task explicitly says so.",
+    "target_tasks": [
+     "ccb4494_3",
+     "ccb4494_1"
+    ],
+    "rationale": "Agents liked all songs in the queue, including upcoming ones, instead of only those 'played so far'. Correct interpretation requires checking `is_current` flags.",
+    "derivation": "Raw 11, Raw 31. This is a distinct semantic interpretation rule for queue states.",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Venmo Transaction Direction",
+    "body": "- **Sent vs. Received**: When the task asks about money 'received to' someone or 'received from' someone, you MUST filter Venmo transactions by `direction`.\n  - 'Received to [person]' or 'sent to [person]': Use `direction='sent'`.\n  - 'Received from [person]' or 'sent from [person]': Use `direction='received'`.\n- **Explicit Check**: Never assume direction. If the task says 'received to coworkers', it means transactions where the user SENT money TO coworkers (`direction='sent'`).",
+    "target_tasks": [
+     "d0b1f43_2"
+    ],
+    "rationale": "Agents misinterpreted prepositions like 'received to' and used the wrong direction filter, leading to incorrect transaction sets.",
+    "derivation": "Raw 30. This is a specific semantic rule for Venmo transaction phrasing.",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Transaction Description Filtering",
+    "body": "- **Match by Description**: When identifying which users have already performed a specific action (e.g., 'paid for dinner'), filter transactions by the specific description or context keyword (e.g., 'Friends Dinner').\n- **Verify Action Context**: A user may have sent money for unrelated reasons (e.g., 'Yoga class'). These do NOT count as completing the current task's obligation. Only transactions with a matching description should be considered 'paid'.",
+    "target_tasks": [
+     "22cc237_2"
+    ],
+    "rationale": "Agents incorrectly identified users as 'paid' based on general transaction history rather than filtering by the specific description mentioned in the task.",
+    "derivation": "Raw 36. This is a distinct filtering rule for transaction context.",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Spotify Library Completeness",
+    "body": "- **Three Sources**: For any task involving songs in a Spotify account, you MUST fetch data from three distinct sources: `show_song_library`, `show_album_library`, and `show_playlist_library`. Do NOT rely solely on `show_liked_songs`.\n- **Album and Playlist Songs**: Songs in `show_album_library` and `show_playlist_library` are part of the user's library. You must iterate through all albums and playlists, extract all `song_ids`, and then fetch details for each song.\n- **Pagination**: For all three sources, implement a pagination loop. Accumulate all results before processing.\n- **Unique Song IDs**: Collect all unique `song_id`s from all three sources. Then, for each unique song ID, call `show_song` to get the `release_date` or other details.",
+    "target_tasks": [
+     "6104387_1",
+     "6104387_3",
+     "27e1026_3",
+     "27e1026_1",
+     "6104387_2"
+    ],
+    "rationale": "Agents missed songs by only checking `show_song_library` or `show_liked_songs`, missing songs in albums/playlists. Complete library tasks require all three sources.",
+    "derivation": "Raw 44, Raw 58, Raw 39. This is a comprehensive rule for Spotify library data collection.",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Playlist Song Verification",
+    "body": "- **Do Not Trust Playlist Library Song IDs**: The `show_playlist_library` API returns a list of `song_ids`, but these may not be the definitive list of songs to filter. More importantly, you cannot determine `release_date` from the library response alone.\n- **Fetch Full Playlist Details**: For each playlist in the library, call `apis.spotify.show_playlist(playlist_id=..., access_token=...)` to get the detailed list of songs.\n- **Check Release Dates**: Once you have the detailed playlist songs, fetch the `release_date` for each song and filter/remove based on the task's temporal criteria.",
+    "target_tasks": [
+     "ce359b5_2"
+    ],
+    "rationale": "Agents assumed `song_ids` from `show_playlist_library` were sufficient, missing the need to fetch detailed playlist contents to check properties like `release_date`.",
+    "derivation": "Raw 40. This is a specific rule for playlist detail fetching.",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Contextual Identity Resolution",
+    "body": "- **Phone Contacts as Source of Truth**: When the task requires identifying people by relationship (e.g., 'friends', 'roommates', 'coworkers', 'relatives'), you MUST use `apis.phone.search_contacts` with the appropriate `relationship` filter. Do NOT use Venmo's `search_friends` or social feed friends.\n- **Pagination for Contacts**: When fetching contacts, implement a pagination loop. Store results from all pages in a single list/set before processing.\n- **Extract Emails**: From the contact results, extract the `email` field. Use these emails to filter transactions, payment requests, or other Venmo/Gmail data.",
+    "target_tasks": [
+     "6ea6792_2",
+     "d0b1f43_3",
+     "2a163ab_2",
+     "afc0fce_1",
+     "6ea6792_1"
+    ],
+    "rationale": "Agents used Venmo's friend list instead of phone contacts for relationship-based identity resolution, leading to incomplete or incorrect target sets. Phone contacts are the authoritative source.",
+    "derivation": "Raw 57, Raw 52, Raw 42, Raw 33, Raw 32. This is a distinct theme of identity resolution via external contacts, not covered by existing temporal or pagination rules.",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Search and Sort Optimization",
+    "body": "- **Use `sort_by` for Ranking Queries**: When the task asks for the 'most played', 'least played', 'most liked', or 'highest rated' item, use the `sort_by` parameter in the search API. Use `-attribute` for descending order and `attribute` for ascending order.\n- **Filter with API Parameters**: When the task specifies attributes like genre, follower count, or release year, use the corresponding filter parameters in the search API rather than fetching all items and filtering locally.\n- **Search by Name for Entity ID**: When the task provides a name but not an ID, use `search_*` APIs with the name as the `query` parameter to find the entity and extract its ID.",
+    "target_tasks": [
+     "e85d92a_1",
+     "e85d92a_3",
+     "287e338_1",
+     "287e338_3",
+     "07b42fd_3",
+     "c901732_1"
+    ],
+    "rationale": "Agents failed to efficiently find ranked items or resolve names to IDs. Using API-level sorting and filtering is the correct pattern.",
+    "derivation": "Raw 54. This is a distinct optimization rule for search and ranking tasks.",
+    "placement": "end"
+   }
+  ],
+  "audits": [
+   {
+    "edit_id": "E#5",
+    "subject": "Playback API Resolution",
+    "fate": "normalized",
+    "reason": "removed redundant heading line duplicating the subject",
+    "actor": "gate"
+   },
+   {
+    "edit_id": "E#6",
+    "subject": "Queue and Stream State Interpretation",
+    "fate": "normalized",
+    "reason": "removed redundant heading line duplicating the subject",
+    "actor": "gate"
+   },
+   {
+    "edit_id": "E#7",
+    "subject": "Venmo Transaction Direction",
+    "fate": "normalized",
+    "reason": "removed redundant heading line duplicating the subject",
+    "actor": "gate"
+   },
+   {
+    "edit_id": "E#8",
+    "subject": "Transaction Description Filtering",
+    "fate": "normalized",
+    "reason": "removed redundant heading line duplicating the subject",
+    "actor": "gate"
+   },
+   {
+    "edit_id": "E#9",
+    "subject": "Spotify Library Completeness",
+    "fate": "normalized",
+    "reason": "removed redundant heading line duplicating the subject",
+    "actor": "gate"
+   },
+   {
+    "edit_id": "E#10",
+    "subject": "Playlist Song Verification",
+    "fate": "normalized",
+    "reason": "removed redundant heading line duplicating the subject",
+    "actor": "gate"
+   },
+   {
+    "edit_id": "E#11",
+    "subject": "Contextual Identity Resolution",
+    "fate": "normalized",
+    "reason": "removed redundant heading line duplicating the subject",
+    "actor": "gate"
+   },
+   {
+    "edit_id": "E#12",
+    "subject": "Search and Sort Optimization",
+    "fate": "normalized",
+    "reason": "removed redundant heading line duplicating the subject",
+    "actor": "gate"
+   },
+   {
+    "edit_id": "E#3",
+    "subject": "Temporal Context Resolution",
+    "fate": "merged_into",
+    "reason": "merged into E#2 ('Temporal Context Resolution') by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#4",
+    "subject": "Temporal Context Resolution",
+    "fate": "merged_into",
+    "reason": "merged into E#2 ('Temporal Context Resolution') by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#2",
+    "subject": "Temporal Context Resolution",
+    "fate": "kept",
+    "reason": "merge target of 3 edits",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#1",
+    "subject": "Pagination Discipline",
+    "fate": "dropped",
+    "reason": "Content about authentication ('Explicit Authentication Parameters') is semantically unrelated to the subject 'Pagination Discipline' and has no valid destination section in the allowed scope.",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#2",
+    "subject": "Temporal Context Resolution",
+    "fate": "kept",
+    "reason": "replaced by repair",
+    "actor": "adjudicator"
+   }
+  ],
+  "candidate_text": "### Pagination Discipline\n- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.\n- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest').\n- **Stop Condition**: The loop ends when `len(results) < page_limit` or `results` is empty. Never assume a single page contains all data.\n- **Verification**: If the task requires 'all' items, verify completeness by ensuring you have fetched every page. Missing a page leads to incomplete action sets.\n- **Explicit Page Limit**: Always set `page_limit` to the maximum allowed value (e.g., 20) in your initial request to minimize API calls and avoid truncation from small defaults. Do not rely on the API's default page limit.\n\n### Temporal Context Resolution\n- **Never Hardcode Year/Date**: Tasks often say 'this year', 'last month', or 'recently', but the simulated environment may have a different system date. Never assume the current year matches the calendar year or the prompt generation time.\n- **Infer System Date**: Determine the current year dynamically:\n  1. Check `apis.supervisor.show_profile()` or `apis.supervisor.show_account_passwords()` for timestamps.\n  2. Inspect recent data (e.g., latest transactions, messages, songs) to find the most recent `created_at` or `release_date`. The current date is shortly after this timestamp.\n  3. Check API response metadata (e.g., token expiry times) for clues.\n- **Dynamic Filtering**: Use the dynamically obtained year/date to filter data (e.g., `release_date.startswith(str(current_year))`). Calculate relative thresholds (e.g., 'last N days') based on the inferred current date.\n- **Year and Month**: When filtering by 'this year' and a month, always check BOTH the month AND the year. Files from previous years with the same month belong to 'others' or a different category.\n- **Entity Label Matching**: When a task refers to a specific entity by name or label (e.g., 'go-to-sleep alarm'), search for that exact string or a clear substring within the entity's label/title field. Do NOT guess based on position, enabled status, or other attributes. Perform case-insensitive matching.\n\n### Playback API Resolution\n- **Direct API Usage**: `show_api_descriptions` output is often truncated. Do NOT rely on scanning it to find playback APIs. If you need to play music, try `apis.spotify.play_music(access_token=..., playlist_id=...)` directly.\n- **Fallback Logic**: If `play_music` fails with 422, check for `play_playlist` or `play_song`. If all fail, check `add_to_queue` followed by verifying if playback starts automatically.\n- **Avoid Infinite Loops**: Do not spend excessive turns iterating through pages of playlists or searching for the API name. Once a suitable playlist is identified, attempt to play it immediately.\n\n### Queue and Stream State Interpretation\n- **Played So Far**: When a task asks to act on items 'played so far', 'history', or 'already processed', it refers to items consumed or currently being consumed. It does NOT include items still waiting in the queue.\n- **Use Flags**: Inspect the API response for flags like `is_current`, `is_playing`, or position indices. Include items up to and including the one marked `is_current` or `is_playing`. Stop processing further items.\n- **Avoid Full-List Assumptions**: Never assume 'all items in the queue' means 'all items in the response list' unless the task explicitly says so.\n\n### Venmo Transaction Direction\n- **Sent vs. Received**: When the task asks about money 'received to' someone or 'received from' someone, you MUST filter Venmo transactions by `direction`.\n  - 'Received to [person]' or 'sent to [person]': Use `direction='sent'`.\n  - 'Received from [person]' or 'sent from [person]': Use `direction='received'`.\n- **Explicit Check**: Never assume direction. If the task says 'received to coworkers', it means transactions where the user SENT money TO coworkers (`direction='sent'`).\n\n### Transaction Description Filtering\n- **Match by Description**: When identifying which users have already performed a specific action (e.g., 'paid for dinner'), filter transactions by the specific description or context keyword (e.g., 'Friends Dinner').\n- **Verify Action Context**: A user may have sent money for unrelated reasons (e.g., 'Yoga class'). These do NOT count as completing the current task's obligation. Only transactions with a matching description should be considered 'paid'.\n\n### Spotify Library Completeness\n- **Three Sources**: For any task involving songs in a Spotify account, you MUST fetch data from three distinct sources: `show_song_library`, `show_album_library`, and `show_playlist_library`. Do NOT rely solely on `show_liked_songs`.\n- **Album and Playlist Songs**: Songs in `show_album_library` and `show_playlist_library` are part of the user's library. You must iterate through all albums and playlists, extract all `song_ids`, and then fetch details for each song.\n- **Pagination**: For all three sources, implement a pagination loop. Accumulate all results before processing.\n- **Unique Song IDs**: Collect all unique `song_id`s from all three sources. Then, for each unique song ID, call `show_song` to get the `release_date` or other details.\n\n### Playlist Song Verification\n- **Do Not Trust Playlist Library Song IDs**: The `show_playlist_library` API returns a list of `song_ids`, but these may not be the definitive list of songs to filter. More importantly, you cannot determine `release_date` from the library response alone.\n- **Fetch Full Playlist Details**: For each playlist in the library, call `apis.spotify.show_playlist(playlist_id=..., access_token=...)` to get the detailed list of songs.\n- **Check Release Dates**: Once you have the detailed playlist songs, fetch the `release_date` for each song and filter/remove based on the task's temporal criteria.\n\n### Contextual Identity Resolution\n- **Phone Contacts as Source of Truth**: When the task requires identifying people by relationship (e.g., 'friends', 'roommates', 'coworkers', 'relatives'), you MUST use `apis.phone.search_contacts` with the appropriate `relationship` filter. Do NOT use Venmo's `search_friends` or social feed friends.\n- **Pagination for Contacts**: When fetching contacts, implement a pagination loop. Store results from all pages in a single list/set before processing.\n- **Extract Emails**: From the contact results, extract the `email` field. Use these emails to filter transactions, payment requests, or other Venmo/Gmail data.\n\n### Search and Sort Optimization\n- **Use `sort_by` for Ranking Queries**: When the task asks for the 'most played', 'least played', 'most liked', or 'highest rated' item, use the `sort_by` parameter in the search API. Use `-attribute` for descending order and `attribute` for ascending order.\n- **Filter with API Parameters**: When the task specifies attributes like genre, follower count, or release year, use the corresponding filter parameters in the search API rather than fetching all items and filtering locally.\n- **Search by Name for Entity ID**: When the task provides a name but not an ID, use `search_*` APIs with the name as the `query` parameter to find the entity and extract its ID.\n"
+ }
+}

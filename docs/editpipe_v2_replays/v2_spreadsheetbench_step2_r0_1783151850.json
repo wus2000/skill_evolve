@@ -1,0 +1,285 @@
+{
+ "metrics": {
+  "pipeline": "v2",
+  "case": "spreadsheetbench_step2",
+  "tag": "v2_spreadsheetbench_step2_r0_1783151850",
+  "n_raw": 38,
+  "n_parsed": 16,
+  "n_final": 6,
+  "final_kinds": [
+   "add_point",
+   "add_section",
+   "add_section",
+   "add_section",
+   "add_section",
+   "rewrite_section"
+  ],
+  "final_subjects": [
+   "Computed Values over Formulas",
+   "Data Processing and Lookup Logic",
+   "Row Inclusion Logic for Block Merging",
+   "Leveraging Visual Cues and Reference Sheets",
+   "Multi-Sheet Operations",
+   "Advanced Matching and Expansion Logic"
+  ],
+  "converged": false,
+  "adjudication_rounds": 3,
+  "coherence_rounds": 0,
+  "n_drops_audited": 6,
+  "n_silent_drops": 0,
+  "accepted_risks": [],
+  "assertion_failures": [],
+  "normalize_notes": [],
+  "apply_degradations": [],
+  "signal_coverage": {},
+  "candidate_sections": [
+   "Computed Values over Formulas",
+   "Sheet and Range Fidelity",
+   "Data Processing and Lookup Logic",
+   "Row Inclusion Logic for Block Merging",
+   "Leveraging Visual Cues and Reference Sheets",
+   "Multi-Sheet Operations",
+   "Advanced Matching and Expansion Logic"
+  ],
+  "wall_s": 287.2,
+  "llm_calls": 6,
+  "llm_seconds": 287.1,
+  "tokens_in": 45194,
+  "tokens_out": 13908
+ },
+ "detail": {
+  "final_edits": [
+   {
+    "kind": "rewrite_section",
+    "subject": "Computed Values over Formulas",
+    "body": "When the task asks for a calculation, lookup, count, or result (even if it mentions \"formula,\" \"function,\" \"Index/Match,\" or \"VLOOKUP\"), **compute the final value in Python** and write the **literal result** (number, text, boolean) into the cell.\n\n- **Do NOT write formula strings** (e.g., \"=SUM(...)\", \"=IF(...)\", \"=VLOOKUP(...)\", \"=COUNTIFS(...)\", \"=INDEX(...)\") unless the task explicitly commands \"insert a formula\" or \"write a formula object\" AND the evaluation framework is known to evaluate formulas.\n- **Simulate Logic**: Replicate the calculation logic in Python. For lookups, build a Python dictionary mapping keys to values. For conditionals, evaluate `if/else` logic in Python. For complex formulas (e.g., array formulas), manually filter/sort/rank the data in Python to find the nth value.\n- **Write Literals**: Write the computed number, string, or boolean directly. Do not write a string that looks like a formula.\n- **Handle Missing/No-Match**: If a lookup fails or a condition is not met, write an empty string (`''`) or `None` (which becomes blank in Excel). Do not leave error values like `#N/A`.\n- **Preserve Whitespace**: When modifying text strings (e.g., truncating, replacing, concatenating), preserve original whitespace (spaces, tabs) exactly as they appear in the source, unless the task explicitly instructs to trim or strip. Do not use `.strip()`, `.rstrip()`, or `.lstrip()` on the final result unless explicitly commanded.\n- **Conditional Logic Defaults**: When a task asks to \"mark as False\" or \"mark as True\" based on a condition, write the boolean literal `True` or `False`. Do not default to empty string (`''`) or `None` for False/True results unless the instruction explicitly says \"leave blank\" or \"mark as empty\".\n- **Zero-Sum Cell Handling**: When a computed sum or count is zero, write an empty string (`''`) or `None` (blank) to the cell, as instructed by tasks that say \"if the sum is zero, leave the cell as empty.\" Do not write `0` unless explicitly commanded.\n- **Exception**: Only write a formula string if the task explicitly states the cell must contain a formula that will be evaluated dynamically by Excel (e.g., for a specific Excel feature that cannot be pre-computed) **AND** the evaluation framework supports formula evaluation. Default to computed values.",
+    "target_tasks": [
+     "32902",
+     "50811",
+     "254-34",
+     "168-17",
+     "53449",
+     "55468",
+     "47766",
+     "31011",
+     "40959",
+     "12307",
+     "50682",
+     "3413",
+     "48983",
+     "57693",
+     "49801",
+     "7665",
+     "52532",
+     "45300",
+     "51586",
+     "37229"
+    ],
+    "rationale": "",
+    "derivation": ""
+   },
+   {
+    "kind": "add_point",
+    "subject": "Data Processing and Lookup Logic",
+    "body": "- **Column Mapping Fidelity**: When filling the result sheet, ensure each column receives the correct data type specified by the task or header. Do not substitute one data field (e.g., Name) into another (e.g., Designation) unless explicitly instructed. Verify the target column header against the source column header before writing.\n- **Include Section Headers in Output**: When the source data contains section header rows (e.g., rows with text labels like 'Engine HS' interspersed among numeric data rows) and the task asks to output all matching data into a contiguous range, include those section header rows in the output if they fall within the matched data sequence. Do not skip them unless explicitly instructed to filter them out. The evaluator expects the output to preserve the original row structure, including headers, when copying a range.\n- **Full Cartesian Product Expansion**: When a source row contains multiple fields with \"IN LIST\" or multiple values (e.g., specialtyId in [66, 77] AND contextId in [55, 689, 213]), you must generate the **full Cartesian product** of all multi-value fields. Do not stop after the first combination or limit rows based on the number of values in a single field. If field A has `m` values and field B has `n` values, produce exactly `m × n` output rows for that source row. Preserve the static (single-value) fields from the source row across all generated combinations. If a source row has no multi-value fields, produce exactly one output row. Ensure all generated rows are written contiguously in the output sheet.\n- **Exact Word Matching**: When the task requires matching words (e.g., \"root word as a complete word\"), use word-boundary matching (e.g., regex `\\b` or split-and-compare) rather than substring matching. For example, 'garden' should NOT match 'gardening', and 'tool' should NOT match 'tools'.\n- **Sequential/Stateful Lookups**: When a calculation depends on the previous row's value for the same key (e.g., \"amount used since last usage\"), maintain a state dictionary mapping the key to its last seen value. Iterate through rows in order, using the dictionary to look up the previous value, then update the dictionary with the current value.\n- **Handle Mixed Types in Sorting**: When extracting unique values and sorting them, separate numeric and string values. Sort numeric values numerically and string values lexicographically, then combine (numbers first, then strings) to avoid type comparison errors. Skip header rows that contain non-numeric labels if the context implies they are not data.",
+    "target_tasks": [
+     "188-39",
+     "56953",
+     "325-44",
+     "41265",
+     "53167",
+     "7665"
+    ],
+    "rationale": "",
+    "derivation": "",
+    "anchor": "Multi-Column Lookups"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Row Inclusion Logic for Block Merging",
+    "body": "When merging consecutive rows based on a condition (e.g., negative values, specific flags):\n- **Include ALL rows**: The output must contain rows for **every** logical group: both the merged groups (consecutive matches) AND the individual non-matching rows.\n- **Non-matching rows are preserved**: Rows that do NOT belong to a consecutive block are written as individual rows with their original data intact. Do not filter them out.\n- **Order is preserved**: Maintain the original row order from the input. Merged blocks appear in the position of their first element; single rows appear in their original position.",
+    "target_tasks": [
+     "61-4"
+    ],
+    "rationale": "",
+    "derivation": "",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Leveraging Visual Cues and Reference Sheets",
+    "body": "When the input spreadsheet contains visual indicators (e.g., colored cells, highlights) or a reference sheet (e.g., 'After', 'Expected'), **use these cues to determine the target state** rather than solving the problem from scratch.\n\n- **Identify Highlighted Cells**: Scan all cells in the input workbook for non-default fill colors (e.g., `cell.fill.fgColor.rgb != '00000000'`). These often indicate which cells need to be modified, highlighted, or summed.\n- **Copy Structure from Reference**: If an 'After' or 'Expected' sheet exists, read its structure and values to determine the exact output format. Apply the same modifications (highlighting, deletion, reordering) to the 'Before' or source sheet.\n- **Example**: If the 'After' sheet highlights cells A1, A2, A4, and the task asks to 'highlight the values that sum to X', highlight the same cells in the 'Before' sheet with the specified color.",
+    "target_tasks": [
+     "254-34"
+    ],
+    "rationale": "",
+    "derivation": "",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Multi-Sheet Operations",
+    "body": "**Multi-Sheet Consolidation**:\n- When the task requires combining data from multiple source sheets into a single target sheet:\n  1. **Identify Source Sheets**: List all sheet names in the workbook. Exclude the target/destination sheet (often named 'combined', 'summary', or similar) from the source list.\n  2. **Align Columns**: Verify that source sheets have compatible column structures (headers and data types). If headers differ, map source columns to target columns by name or position.\n  3. **Append Contiguously**: Iterate through each source sheet (in a deterministic order, e.g., alphabetical or as listed). For each source sheet, read all data rows (excluding the header row). Write these rows sequentially into the target sheet, starting from the specified start row (e.g., A2). Do not skip rows or leave gaps between data from different source sheets.\n  4. **Preserve Values**: Write the exact computed or literal values from the source cells. Do not reformat dates or numbers unless explicitly instructed.\n  5. **Header Handling**: If the target sheet already has a header row (e.g., in row 1), do not overwrite it. Start writing data from row 2 (or the specified start row).\n\n**Cross-Sheet Comparison**:\n- When comparing data across multiple sheets (e.g., Sheet1 vs Sheet2 to find differences), extract all data rows from each sheet into Python sets or lists. Use set operations (difference, intersection) to find rows unique to one sheet. Write the results to the target sheets (e.g., Sheet3 for subtracts, Sheet4 for adds) starting from row 1 with no headers unless specified otherwise. Handle duplicate rows by deduplicating before writing.",
+    "target_tasks": [
+     "297-42",
+     "283-32"
+    ],
+    "rationale": "Raw edits 27 and 37 identified failures in multi-sheet operations (consolidation and comparison). This new section covers both patterns.",
+    "derivation": "Merged raw edits 27 and 37. Raw edit 27 focused on consolidation, raw edit 37 on comparison. Combined into 'Multi-Sheet Operations' section.",
+    "placement": "end"
+   },
+   {
+    "kind": "add_section",
+    "subject": "Advanced Matching and Expansion Logic",
+    "body": "- **Column Mapping Fidelity**: When filling the result sheet, ensure each column receives the correct data type specified by the task or header. Do not substitute one data field (e.g., Name) into another (e.g., Designation) unless explicitly instructed. Verify the target column header against the source column header before writing.\n- **Include Section Headers in Output**: When the source data contains section header rows (e.g., rows with text labels like 'Engine HS' interspersed among numeric data rows) and the task asks to output all matching data into a contiguous range, include those section header rows in the output if they fall within the matched data sequence. Do not skip them unless explicitly instructed to filter them out. The evaluator expects the output to preserve the original row structure, including headers, when copying a range.\n- **Full Cartesian Product Expansion**: When a source row contains multiple fields with \"IN LIST\" or multiple values (e.g., specialtyId in [66, 77] AND contextId in [55, 689, 213]), you must generate the **full Cartesian product** of all multi-value fields. Do not stop after the first combination or limit rows based on the number of values in a single field. If field A has `m` values and field B has `n` values, produce exactly `m × n` output rows for that source row. Preserve the static (single-value) fields from the source row across all generated combinations. If a source row has no multi-value fields, produce exactly one output row. Ensure all generated rows are written contiguously in the output sheet.\n- **Exact Word Matching**: When the task requires matching words (e.g., \"root word as a complete word\"), use word-boundary matching (e.g., regex `\\b` or split-and-compare) rather than substring matching. For example, 'garden' should NOT match 'gardening', and 'tool' should NOT match 'tools'.\n- **Sequential/Stateful Lookups**: When a calculation depends on the previous row's value for the same key (e.g., \"amount used since last usage\"), maintain a state dictionary mapping the key to its last seen value. Iterate through rows in order, using the dictionary to look up the previous value, then update the dictionary with the current value.\n- **Handle Mixed Types in Sorting**: When extracting unique values and sorting them, separate numeric and string values. Sort numeric values numerically and string values lexicographically, then combine (numbers first, then strings) to avoid type comparison errors. Skip header rows that contain non-numeric labels if the context implies they are not data.",
+    "target_tasks": [
+     "188-39",
+     "56953",
+     "325-44",
+     "41265",
+     "53167",
+     "7665"
+    ],
+    "rationale": "",
+    "derivation": "",
+    "placement": "end"
+   }
+  ],
+  "audits": [
+   {
+    "edit_id": "E#5",
+    "subject": "*",
+    "fate": "kept",
+    "reason": "[anchor_not_found] left to the apply-stage degradation chain: The anchor 'Preserve Non-Zero Rows: When instructed to delete rows where a column equals a specific value...' does not exist in the section ",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#0",
+    "subject": "Computed Values over Formulas",
+    "fate": "kept",
+    "reason": "replaced by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#1",
+    "subject": "Computed Values over Formulas",
+    "fate": "dropped",
+    "reason": "Merged into E#0 (rewrite_section) to resolve SECTION_CONFLICT and ANCHOR_OVERLAP.",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#2",
+    "subject": "Computed Values over Formulas",
+    "fate": "dropped",
+    "reason": "Merged into E#0 (rewrite_section) to resolve SECTION_CONFLICT and ANCHOR_OVERLAP.",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#3",
+    "subject": "Computed Values over Formulas",
+    "fate": "dropped",
+    "reason": "Merged into E#0 (rewrite_section) to resolve SECTION_CONFLICT and ANCHOR_OVERLAP.",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#4",
+    "subject": "Sheet and Range Fidelity",
+    "fate": "dropped",
+    "reason": "Semantic misplacement and environment-specific constraint not relevant to spreadsheet logic rules.",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#7",
+    "subject": "Data Processing and Lookup Logic",
+    "fate": "merged_into",
+    "reason": "merged into E#6 ('Data Processing and Lookup Logic') by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#8",
+    "subject": "Data Processing and Lookup Logic",
+    "fate": "merged_into",
+    "reason": "merged into E#6 ('Data Processing and Lookup Logic') by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#9",
+    "subject": "Data Processing and Lookup Logic",
+    "fate": "merged_into",
+    "reason": "merged into E#6 ('Data Processing and Lookup Logic') by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#10",
+    "subject": "Data Processing and Lookup Logic",
+    "fate": "merged_into",
+    "reason": "merged into E#6 ('Data Processing and Lookup Logic') by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#11",
+    "subject": "Data Processing and Lookup Logic",
+    "fate": "merged_into",
+    "reason": "merged into E#6 ('Data Processing and Lookup Logic') by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#6",
+    "subject": "Data Processing and Lookup Logic",
+    "fate": "kept",
+    "reason": "merge target of 6 edits",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#12",
+    "subject": "Answer Position Awareness",
+    "fate": "dropped",
+    "reason": "Overlap with E#0 and E#13 (Row Inclusion Logic) covers similar structural verification. E#12's specific single-column advice is a subset of general fidelity rules.",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#2",
+    "subject": "*",
+    "fate": "kept",
+    "reason": "[anchor_not_found] left to the apply-stage degradation chain: Edit #2 targets 'Data Processing and Lookup Logic' with anchor 'Multi-Column Lookups'. The section 'Data Processing and Lookup Logic' exists",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#0",
+    "subject": "Computed Values over Formulas",
+    "fate": "kept",
+    "reason": "replaced by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#1",
+    "subject": "Sheet and Range Fidelity",
+    "fate": "dropped",
+    "reason": "Content is semantically misplaced under 'Data Processing and Lookup Logic' (anchor 'Multi-Column Lookups' is also incorrect for row deletion content). The content describes row deletion and topology adjustment, which belongs in 'Sheet and Range Fidelity'. Since 'Sheet and Range Fidelity' already exists and the anchor is wrong, and E#1 is an add_point, it is better to drop this misplaced edit rather than fix the anchor/subject mismatch which might conflict with existing rules. Note: If row deletion rules are needed, they should be added to 'Sheet and Range Fidelity' with a correct anchor, but E#1's specific content about 'delete rows where Column E is 0' is very specific and might be redundant or conflicting. Given the instruction to fix violations with fewest ops, dropping the semantically broken edit is safest.",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#new",
+    "subject": "Advanced Matching and Expansion Logic",
+    "fate": "kept",
+    "reason": "added by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#3",
+    "subject": "Row Inclusion Logic for Block Merging",
+    "fate": "kept",
+    "reason": "replaced by repair",
+    "actor": "adjudicator"
+   },
+   {
+    "edit_id": "E#4",
+    "subject": "Leveraging Visual Cues and Reference Sheets",
+    "fate": "kept",
+    "reason": "replaced by repair",
+    "actor": "adjudicator"
+   }
+  ],
+  "candidate_text": "### Computed Values over Formulas\nWhen the task asks for a calculation, lookup, count, or result (even if it mentions \"formula,\" \"function,\" \"Index/Match,\" or \"VLOOKUP\"), **compute the final value in Python** and write the **literal result** (number, text, boolean) into the cell.\n\n- **Do NOT write formula strings** (e.g., \"=SUM(...)\", \"=IF(...)\", \"=VLOOKUP(...)\", \"=COUNTIFS(...)\", \"=INDEX(...)\") unless the task explicitly commands \"insert a formula\" or \"write a formula object\" AND the evaluation framework is known to evaluate formulas.\n- **Simulate Logic**: Replicate the calculation logic in Python. For lookups, build a Python dictionary mapping keys to values. For conditionals, evaluate `if/else` logic in Python. For complex formulas (e.g., array formulas), manually filter/sort/rank the data in Python to find the nth value.\n- **Write Literals**: Write the computed number, string, or boolean directly. Do not write a string that looks like a formula.\n- **Handle Missing/No-Match**: If a lookup fails or a condition is not met, write an empty string (`''`) or `None` (which becomes blank in Excel). Do not leave error values like `#N/A`.\n- **Preserve Whitespace**: When modifying text strings (e.g., truncating, replacing, concatenating), preserve original whitespace (spaces, tabs) exactly as they appear in the source, unless the task explicitly instructs to trim or strip. Do not use `.strip()`, `.rstrip()`, or `.lstrip()` on the final result unless explicitly commanded.\n- **Conditional Logic Defaults**: When a task asks to \"mark as False\" or \"mark as True\" based on a condition, write the boolean literal `True` or `False`. Do not default to empty string (`''`) or `None` for False/True results unless the instruction explicitly says \"leave blank\" or \"mark as empty\".\n- **Zero-Sum Cell Handling**: When a computed sum or count is zero, write an empty string (`''`) or `None` (blank) to the cell, as instructed by tasks that say \"if the sum is zero, leave the cell as empty.\" Do not write `0` unless explicitly commanded.\n- **Exception**: Only write a formula string if the task explicitly states the cell must contain a formula that will be evaluated dynamically by Excel (e.g., for a specific Excel feature that cannot be pre-computed) **AND** the evaluation framework supports formula evaluation. Default to computed values.\n\n### Sheet and Range Fidelity\n**Preserve Sheet Identity**:\n- Load the input workbook and modify it in place. Do **not** create a new `Workbook()` and save it, as this discards original sheet names and structure.\n- If you must create a new sheet, explicitly set its title to match the original sheet name (e.g., `ws.title = 'Sheet1'`).\n- When using `pandas.to_excel`, explicitly specify `sheet_name` to match the original sheet name. Prefer `openpyxl` for cell-level edits to avoid sheet name ambiguity.\n\n**Answer Position Alignment**:\n- If the task specifies an `answer_position` (e.g., `A3:G28`), write data into that exact range.\n- **Contiguous Writing**: When filtering or deleting rows, write the kept rows **contiguously** starting from the first row of the answer position (e.g., row 3). Do not preserve original row indices or leave gaps. The first kept row goes to the first cell of the answer position; the second kept row goes to the next cell, etc.\n- **Verification**: After writing, ensure the answer position contains no empty rows between data rows and that the first cell contains the first expected data row.\n\n**Full Range Iteration**:\n- When scanning for conditions, iterate over the **full range** of rows containing data (use `ws.max_row` or detect the last non-empty row in the widest column). Do not break early on empty cells in condition columns; data may exist in other columns of later rows.\n\n**Read Before Write**:\n- When modifying a worksheet in-place (e.g., filtering/deleting rows or columns), always read and store all relevant source data into a Python list/dictionary **before** clearing or overwriting any cells in the source sheet. If you clear cells before reading them, you will lose the data you need to write back.\n\n**Conditional Clearing (Keep/Discard)**:\n- When instructed to keep only specific values and delete/clear others, iterate over the target range. For each cell, if the value matches the target literal (case-insensitive if the instruction implies it, otherwise case-sensitive), preserve it. If it does not match, set the cell value to `''` (empty string). Do not delete rows; only clear cell contents.\n\n**Multi-Condition Row Extraction (OR Logic)**:\n- When extracting rows based on multiple conditions with OR logic (e.g., Col B equals X OR Col C equals Y), iterate through all data rows in the source sheet. Evaluate each row against all conditions; if any condition is true, include the entire row in the result set. Write the headers to the specified row in the target sheet, then write all matching rows contiguously below the headers.\n\n**Group-Aware Transposition**:\n- When transposing data from a column to a wider range (e.g., Column A to Columns C-K), do NOT simply flatten all non-blank values into a continuous stream. Instead, first inspect the source column for structural separators (such as blank rows). Group consecutive non-empty values separated by these blanks, and map each group to a distinct row in the target output range. Preserve the group boundaries as row boundaries in the result.\n\n**Block-Based Transposition**:\n- When transposing data from a single column into a multi-column grid:\n  1. **Detect Block Structure**: Identify the repeating pattern in the source column. Count the number of items per logical block (e.g., Question + 4 Options + Answer + Explanation = 7 items).\n  2. **Calculate Grid Dimensions**: Determine the target grid size (rows × columns) from the `answer_position` or task description. Verify that `total_items = rows × columns`.\n  3. **Read and Chunk**: Read all non-empty values from the source column into a flat list. Chunk this list into blocks of the detected size.\n  4. **Write Row by Row**: Iterate through each block. Write the items in the block sequentially into the target row, starting from the first column of the answer position.\n  5. **Preserve Order**: Maintain the original order of items within each block. Do not sort or rearrange unless explicitly instructed.\n\n**Column Deletion by Header Pattern**:\n- When deleting columns based on a pattern in the header row:\n  1. **Scan Headers**: Iterate through all columns in the header row (typically row 1). Identify columns whose header text contains the specified keyword or pattern.\n  2. **Collect Column Indices**: Store the indices of columns to delete.\n  3. **Delete in Reverse Order**: To avoid index shifting issues, delete columns in descending order of their column index (right-to-left). Alternatively, build a new sheet containing only the columns to keep.\n  4. **Preserve Structure**: When using `openpyxl`, modify the existing sheet. If creating a new sheet, ensure the title matches the original. Preserve all rows and non-deleted columns exactly.\n  5. **Verify**: After deletion, verify that no remaining headers contain the deleted keyword.\n\n### Data Processing and Lookup Logic\n**Multi-Column Lookups\n- **Column Mapping Fidelity**: When filling the result sheet, ensure each column receives the correct data type specified by the task or header. Do not substitute one data field (e.g., Name) into another (e.g., Designation) unless explicitly instructed. Verify the target column header against the source column header before writing.\n- **Include Section Headers in Output**: When the source data contains section header rows (e.g., rows with text labels like 'Engine HS' interspersed among numeric data rows) and the task asks to output all matching data into a contiguous range, include those section header rows in the output if they fall within the matched data sequence. Do not skip them unless explicitly instructed to filter them out. The evaluator expects the output to preserve the original row structure, including headers, when copying a range.\n- **Full Cartesian Product Expansion**: When a source row contains multiple fields with \"IN LIST\" or multiple values (e.g., specialtyId in [66, 77] AND contextId in [55, 689, 213]), you must generate the **full Cartesian product** of all multi-value fields. Do not stop after the first combination or limit rows based on the number of values in a single field. If field A has `m` values and field B has `n` values, produce exactly `m × n` output rows for that source row. Preserve the static (single-value) fields from the source row across all generated combinations. If a source row has no multi-value fields, produce exactly one output row. Ensure all generated rows are written contiguously in the output sheet.\n- **Exact Word Matching**: When the task requires matching words (e.g., \"root word as a complete word\"), use word-boundary matching (e.g., regex `\\b` or split-and-compare) rather than substring matching. For example, 'garden' should NOT match 'gardening', and 'tool' should NOT match 'tools'.\n- **Sequential/Stateful Lookups**: When a calculation depends on the previous row's value for the same key (e.g., \"amount used since last usage\"), maintain a state dictionary mapping the key to its last seen value. Iterate through rows in order, using the dictionary to look up the previous value, then update the dictionary with the current value.\n- **Handle Mixed Types in Sorting**: When extracting unique values and sorting them, separate numeric and string values. Sort numeric values numerically and string values lexicographically, then combine (numbers first, then strings) to avoid type comparison errors. Skip header rows that contain non-numeric labels if the context implies they are not data.**:\n- When matching across multiple columns (e.g., Column B and D), you must match **ALL** specified criteria simultaneously. A partial match is insufficient.\n- Convert search keys and data values to a common type (e.g., string) before comparison to avoid silent type mismatches.\n- Use the matching row's data from the target output column.\n\n**Date and Type Handling**:\n- **Normalize Dates**: Convert all dates to a consistent type (e.g., `datetime` or `YYYY-MM-DD` string) before grouping or sorting. Do not mix string dates and datetime objects.\n- **Preserve Original Types**: When copying values, preserve their original Python type (e.g., `str`, `datetime`, `float`). Do not convert string dates to datetime objects unless explicitly required.\n- **Identify Correct Columns**: Verify which column contains the primary data for filtering (e.g., check if the 'date' column is Column A or Column N). Do not assume metadata columns contain row-specific data.\n\n**Lookup Implementation Pattern**:\n- Build an explicit Python dictionary mapping lookup keys to target values from the source data.\n- Iterate through target rows and fill cells using the dictionary. If a key is not found, write `''` or `None`.\n- For conditional logic, evaluate the condition in Python for each row and write the resulting literal value.\n\n**Contiguous Block Detection**:\n- For tasks involving identifying ranges of markers (e.g., 'm' for meetings), scan for contiguous sequences. Map the start and end of each block to the corresponding headers (e.g., time columns) and write the start/end times to the output columns.\n\n### Row Inclusion Logic for Block Merging\nWhen merging consecutive rows based on a condition (e.g., negative values, specific flags):\n- **Include ALL rows**: The output must contain rows for **every** logical group: both the merged groups (consecutive matches) AND the individual non-matching rows.\n- **Non-matching rows are preserved**: Rows that do NOT belong to a consecutive block are written as individual rows with their original data intact. Do not filter them out.\n- **Order is preserved**: Maintain the original row order from the input. Merged blocks appear in the position of their first element; single rows appear in their original position.\n\n### Leveraging Visual Cues and Reference Sheets\nWhen the input spreadsheet contains visual indicators (e.g., colored cells, highlights) or a reference sheet (e.g., 'After', 'Expected'), **use these cues to determine the target state** rather than solving the problem from scratch.\n\n- **Identify Highlighted Cells**: Scan all cells in the input workbook for non-default fill colors (e.g., `cell.fill.fgColor.rgb != '00000000'`). These often indicate which cells need to be modified, highlighted, or summed.\n- **Copy Structure from Reference**: If an 'After' or 'Expected' sheet exists, read its structure and values to determine the exact output format. Apply the same modifications (highlighting, deletion, reordering) to the 'Before' or source sheet.\n- **Example**: If the 'After' sheet highlights cells A1, A2, A4, and the task asks to 'highlight the values that sum to X', highlight the same cells in the 'Before' sheet with the specified color.\n\n### Multi-Sheet Operations\n**Multi-Sheet Consolidation**:\n- When the task requires combining data from multiple source sheets into a single target sheet:\n  1. **Identify Source Sheets**: List all sheet names in the workbook. Exclude the target/destination sheet (often named 'combined', 'summary', or similar) from the source list.\n  2. **Align Columns**: Verify that source sheets have compatible column structures (headers and data types). If headers differ, map source columns to target columns by name or position.\n  3. **Append Contiguously**: Iterate through each source sheet (in a deterministic order, e.g., alphabetical or as listed). For each source sheet, read all data rows (excluding the header row). Write these rows sequentially into the target sheet, starting from the specified start row (e.g., A2). Do not skip rows or leave gaps between data from different source sheets.\n  4. **Preserve Values**: Write the exact computed or literal values from the source cells. Do not reformat dates or numbers unless explicitly instructed.\n  5. **Header Handling**: If the target sheet already has a header row (e.g., in row 1), do not overwrite it. Start writing data from row 2 (or the specified start row).\n\n**Cross-Sheet Comparison**:\n- When comparing data across multiple sheets (e.g., Sheet1 vs Sheet2 to find differences), extract all data rows from each sheet into Python sets or lists. Use set operations (difference, intersection) to find rows unique to one sheet. Write the results to the target sheets (e.g., Sheet3 for subtracts, Sheet4 for adds) starting from row 1 with no headers unless specified otherwise. Handle duplicate rows by deduplicating before writing.\n\n### Advanced Matching and Expansion Logic\n- **Column Mapping Fidelity**: When filling the result sheet, ensure each column receives the correct data type specified by the task or header. Do not substitute one data field (e.g., Name) into another (e.g., Designation) unless explicitly instructed. Verify the target column header against the source column header before writing.\n- **Include Section Headers in Output**: When the source data contains section header rows (e.g., rows with text labels like 'Engine HS' interspersed among numeric data rows) and the task asks to output all matching data into a contiguous range, include those section header rows in the output if they fall within the matched data sequence. Do not skip them unless explicitly instructed to filter them out. The evaluator expects the output to preserve the original row structure, including headers, when copying a range.\n- **Full Cartesian Product Expansion**: When a source row contains multiple fields with \"IN LIST\" or multiple values (e.g., specialtyId in [66, 77] AND contextId in [55, 689, 213]), you must generate the **full Cartesian product** of all multi-value fields. Do not stop after the first combination or limit rows based on the number of values in a single field. If field A has `m` values and field B has `n` values, produce exactly `m × n` output rows for that source row. Preserve the static (single-value) fields from the source row across all generated combinations. If a source row has no multi-value fields, produce exactly one output row. Ensure all generated rows are written contiguously in the output sheet.\n- **Exact Word Matching**: When the task requires matching words (e.g., \"root word as a complete word\"), use word-boundary matching (e.g., regex `\\b` or split-and-compare) rather than substring matching. For example, 'garden' should NOT match 'gardening', and 'tool' should NOT match 'tools'.\n- **Sequential/Stateful Lookups**: When a calculation depends on the previous row's value for the same key (e.g., \"amount used since last usage\"), maintain a state dictionary mapping the key to its last seen value. Iterate through rows in order, using the dictionary to look up the previous value, then update the dictionary with the current value.\n- **Handle Mixed Types in Sorting**: When extracting unique values and sorting them, separate numeric and string values. Sort numeric values numerically and string values lexicographically, then combine (numbers first, then strings) to avoid type comparison errors. Skip header rows that contain non-numeric labels if the context implies they are not data.\n"
+ }
+}

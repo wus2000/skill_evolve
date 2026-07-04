@@ -1,0 +1,187 @@
+{
+ "metrics": {
+  "pipeline": "legacy",
+  "case": "appworld_step1",
+  "tag": "legacy_appworld_step1_r0_1783150410",
+  "n_raw": 59,
+  "n_final": 9,
+  "final_kinds": [
+   "new_section",
+   "point_add",
+   "point_add",
+   "point_add",
+   "point_add",
+   "point_add",
+   "point_edit",
+   "point_edit",
+   "point_edit"
+  ],
+  "final_subjects": [
+   "### Temporal Context Resolution",
+   "### Temporal Context Resolution",
+   "### Temporal Context Resolution",
+   "### Pagination Discipline",
+   "### Pagination Discipline",
+   "### Pagination Discipline",
+   "### Pagination Discipline",
+   "### Pagination Discipline",
+   "### Authentication Discipline"
+  ],
+  "unresolved_conflict_pairs": [
+   [
+    0,
+    2
+   ],
+   [
+    1,
+    2
+   ],
+   [
+    3,
+    4
+   ]
+  ],
+  "assertion_failures": [],
+  "signal_coverage": {
+   "spotify_multi_source": true,
+   "identity_resolution": true,
+   "sort_by_ranking": false,
+   "authentication": true,
+   "pagination": true,
+   "playback": false,
+   "temporal": true
+  },
+  "candidate_sections": [
+   "Pagination Discipline",
+   "Temporal Context Resolution",
+   "Authentication Discipline"
+  ],
+  "wall_s": 1325.9,
+  "llm_calls": 8,
+  "llm_seconds": 1325.9,
+  "tokens_in": 84067,
+  "tokens_out": 43470
+ },
+ "detail": {
+  "final_edits": [
+   {
+    "section_target": "### Temporal Context Resolution",
+    "delta_type": "point_edit",
+    "content": "- **Strict Year-Month Filtering**: When filtering by 'this year' combined with a month (e.g., 'February this year'), you MUST check BOTH the year AND the month. Files from previous years with the same month belong to a different category (e.g., 'others'). Do not filter by month alone.",
+    "target_tasks": [
+     "34d9492_1",
+     "34d9492_2"
+    ],
+    "rationale": "Refine the year-month filtering rule to be more precise about checking both components, preventing errors where only the month is checked.",
+    "derivation": "Kept from raw edits supporting precise temporal filtering. Merged with E#0's intent.",
+    "point_anchor": "- **Year and Month**: When filtering by 'this year' and a month, always check BOTH the month AND the year. Files from previous years with the same month belong to 'others' or a different category."
+   },
+   {
+    "section_target": "### Temporal Context Resolution",
+    "delta_type": "point_edit",
+    "content": "- **Infer System Date**: Determine the current year dynamically:\n  1. Check `apis.supervisor.show_profile()` or `apis.supervisor.show_account_passwords()` for timestamps.\n  2. Inspect recent data (e.g., latest transactions, messages, songs) to find the most recent `created_at` or `release_date`. The current date is shortly after this timestamp.\n  3. Check API response metadata (e.g., token expiry times) for clues.\n  4. **File Name Parsing**: For file-based tasks, parse year/month from file names (e.g., `2023-04.txt`) if timestamps are unavailable or ambiguous.",
+    "target_tasks": [
+     "ce359b5_1",
+     "76f2c72_2",
+     "e3d6c94_3",
+     "771d8fc_2"
+    ],
+    "rationale": "Adds file name parsing as a valid method for date inference, which was missed in the original rule but supported by multiple successful rollouts.",
+    "derivation": "Merges Raw 15 (Infer 'This Year' from Data) and Raw 49 (File Name Parsing) into the existing Temporal Context section.",
+    "point_anchor": "- **Infer System Date**: Determine the current year dynamically:\n  1. Check `apis.supervisor.show_profile()` or `apis.supervisor.show_account_passwords()` for timestamps.\n  2. Inspect recent data (e.g., latest transactions, messages, songs) to find the most recent `created_at` or `release_date`. The current date is shortly after this timestamp.\n  3. Check API response metadata (e.g., token expiry times) for clues."
+   },
+   {
+    "section_target": "### Temporal Context Resolution",
+    "delta_type": "point_add",
+    "content": "- **Day-of-Week Determination**: When a task references \"today\" or a specific day of the week, derive the current date from system signals (token expiry, most recent `created_at`/`updated_at` timestamps, or profile metadata). Do NOT assume the day based on prompt text alone. Filter data (e.g., workout plans) to match this specific day.",
+    "target_tasks": [
+     "b0a8eae_1",
+     "b0a8eae_3"
+    ],
+    "rationale": "Add a distinct rule for handling day-of-week references, which requires different logic than year-month filtering.",
+    "derivation": "Kept from raw edits. Separated from E#0 to avoid anchor conflict. Anchored after the year-month rule.",
+    "point_anchor": "- **Year and Month**: When filtering by 'this year' and a month, always check BOTH the month AND the year. Files from previous years with the same month belong to 'others' or a different category."
+   },
+   {
+    "section_target": "### Pagination Discipline",
+    "delta_type": "point_edit",
+    "content": "- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.\n- **Set Explicit Page Limit**: Always set `page_limit` to the maximum allowed value (e.g., 20) in your initial request to minimize API calls and avoid truncation from small defaults (e.g., 5).",
+    "target_tasks": [
+     "771d8fc_3"
+    ],
+    "rationale": "Prevents data truncation caused by relying on small default page limits when the task requires fetching many items.",
+    "derivation": "From Raw 13, which identified that failing rollouts missed items because they didn't specify `page_limit=20`.",
+    "point_anchor": "- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list."
+   },
+   {
+    "section_target": "### Pagination Discipline",
+    "delta_type": "point_add",
+    "content": "- **Full Fetch for Filtering**: When searching for a specific entity or applying complex filters (e.g., 'last approved request'), you MUST fetch ALL pages into a single list BEFORE filtering. Do not rely on API-level filters or single-page results if the target might be on a later page.",
+    "target_tasks": [
+     "302c169_1",
+     "60d0b5b_1"
+    ],
+    "rationale": "Prevents errors where the target item is on a later page (e.g., page 2) and single-page fetching or premature filtering misses it.",
+    "derivation": "Consolidates Raw 3 (Search Entire Dataset) and Raw 8 (Full Fetch for Filtering).",
+    "point_anchor": "- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest')."
+   },
+   {
+    "section_target": "### Pagination Discipline",
+    "delta_type": "point_add",
+    "content": "- **Detail Enrichment for Filtering**: When a list API returns items without necessary filtering fields (e.g., `release_date`), you MUST call the detail API (e.g., `show_song`, `show_album`) for each item to get the required fields. Do not assume the list response contains all necessary data.",
+    "target_tasks": [
+     "ce359b5_1"
+    ],
+    "rationale": "Prevents filtering errors caused by assuming list APIs return full object details (like release dates) which they often do not.",
+    "derivation": "From Raw 50, which identified that agents failed because `show_song_library` did not return `release_date`.",
+    "point_anchor": "- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest')."
+   },
+   {
+    "section_target": "### Pagination Discipline",
+    "delta_type": "point_add",
+    "content": "- **Response Type Awareness**: List-returning APIs (e.g., `show_song_library`, `show_playlist_library`) return the list directly, not a dict containing a key like 'songs' or 'results'. Access the result directly as a list.",
+    "target_tasks": [
+     "82e2fac_1",
+     "82e2fac_2",
+     "e7a10f8_3"
+    ],
+    "rationale": "Prevents AttributeErrors when agents assume a dict response structure for APIs that return a list directly.",
+    "derivation": "From Raw 25, which identified failures due to incorrect assumption of dict response types.",
+    "point_anchor": "- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest')."
+   },
+   {
+    "section_target": "### Pagination Discipline",
+    "delta_type": "point_add",
+    "content": "- **Paginate Contact Searches**: When searching for entities like 'coworkers' or 'relatives' in external apps (e.g., phone contacts), you MUST paginate through all results. Do not assume a single page contains all matches.",
+    "target_tasks": [
+     "afc0fce_1",
+     "6ea6792_1"
+    ],
+    "rationale": "Prevents incomplete identity resolution when searching for relationships, which leads to missed actions on unprocessed entities.",
+    "derivation": "Consolidates Raw 32 (Complete Set Extraction) and Raw 33 (Paginate Contact Searches).",
+    "point_anchor": "- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest')."
+   },
+   {
+    "section_target": "### Authentication Discipline",
+    "delta_type": "new_section",
+    "content": "### Authentication Discipline\n- **Login Parameter Convention**: Login APIs almost universally use `username` (expecting an email address for most apps, phone number for `phone` app) rather than `email` as the parameter name. Always inspect the API doc (`show_api_doc`) or use the correct identifier format for the specific app.\n  - **Spotify/SimpleNote/Venmo**: `username` = email address.\n  - **Phone App**: `username` = phone number.\n- **Explicit Token Passing**: Most authenticated APIs require an `access_token` parameter. Always extract the token from the login response (e.g., `login_result['access_token']`) and pass it explicitly to EVERY subsequent API call that requires authentication. Do not assume the session persists across separate code blocks.\n- **Re-login on 401**: If you receive a 401 error, re-login immediately to refresh the token and retry with the new token.",
+    "target_tasks": [
+     "ce359b5_1",
+     "76f2c72_2",
+     "3c13f5a_1",
+     "771d8fc_2",
+     "e7a10f8_3",
+     "c901732_3",
+     "d0b1f43_3",
+     "287e338_1",
+     "2a163ab_3",
+     "6ea6792_2"
+    ],
+    "rationale": "Introduce a new section for authentication best practices, which were not covered in existing sections.",
+    "derivation": "Created from raw edits identifying authentication failures.",
+    "after_section": "### Temporal Context Resolution"
+   }
+  ],
+  "candidate_text": "### Pagination Discipline\n- **Mandatory Loop**: When fetching list data, you MUST implement a loop that increments `page_index` starting from 0 until the API returns fewer results than `page_limit` or an empty list.\n- **Set Explicit Page Limit**: Always set `page_limit` to the maximum allowed value (e.g., 20) in your initial request to minimize API calls and avoid truncation from small defaults (e.g., 5).\n- **Accumulate Results**: Store results from all pages in a single list/set before processing. Do not process results page-by-page if the task requires acting on the complete set (e.g., 'all artists', 'disable the rest').\n- **Paginate Contact Searches**: When searching for entities like 'coworkers' or 'relatives' in external apps (e.g., phone contacts), you MUST paginate through all results. Do not assume a single page contains all matches.\n- **Response Type Awareness**: List-returning APIs (e.g., `show_song_library`, `show_playlist_library`) return the list directly, not a dict containing a key like 'songs' or 'results'. Access the result directly as a list.\n- **Detail Enrichment for Filtering**: When a list API returns items without necessary filtering fields (e.g., `release_date`), you MUST call the detail API (e.g., `show_song`, `show_album`) for each item to get the required fields. Do not assume the list response contains all necessary data.\n- **Full Fetch for Filtering**: When searching for a specific entity or applying complex filters (e.g., 'last approved request'), you MUST fetch ALL pages into a single list BEFORE filtering. Do not rely on API-level filters or single-page results if the target might be on a later page.\n- **Stop Condition**: The loop ends when `len(results) < page_limit` or `results` is empty. Never assume a single page contains all data.\n- **Verification**: If the task requires 'all' items, verify completeness by ensuring you have fetched every page. Missing a page leads to incomplete action sets.\n\n### Temporal Context Resolution\n- **Never Hardcode Year/Date**: Tasks often say 'this year', 'last month', or 'recently', but the simulated environment may have a different system date. Never assume the current year matches the calendar year or the prompt generation time.\n- **Infer System Date**: Determine the current year dynamically:\n  1. Check `apis.supervisor.show_profile()` or `apis.supervisor.show_account_passwords()` for timestamps.\n  2. Inspect recent data (e.g., latest transactions, messages, songs) to find the most recent `created_at` or `release_date`. The current date is shortly after this timestamp.\n  3. Check API response metadata (e.g., token expiry times) for clues.\n  4. **File Name Parsing**: For file-based tasks, parse year/month from file names (e.g., `2023-04.txt`) if timestamps are unavailable or ambiguous.\n- **Dynamic Filtering**: Use the dynamically obtained year/date to filter data (e.g., `release_date.startswith(str(current_year))`). Calculate relative thresholds (e.g., 'last N days') based on the inferred current date.\n- **Strict Year-Month Filtering**: When filtering by 'this year' combined with a month (e.g., 'February this year'), you MUST check BOTH the year AND the month. Files from previous years with the same month belong to a different category (e.g., 'others'). Do not filter by month alone.\n### Authentication Discipline\n- **Login Parameter Convention**: Login APIs almost universally use `username` (expecting an email address for most apps, phone number for `phone` app) rather than `email` as the parameter name. Always inspect the API doc (`show_api_doc`) or use the correct identifier format for the specific app.\n  - **Spotify/SimpleNote/Venmo**: `username` = email address.\n  - **Phone App**: `username` = phone number.\n- **Explicit Token Passing**: Most authenticated APIs require an `access_token` parameter. Always extract the token from the login response (e.g., `login_result['access_token']`) and pass it explicitly to EVERY subsequent API call that requires authentication. Do not assume the session persists across separate code blocks.\n- **Re-login on 401**: If you receive a 401 error, re-login immediately to refresh the token and retry with the new token.\n"
+ }
+}

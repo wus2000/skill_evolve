@@ -133,12 +133,19 @@ assertions — they would have caught the damage.
 
 **Live qwen replays** (`temperature 0.7`, real fleet):
 
-| metric | legacy (independent replay) | v2 |
+| metric | legacy (independent replay) | v2 (4 samples incl. injection) |
 |---|---|---|
-| silent drops | 19+ (field-dedup massacre reproduced) | 0 |
-| lost-signal coverage (7 probes) | 3-4/7 (varies) | 7/7 |
-| structure assertions on candidate | fails (shells/duplicates) | clean |
-| audit trail | none | every edit accounted for |
+| silent drops | 19 (field-dedup massacre reproduced) | 0 / 0 / 0 / 0 |
+| lost-signal coverage (7 probes) | 5/7 | 7/7, 6/7, 7/7, 6/7 |
+| convergence | repair exhausted, 3 unresolved conflict pairs delivered | converged every run (1-3 rounds) |
+| structure assertions on candidate | shells/duplicates in the original accident run | clean every run |
+| audit trail | none | every drop carries actor + reason |
+| optimizer LLM calls / wall | 8 / 1326s | 2-6 / 185-523s |
+
+Raw metric JSONs: `docs/editpipe_v2_replays/`. The final replay (with
+restatement detection + the "Delta only" guidance) converged in ONE round
+with TWO LLM calls total: the merger emitted point edits against existing
+sections instead of near-duplicate new sections, unprompted by any repair.
 
 Iteration driven by the first live replay: the merger tended to restate
 existing sections as near-duplicate new sections ("Pagination Protocol"

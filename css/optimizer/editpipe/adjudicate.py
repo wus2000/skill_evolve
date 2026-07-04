@@ -545,11 +545,20 @@ def adjudicate(
             "editpipe.repair: %d ops -> %d edits after round %d",
             len(ops), len(res.edits), round_no)
 
-    # Non-convergence: deterministic, content-preserving fallback.
+    # Re-detect after the last repair: if it actually resolved everything,
+    # that IS convergence (the loop just ran out of verification rounds).
     mech = detect_conflicts(res.edits, doc) \
         + detect_restatements(res.edits, doc)
     blocking = [v for v in _dedup_violations(mech)
                 if v.vtype not in _APPLY_DEGRADABLE]
+    if not blocking:
+        res.converged = True
+        _log.info(
+            "editpipe.adjudicate: converged on the final repair (round %d)",
+            res.rounds)
+        return res
+
+    # Non-convergence: deterministic, content-preserving fallback.
     res.edits, accepted = deterministic_fallback(res.edits, blocking, audits)
     res.accepted_risks = accepted
     res.converged = False

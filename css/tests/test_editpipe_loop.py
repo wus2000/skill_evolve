@@ -263,6 +263,44 @@ def test_run_merger_coherence_round_fixes_collisions():
     assert not [v for v in violations if v.vtype == "identity_collision"]
 
 
+def test_sb_accident_shape_batch_target_tasks_omission_recovers():
+    """The recorded SpreadsheetBench failure mode: the merger omits
+    target_tasks on EVERY edit (which under the legacy validator collapsed a
+    whole step to merged_edits == []). The required-field hook must recover
+    it with one feedback repair call."""
+    patches = _load_patches("spreadsheetbench_step2")
+    with open(os.path.join(FIX, "spreadsheetbench_step2", "base_rules.md"),
+              encoding="utf-8") as f:
+        base = f.read()
+    state = {"n": 0}
+
+    def opt(system, user):
+        state["n"] += 1
+        if state["n"] == 1:
+            return json.dumps({"reasoning": "x", "edits": [
+                {"kind": "add_section", "subject": "Computed Values Refinement",
+                 "body": "- compute in python."},
+                {"kind": "add_point", "subject": "Sheet and Range Fidelity",
+                 "anchor": "**Answer Position Alignment**",
+                 "body": "- align."},
+            ]})
+        assert "target_tasks" in user      # repair feedback names the field
+        return json.dumps({"edits": [
+            {"kind": "add_section", "subject": "Computed Values Refinement",
+             "body": "- compute in python.", "target_tasks": ["49801"]},
+            {"kind": "add_point", "subject": "Sheet and Range Fidelity",
+             "anchor": "**Answer Position Alignment**", "body": "- align.",
+             "target_tasks": ["168-17"]},
+        ]})
+
+    client = StubLLMClient(optimizer_fn=opt)
+    edits, violations, audits, stats = run_merger(client, base, patches)
+    assert len(edits) == 2
+    assert all(e.target_tasks for e in edits)
+    assert not [v for v in violations if v.vtype == "missing_target_tasks"]
+    assert state["n"] == 2                 # merger + exactly one repair
+
+
 def test_required_fields_hook_matches_gate_blockers():
     edits = [{"kind": "add_point", "subject": "S"}]  # no anchor, body, tasks
     missing = required_fields_missing(edits)
