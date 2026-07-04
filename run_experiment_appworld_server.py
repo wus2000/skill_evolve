@@ -85,9 +85,13 @@ def main() -> None:
         max_turns=50,          # mirrors appworld_max_interactions (generic field)
         k_rollouts=3,
 
-        # L0 exploitation. batch = the FULL 90-task pool every step (no batch
-        # sampling noise; 1 step == 1 epoch on this tiny pool).
-        batch_size=90,
+        # L0 exploitation. batch = 45 (half the 90-task pool per step,
+        # difficulty-weighted sampling; agreed 2026-07-05 — replaces the
+        # initial full-pool-90 setting to double step throughput).
+        batch_size=45,
+        # Per-edit verification floor: ABSOLUTE 8 tasks (agreed 2026-07-05;
+        # replaces the derived batch//8 which would give 5 at batch=45).
+        verify_floor_tasks=8,
         minibatch_size=16,
         reflect_mode="plan_a",
         merger_granularity="point",

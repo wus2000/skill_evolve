@@ -78,6 +78,10 @@ class CSSConfig:
     verify_floor_divisor: int = 8        # verification set floor = batch_size // this
                                          # (pad with random batch control tasks — they double
                                          # as regression detectors outside the edit's targets)
+    verify_floor_tasks: int = 0          # ABSOLUTE verification floor (tasks per edit);
+                                         # 0 = derive from verify_floor_divisor. Takes
+                                         # precedence when > 0. Not part of the resume
+                                         # fingerprint (reporting/measurement knob).
     verify_min_net_flips: int = 2        # continuous tiebreaker requires >= this many net
                                          # rollout flips (single-flip passes are noise)
 
