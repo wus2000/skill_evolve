@@ -368,7 +368,7 @@ def cold_start(
         from css.evaluation.test_splits import (
             env_eval_splits,
             env_extra_metrics,
-            _fmt_extra,
+            fmt_extra,
         )
         splits = env_eval_splits(env)
         import json as _json_test
@@ -399,7 +399,7 @@ def cold_start(
                 "(%d/%d passed, %d tasks)%s",
                 _name, _score,
                 sum(1 for r in _flat if r.passed), len(_flat), len(_items),
-                _fmt_extra(_extra))
+                fmt_extra(_extra))
             split_summaries[_name] = {
                 "score": _score,
                 "extra": _extra,

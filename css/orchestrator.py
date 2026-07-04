@@ -352,8 +352,11 @@ def _measure_initial_val(
     score = float(aggregate_scores(flat).get("task_hard", 0.0))
     node.baseline_val_score = score
     node.val_score = score
-    _log.info("Node baseline — round=%d node=%s initial_strategy_val=%.3f (gate incumbent)",
-              round_index, node.node_id, score)
+    from css.evaluation.test_splits import env_extra_metrics, fmt_extra
+    _log.info("Node baseline — round=%d node=%s initial_strategy_val=%.3f "
+              "(gate incumbent)%s",
+              round_index, node.node_id, score,
+              fmt_extra(env_extra_metrics(env, flat)))
     return score
 
 
@@ -537,6 +540,10 @@ def _run_node_epoch(
         )
         val_flat = [r for g in val_groups for r in g.rollouts]
         node.val_score = float(aggregate_scores(val_flat).get("task_hard", 0.0))
+        from css.evaluation.test_splits import env_extra_metrics, fmt_extra
+        _log.info("Val eval — round=%d node=%s val=%.4f%s",
+                  round_index, node.node_id, node.val_score,
+                  fmt_extra(env_extra_metrics(env, val_flat)))
     else:
         # PRUNE degrades conservatively on the skip path: empty val_groups
         # means "no paired validation passes" -> never prunes on stale data.

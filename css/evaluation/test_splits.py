@@ -48,7 +48,7 @@ def env_extra_metrics(env: "TaskEnv", flat_results: list) -> "dict[str, float]":
     return {}
 
 
-def _fmt_extra(extra: "dict[str, float]") -> str:
+def fmt_extra(extra: "dict[str, float]") -> str:
     if not extra:
         return ""
     return "  " + "  ".join(
@@ -105,5 +105,8 @@ def evaluate_test_splits(
         _log.info(
             "%s [%s] task_hard=%.4f (%d/%d passed, %d tasks)%s",
             label, name, score, report[name]["n_passed"], len(flat),
-            len(items), _fmt_extra(extra))
+            len(items), fmt_extra(extra))
     return report
+
+
+_fmt_extra = fmt_extra  # back-compat alias
