@@ -41,6 +41,14 @@ Four structural causes, not four bugs:
 
 ## 2. Design axioms
 
+Overarching principle: **the LLM is the decision maker for every analysis
+or judgement call; rule code has exactly three legitimate jobs — DETECT
+(surface evidence for the LLM), EXECUTE (deterministic text surgery), and
+GUARD (enforce hard contracts). Rule code never arbitrates content.** Where
+neither the LLM loop nor rule code can settle a question, the answer is
+delivered to the pipeline's objective referee — per-edit rollout
+verification and the paired gate — which judges with measurements.
+
 1. **Single source of identity.** An edit's identity is its `subject`;
    bodies never contain headings (headings are rendered from subjects at
    assembly). The field-vs-content disagreement is unrepresentable.
@@ -48,24 +56,39 @@ Four structural causes, not four bugs:
    losslessly, detect problems, and drop *byte-identical duplicates* — and
    nothing else. Detection output is a violation, not a deletion.
 3. **Semantic rulings belong to the LLM,** in the adjudication loop
-   (validator + ID-diff repair). Every kill carries a reason into the
+   (validator + ID-diff repair). The repair LLM sees ALL open violations —
+   including non-blocking ones it might fix outright (e.g. a wrong anchor)
+   — and its round budget is elastic: while each round strictly reduces the
+   blocking count, the loop earns extra rounds (hard cap +2) instead of
+   being cut off mid-progress. Every kill carries a reason into the
    permanent audit trail. Nothing is silently discarded.
 4. **Constraints are enforced by purpose, not form.** Ablation needs
    pairwise-disjoint action regions; the disjointness table encodes exactly
    that. Two *different* new sections never conflict over a field value.
-   Near-verbatim restatement (mechanically decidable via token-Jaccard line
-   overlap) is detected mechanically; paraphrase stays with the validator.
-5. **LLMs never do mechanical transcription.** Section surgery is
-   deterministic; the only apply-time LLM is a *section-scoped* anchor
-   resolver (input: one section + one edit; blast radius: that section).
-   Structure assertions run after every assembly.
-6. **Failure degrades position, never content.** Wrong placement -> end;
-   unresolvable anchor -> section-end append; adjudication non-convergence
-   -> keep-max-support, demote the rest to point-adds; remove-ops are
-   idempotent no-ops when the target is already gone. Every degradation is
-   audited. The pipeline's objective backstop (per-edit verification + the
-   paired gate) is what finally kills weak content — with measurements, not
-   string comparisons.
+   Mechanical detectors (token-Jaccard restatement, the disjointness table)
+   only *raise* issues for the LLM; they never resolve them.
+5. **LLMs never do mechanical transcription — and rule guards check
+   contracts, not content.** Section surgery is deterministic; the only
+   apply-time LLM is a *section-scoped* anchor resolver whose output is
+   checked against a hard contract (insertions keep every existing line and
+   contain the edit body; removals add nothing). A rejected attempt goes
+   BACK to the LLM once with the rejection reason — the decision maker is
+   exhausted before any rule-based degradation. Structure assertions run
+   after every assembly.
+6. **Failure degrades position, never content — and never arbitrates.**
+   Wrong placement -> end; unresolvable anchor -> section-end append;
+   remove-ops are idempotent no-ops when the target is already gone. On
+   adjudication non-convergence the fallback makes NO content decision:
+   contested edits are delivered unchanged (apply's add-to-existing appends
+   guarantee losslessness) and per-edit verification — the only referee
+   more objective than the LLM — adjudicates with rollout measurements.
+   Two exceptions where delivery-as-is would be wrong: an unresolved
+   conflict involving a whole-section REMOVAL suppresses the removal
+   (deleting content requires an explicit ruling; a warranted removal
+   re-emerges next step), and unresolved CONTENT PURITY gets one focused
+   LLM purge call before delivery — verification measures solvability, not
+   purity, so purity has no downstream backstop and a failed purge is
+   flagged loudly in accepted_risks. Every degradation is audited.
 
 ## 3. Vocabulary (all stages speak it)
 
@@ -99,13 +122,15 @@ reflector (v2 vocabulary, per-minibatch raw edits)
      │                           output is structurally incoherent:
      │                           identity_collision / add_exists /
      │                           restates_existing / heading-in-body / ...]
-  └─ adjudication loop (<=3)    [each round: disjointness table +
-     │                           restatement detection + LLM validator;
-     │                           ID-diff repair ops (replace/drop/merge/add,
+  └─ adjudication loop          [each round: disjointness table +
+     │  (3 rounds, elastic to 5  restatement detection + LLM validator;
+     │   while progressing)      ID-diff repair ops (replace/drop/merge/add,
      │                           allowlist-scoped, drops carry reasons);
-     │                           apply-degradable violations pass through]
-  └─ deterministic fallback     [on non-convergence: keep-max-support,
-     │                           demote rest to point-adds; content intact]
+     │                           non-blocking violations shown to the
+     │                           repair LLM too — fixable, never gating]
+  └─ minimal fallback           [on non-convergence: NO arbitration —
+     │                           format hygiene only; contested edits
+     │                           delivered unchanged to verification]
   └─ deterministic apply        [remove -> rewrite -> add -> points;
                                  exact anchor -> normalized anchor ->
                                  section-scoped LLM resolver -> append;
@@ -204,8 +229,8 @@ content to preserve — they are retried by the JSON-repair layer and logged).
 | validator: optimistic `[]` on LLM failure | unchanged by design (mechanical detections still stand; apply degrades safely) — now with structural JSON repair first |
 | repair: out-of-scope / malformed ops rejected | unchanged (scope guard) + every accepted drop now REQUIRES a written reason -> audit |
 | salvage: phantom point_edit/point_remove dropped | dependency_on_new violation -> adjudication; fallback creates the section or treats removal as idempotent — content never dropped |
-| repair exhaustion: proceed with unresolved conflict_pairs -> downstream best-pick drops losers | deterministic fallback: keep-max-support + demote rest; nothing dropped; final-round repair that clears violations counts as convergence |
-| apply: anchor not found -> silent no-op | degradation chain: normalized match -> section-scoped LLM resolver -> content-preserving append; remove treated as idempotent; all audited |
+| repair exhaustion: proceed with unresolved conflict_pairs -> downstream best-pick drops losers | elastic rounds while progressing; on true non-convergence the fallback arbitrates NOTHING — contested edits delivered unchanged to rollout verification; final-round repair that clears violations counts as convergence |
+| apply: anchor not found -> silent no-op | degradation chain: normalized match -> section-scoped LLM resolver (contract-guarded, one feedback retry) -> content-preserving append; remove treated as idempotent; all audited |
 | apply: whole-document LLM rewrite, no assertions | deterministic section surgery + post-assembly structure assertions + normalize |
 | collective apply loses anchor/placement (EditVerification gap) | EditVerification now carries after_section/point_anchor end to end |
 | purity_telemetry (log-only) | wired identically in the v2 path (monitoring continuity) |

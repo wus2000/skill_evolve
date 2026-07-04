@@ -103,9 +103,10 @@ def test_adjudicate_repair_drop_is_audited():
     assert "duplicate" in drops[0].reason
 
 
-def test_adjudicate_nonconvergence_falls_back_content_preserving():
-    """Repair never fixes anything -> deterministic fallback demotes, keeps
-    all content, blocks nothing."""
+def test_adjudicate_nonconvergence_delivers_unchanged_for_verification():
+    """Repair never fixes anything -> the fallback makes NO arbitration:
+    every contested edit is delivered unchanged (rule code decides nothing);
+    per-edit verification is the referee. Nothing is deleted or demoted."""
 
     def opt(system, user):
         if "edit validator" in system:
@@ -119,15 +120,19 @@ def test_adjudicate_nonconvergence_falls_back_content_preserving():
         _edit(subject="Same Topic", body="- three",
               target_tasks=["d", "e", "f"]),
     ]
-    res = adjudicate(client, BASE, edits, max_rounds=2)
+    res = adjudicate(client, BASE, edits, max_rounds=2, hard_cap_rounds=2)
     assert not res.converged
-    assert len(res.edits) == 3                      # nothing deleted
-    adds = [e for e in res.edits if e.kind == "add_section"]
-    demoted = [e for e in res.edits if e.kind == "add_point"]
-    assert len(adds) == 1 and len(demoted) == 2
-    assert adds[0].target_tasks == ["d", "e", "f"]  # max support kept role
-    assert all(a.actor == "fallback" for a in res.audits
-               if a.fate == "demoted")
+    assert len(res.edits) == 3                          # nothing deleted
+    assert all(e.kind == "add_section" for e in res.edits)  # nothing demoted
+    assert any(v.vtype == "identity_collision" for v in res.accepted_risks)
+    assert any("delivered unchanged" in a.reason for a in res.audits
+               if a.actor == "fallback")
+    # Delivery is safe: applying all three appends into one section.
+    from css.optimizer.editpipe.apply import apply_edits
+    applied = apply_edits(BASE, res.edits)
+    assert applied.assertion_failures == []
+    for frag in ("- one", "- two", "- three"):
+        assert frag in applied.text
 
 
 def test_adjudicate_scope_guard_rejects_out_of_allowlist_ops():

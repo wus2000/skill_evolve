@@ -52,6 +52,16 @@ _APPLY_DEGRADABLE = frozenset({
     "missing_subject", "missing_target_tasks", "invalid_kind",
 })
 
+# Violation types produced by the mechanical detectors (recomputable after
+# the loop). Anything else in the final round's blocking set is
+# semantic-only and must be CARRIED to the fallback, or it would vanish
+# without an accepted-risk audit.
+_MECH_TYPES = frozenset({
+    "identity_collision", "add_exists", "section_conflict",
+    "anchor_overlap", "restates_existing", "restates_sibling",
+    "body_contains_heading",
+})
+
 
 @dataclass
 class AdjudicationResult:
@@ -311,19 +321,34 @@ def _apply_ops(
     slots: list[SectionEdit | None] = list(edits)
     appended: list[SectionEdit] = []
 
-    def _payload(op: dict) -> SectionEdit | None:
+    def _payload(op: dict, inherit_from: list[SectionEdit] = ()) -> SectionEdit | None:
         d = op.get("edit")
         if not isinstance(d, dict):
             return None
         e = SectionEdit.from_dict(d)
-        return e if e.subject else None
+        if not e.subject:
+            return None
+        # Provenance is mechanical bookkeeping, not judgement: a repair
+        # payload that omits target_tasks inherits the union from the edits
+        # it replaces/merges, so support is never zeroed by an LLM omission
+        # (an empty-support edit would auto-fail verification -> lost signal).
+        if not e.target_tasks and inherit_from:
+            seen: list[str] = []
+            for src in inherit_from:
+                for t in src.target_tasks:
+                    if t not in seen:
+                        seen.append(t)
+            e.target_tasks = seen
+        return e
 
     for op in ops:
         kind = str(op.get("op", "")).strip().lower()
         if kind == "add":
             e = _payload(op)
-            if e is None:
-                _log.warning("editpipe.repair: rejected add with bad payload")
+            if e is None or not e.target_tasks:
+                _log.warning(
+                    "editpipe.repair: rejected add with bad payload "
+                    "(missing subject or target_tasks)")
                 continue
             appended.append(e)
             audits.append(EditAudit(
@@ -344,7 +369,7 @@ def _apply_ops(
                     f"E#{idx}", old.subject if old else "?",
                     "dropped", reason, "adjudicator"))
             else:
-                e = _payload(op)
+                e = _payload(op, inherit_from=[old] if old else [])
                 if e is None:
                     _log.warning(
                         "editpipe.repair: rejected replace E#%d bad payload",
@@ -367,7 +392,8 @@ def _apply_ops(
                     "editpipe.repair: rejected merge %r outside allowlist",
                     raw_ids)
                 continue
-            e = _payload(op)
+            e = _payload(op, inherit_from=[
+                s for s in (slots[i] for i in idxs) if s is not None])
             if e is None:
                 _log.warning("editpipe.repair: rejected merge bad payload")
                 continue
@@ -390,54 +416,104 @@ def _apply_ops(
     return [e for e in slots if e is not None] + appended
 
 
+# ── Focused purity purge (last LLM engagement before delivery) ──────────────
+
+_PURGE_SYSTEM = """\
+You clean ONE rules.md edit body. The body must contain ONLY domain
+instructions the task-executing agent can act on. Remove optimization-process
+material: provenance/justification prose, references to training tasks or
+task identifiers, verification outcomes, meta commentary. Keep every
+actionable domain instruction intact and unchanged.
+
+Output JSON only, no fences: {"body": "<the cleaned body>"}"""
+
+
+def _purify_impure_edits(
+    client: Any,
+    edits: list[SectionEdit],
+    blocking: list[Violation],
+    audits: list[EditAudit],
+) -> list[Violation]:
+    """One focused purge call per content_purity edit; on success the
+    violation is resolved, on failure it stays for the fallback's honest
+    accepted-risk audit."""
+    remaining: list[Violation] = []
+    by_id = {f"E#{i}": e for i, e in enumerate(edits)}
+    for v in blocking:
+        if v.vtype != "content_purity":
+            remaining.append(v)
+            continue
+        resolved_all = True
+        for ref in v.edit_ids:
+            e = by_id.get(ref)
+            if e is None or not e.body.strip():
+                continue
+            try:
+                text, _usage = client.complete_optimizer(
+                    _PURGE_SYSTEM,
+                    f"## Problem\n{v.detail}\n\n## Edit body\n{e.body}",
+                    max_tokens=4096)
+                obj = _parse_json_obj(text, "body")
+            except Exception:
+                obj = None
+            new_body = (obj or {}).get("body")
+            if isinstance(new_body, str) and new_body.strip():
+                e.body = new_body.strip()
+                audits.append(EditAudit(
+                    ref, e.subject, "normalized",
+                    "content_purity purge applied by a focused LLM call "
+                    "before delivery", "adjudicator"))
+            else:
+                resolved_all = False
+        if not resolved_all:
+            remaining.append(v)
+    return remaining
+
+
 # ── Deterministic convergence fallback ───────────────────────────────────────
-
-def _support(e: SectionEdit) -> int:
-    return len(e.target_tasks)
-
 
 def deterministic_fallback(
     edits: list[SectionEdit],
     violations: list[Violation],
     audits: list[EditAudit],
 ) -> tuple[list[SectionEdit], list[Violation]]:
-    """Resolve blocking violations without deleting content.
+    """Minimal-intervention fallback when the LLM loop did not converge.
 
-    identity_collision / add_exists / whole-section pileups: the max-support
-    claimant keeps its role; the rest demote to anchored-nowhere point-adds
-    on the same subject (apply appends them at the section end). Heading
-    pollution is demoted in place. Everything else is delivered and audited
-    as an accepted risk for per-edit verification to judge objectively.
+    Rule code makes NO content or arbitration decisions here. The only
+    mechanical action is pure format hygiene (demoting heading lines inside
+    bodies — the document invariant). Every semantically contested edit is
+    delivered UNCHANGED to per-edit verification, which adjudicates with
+    rollout measurements — the only referee more objective than the LLM.
+    Apply-level content-preserving semantics (add-to-existing appends,
+    removals are idempotent) guarantee delivery cannot lose content.
     """
     accepted: list[Violation] = []
     by_id = {f"E#{i}": e for i, e in enumerate(edits)}
-
-    def demote(ref: str, why: str) -> None:
-        e = by_id.get(ref)
-        if e is None or e.kind == "add_point":
-            return
-        if e.kind in ("remove_section", "remove_point"):
-            return  # nothing to preserve; leave as-is (apply is idempotent)
-        e.kind = "add_point"
-        e.anchor = ""
-        e.placement = ""
-        audits.append(EditAudit(
-            ref, e.subject, "demoted",
-            f"{why}; demoted to an append-style point addition so its "
-            "content survives for objective verification", "fallback"))
+    suppressed: set[int] = set()
 
     for v in violations:
-        if v.vtype in ("identity_collision", "add_exists", "section_conflict"):
-            group = [(r, by_id[r]) for r in v.edit_ids if r in by_id]
-            if not group:
-                continue
-            keeper = max(group, key=lambda re_: _support(re_[1]))
-            for ref, e in group:
-                if ref is keeper[0]:
-                    continue
-                demote(ref, f"lost {v.vtype} arbitration to {keeper[0]} "
-                            f"(support {_support(keeper[1])} vs {_support(e)})")
-        elif v.vtype == "body_contains_heading":
+        # GUARD (not arbitration): an UNRESOLVED conflict that includes a
+        # whole-section removal must not delete content nobody ruled on.
+        # The removal is suppressed (audited); if it is a real improvement
+        # the reflector/merger will re-propose it next step with the
+        # conflict gone. Irreversible actions require an explicit ruling.
+        if v.vtype in ("identity_collision", "add_exists",
+                       "section_conflict"):
+            refs = [r for r in v.edit_ids if r in by_id]
+            kinds = {by_id[r].kind for r in refs}
+            if "remove_section" in kinds and len(kinds) > 1:
+                for r in refs:
+                    e = by_id[r]
+                    if e.kind == "remove_section":
+                        suppressed.add(id(e))
+                        audits.append(EditAudit(
+                            r, e.subject, "dropped",
+                            f"unresolved {v.vtype} pairs this removal with "
+                            "other live edits on the same section; removal "
+                            "suppressed — deleting content requires an "
+                            "explicit ruling, and a warranted removal will "
+                            "be re-proposed next step", "fallback"))
+        if v.vtype == "body_contains_heading":
             for ref in v.edit_ids:
                 e = by_id.get(ref)
                 if e is None:
@@ -451,11 +527,21 @@ def deterministic_fallback(
                         "fallback"))
         else:
             accepted.append(v)
+            if v.vtype == "content_purity":
+                note = ("delivered with UNRESOLVED purity risk — the "
+                        "focused purge failed and rollout verification "
+                        "measures solvability, not purity; review the "
+                        "accepted_risks record")
+            else:
+                note = ("delivered unchanged for objective per-edit "
+                        "verification to judge")
             audits.append(EditAudit(
                 ",".join(v.edit_ids), "*", "kept",
-                f"accepted risk [{v.vtype}]: {v.detail[:160]} — delivered "
-                "for objective per-edit verification", "fallback"))
+                f"unresolved [{v.vtype}] after LLM adjudication: "
+                f"{v.detail[:140]} — {note}", "fallback"))
 
+    if suppressed:
+        edits = [e for e in edits if id(e) not in suppressed]
     return edits, accepted
 
 
@@ -468,15 +554,29 @@ def adjudicate(
     initial_violations: list[Violation] | None = None,
     *,
     max_rounds: int = MAX_ROUNDS,
+    hard_cap_rounds: int = MAX_ROUNDS + 2,
     run_semantic: bool = True,
 ) -> AdjudicationResult:
-    """Run the detect->repair loop to convergence or fallback."""
+    """Run the detect->repair loop to convergence or fallback.
+
+    The LLM is the decision maker; rule code only detects, meters and
+    executes. Two consequences: (1) apply-degradable violations are still
+    SHOWN to the repair LLM (it may fix an anchor outright — better than
+    any downstream degradation) but never block convergence; (2) the round
+    budget is elastic — while each repair round strictly reduces the
+    blocking-violation count, the loop earns extra rounds up to
+    ``hard_cap_rounds`` instead of being cut off mid-progress.
+    """
     doc = RulesDoc.parse(rules_md)
     audits: list[EditAudit] = []
     res = AdjudicationResult(edits=list(edits), audits=audits)
     carried = list(initial_violations or [])
+    prev_blocking = None
+    last_blocking: list[Violation] = []
 
-    for round_no in range(1, max_rounds + 1):
+    round_no = 0
+    while True:
+        round_no += 1
         res.rounds = round_no
         mech = detect_conflicts(res.edits, doc) \
             + detect_restatements(res.edits, doc)
@@ -491,14 +591,15 @@ def adjudicate(
                     if v.vtype not in _APPLY_DEGRADABLE]
         degradable = [v for v in violations
                       if v.vtype in _APPLY_DEGRADABLE]
-        for v in degradable:
-            audits.append(EditAudit(
-                ",".join(v.edit_ids), "*", "kept",
-                f"[{v.vtype}] left to the apply-stage degradation chain: "
-                f"{v.detail[:140]}", "adjudicator"))
 
         if not blocking:
             res.converged = True
+            for v in degradable:
+                audits.append(EditAudit(
+                    ",".join(v.edit_ids), "*", "kept",
+                    f"[{v.vtype}] unresolved but non-blocking; the apply "
+                    f"stage degrades it content-preservingly: {v.detail[:120]}",
+                    "adjudicator"))
             _log.info(
                 "editpipe.adjudicate: converged in round %d (%d degradable "
                 "violation(s) left to apply)", round_no, len(degradable))
@@ -509,16 +610,29 @@ def adjudicate(
             round_no, len(blocking),
             ", ".join(sorted({v.vtype for v in blocking})))
 
-        if round_no == max_rounds:
+        making_progress = (
+            prev_blocking is not None and len(blocking) < prev_blocking)
+        prev_blocking = len(blocking)
+        if round_no >= hard_cap_rounds or (
+                round_no >= max_rounds and not making_progress):
+            last_blocking = blocking
             break
 
-        allowed = _implicated(blocking)
+        # The repair LLM sees EVERYTHING (blocking + degradable) and may
+        # operate on any implicated edit; only blocking gates convergence.
+        allowed = _implicated(blocking) | _implicated(degradable)
+        feedback = _feedback_text(blocking)
+        if degradable:
+            feedback += (
+                "\n\nADDITIONALLY (non-blocking — fix if you can, e.g. by "
+                "supplying a correct anchor; otherwise the apply stage will "
+                "degrade them safely):\n" + _feedback_text(degradable))
         user = (
             "## Current rules.md\n"
             + (rules_md.strip() if rules_md and rules_md.strip() else "(empty)")
             + "\n\n## CURRENT EDIT SET (protocol handles E#n)\n"
             + "\n\n".join(_render_edit(i, e) for i, e in enumerate(res.edits))
-            + "\n\n## VIOLATIONS TO FIX\n" + _feedback_text(blocking)
+            + "\n\n## VIOLATIONS TO FIX\n" + feedback
             + "\n\n## ALLOWED IDS (operations may only reference these)\n"
             + (", ".join(f"E#{i}" for i in sorted(allowed)) or "(none — add only)")
         )
@@ -545,11 +659,14 @@ def adjudicate(
             "editpipe.repair: %d ops -> %d edits after round %d",
             len(ops), len(res.edits), round_no)
 
-    # Re-detect after the last repair: if it actually resolved everything,
-    # that IS convergence (the loop just ran out of verification rounds).
+    # Re-detect mechanically after the last repair, and CARRY the final
+    # round's semantic-only blocking findings (they are not recomputable
+    # without another validator call and must not vanish unaudited).
     mech = detect_conflicts(res.edits, doc) \
         + detect_restatements(res.edits, doc)
-    blocking = [v for v in _dedup_violations(mech)
+    semantic_carry = [v for v in last_blocking
+                      if v.vtype not in _MECH_TYPES]
+    blocking = [v for v in _dedup_violations(mech + semantic_carry)
                 if v.vtype not in _APPLY_DEGRADABLE]
     if not blocking:
         res.converged = True
@@ -558,7 +675,13 @@ def adjudicate(
             res.rounds)
         return res
 
-    # Non-convergence: deterministic, content-preserving fallback.
+    # Last LLM engagement before delivery: content_purity has no objective
+    # backstop downstream (verification measures solvability, not purity;
+    # the GT firewall is non-negotiable), so give the LLM one focused
+    # purge call per impure edit before accepting any residual risk.
+    blocking = _purify_impure_edits(client, res.edits, blocking, audits)
+
+    # Non-convergence: minimal, content-preserving fallback.
     res.edits, accepted = deterministic_fallback(res.edits, blocking, audits)
     res.accepted_risks = accepted
     res.converged = False

@@ -32,10 +32,11 @@ from css.optimizer.editpipe.schema import EditAudit, SectionEdit
 
 _log = logging.getLogger(__name__)
 
-# resolver(section_subject, section_body, edit) -> new body for that section,
-# or None if it could not resolve. Injected by the pipeline (LLM-backed) or
-# left None for fully-deterministic operation (tests, degraded mode).
-Resolver = Callable[[str, str, SectionEdit], Optional[str]]
+# resolver(section_subject, section_body, edit, feedback) -> new body for
+# that section, or None if it could not resolve. ``feedback`` is non-empty on
+# a retry and explains why the previous attempt was rejected. Injected by the
+# pipeline (LLM-backed) or left None for fully-deterministic operation.
+Resolver = Callable[[str, str, SectionEdit, str], Optional[str]]
 
 
 @dataclass
@@ -104,8 +105,14 @@ def _resolver_output_sane(e: SectionEdit, old_body: str, new_body: str) -> bool:
             retained = sum(1 for ln in old_lines if ln in new_norm)
             if e.kind == "add_point" and retained < len(old_lines):
                 return False       # an insertion must not lose existing text
-            if e.kind == "edit_point" and retained * 2 < len(old_lines):
-                return False       # a point edit must not rewrite the section
+            if e.kind == "edit_point":
+                # A point edit may replace roughly the anchored text and
+                # nothing else: allow at most anchor-size + 1 lines to
+                # change, never a wholesale rewrite of the section.
+                anchor_lines = max(
+                    1, len([ln for ln in e.anchor.split("\n") if ln.strip()]))
+                if retained < len(old_lines) - anchor_lines - 1:
+                    return False
         return True
     if e.kind == "remove_point":
         new_lines = [ln for ln in
@@ -132,10 +139,14 @@ def apply_edits(
     edits: list[SectionEdit],
     resolver: Resolver | None = None,
 ) -> ApplyResult:
-    """Apply all edits deterministically. Order: whole-section removals,
-    rewrites, section additions, then point edits — so a point edit whose
-    section is created by the same batch lands on the created section, and
-    placements can reference both pre-existing and same-batch sections."""
+    """Apply all edits deterministically. Order: rewrites, section
+    additions, point edits, then whole-section removals — a point edit whose
+    section is created by the same batch lands on the created section,
+    placements can reference both pre-existing and same-batch sections, and
+    a removal is always the LAST word: if a removal and other edits on the
+    same section ever reach apply together (adjudication normally prevents
+    it), the outcome is a clean removal — never a deleted section
+    resurrected as an empty shell holding only a point edit's delta."""
     doc = RulesDoc.parse(rules_md)
     audits: list[EditAudit] = []
 
@@ -144,8 +155,9 @@ def apply_edits(
     def eid(e: SectionEdit) -> str:
         return ids[id(e)]
 
-    order = {"remove_section": 0, "rewrite_section": 1, "add_section": 2,
-             "edit_point": 3, "remove_point": 3, "add_point": 3}
+    order = {"rewrite_section": 0, "add_section": 1,
+             "edit_point": 2, "remove_point": 2, "add_point": 2,
+             "remove_section": 3}
     for e in sorted(edits, key=lambda x: order.get(x.kind, 2)):
         if e.kind == "remove_section":
             idx = doc.index_of(e.subject)
@@ -243,9 +255,25 @@ def _apply_point(
         if e.kind != "remove_point" else ""
 
     if span is None and resolver is not None:
-        resolved = resolver(sec.subject, body, e)
-        if resolved is not None and resolved.strip() \
-                and _resolver_output_sane(e, body, resolved):
+        # The LLM gets a second attempt WITH the rejection reason before any
+        # rule-based degradation — exhaust the decision maker first.
+        feedback = ""
+        for attempt in (1, 2):
+            resolved = resolver(sec.subject, body, e, feedback)
+            if resolved is None or not resolved.strip():
+                feedback = (
+                    "Your previous attempt returned no usable body. Output "
+                    "the COMPLETE updated section body as JSON.")
+                continue
+            if not _resolver_output_sane(e, body, resolved):
+                feedback = (
+                    "Your previous attempt was rejected by a mechanical "
+                    "check: the output must contain the edit's content "
+                    "verbatim (for add/edit), must keep the section's "
+                    "existing lines (all for add, the majority for edit), "
+                    "and must not introduce new material on remove. Apply "
+                    "ONLY the requested change to the section body.")
+                continue
             new_body, n = demote_headings(resolved)
             if n:
                 audits.append(EditAudit(
@@ -255,12 +283,14 @@ def _apply_point(
             sec.body = new_body.strip("\n")
             audits.append(EditAudit(
                 edit_id, e.subject, "kept",
-                "anchor resolved semantically within the section", "apply"))
+                "anchor resolved semantically within the section"
+                + (" (attempt 2, after feedback)" if attempt == 2 else ""),
+                "apply"))
             return
         audits.append(EditAudit(
             edit_id, e.subject, "degraded",
-            "semantic resolver failed (no output, or output failed the "
-            "sanity check); falling back", "apply"))
+            "semantic resolver failed twice (with feedback on retry); "
+            "falling back", "apply"))
 
     if span is None:
         # Content-preserving fallbacks.
@@ -279,6 +309,10 @@ def _apply_point(
 
     start, end = span
     if e.kind == "add_point":
+        # Extend a mid-line anchor match to the end of its line so the
+        # insertion never splits a line in two.
+        nl = body.find("\n", end)
+        end = len(body) if nl < 0 else nl
         sec.body = body[:end] + "\n" + content + body[end:]
     elif e.kind == "edit_point":
         sec.body = body[:start] + content + body[end:]

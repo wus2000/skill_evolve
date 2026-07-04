@@ -224,7 +224,7 @@ def syntax_gate(
     kept: list[SectionEdit] = []
     violations: list[Violation] = []
     audits: list[EditAudit] = []
-    seen_bytes: dict[tuple, str] = {}
+    seen_bytes: dict[tuple, tuple[str, SectionEdit]] = {}
 
     for i, e in enumerate(edits):
         eid = _eid(i)
@@ -307,9 +307,9 @@ def syntax_gate(
                 "add_section at end", "gate"))
         elif e.kind == "remove_section" and not in_doc:
             audits.append(EditAudit(
-                eid, e.subject, "dropped",
-                "remove_section target already absent (idempotent no-op)",
-                "gate"))
+                eid, e.subject, "degraded",
+                "remove_section target already absent — idempotent no-op "
+                "(no content exists to preserve or delete)", "gate"))
             continue
         elif e.is_point and not in_doc:
             batch_adds = {o.key for o in edits if o.kind == "add_section"}
@@ -326,13 +326,22 @@ def syntax_gate(
                     "does not exist in the document"))
 
         # -- byte-identical duplicate: the only mechanical kill --------------
+        # (kill applies to CONTENT only; provenance is unioned into the
+        # surviving twin so support counting and verification padding see
+        # every contributing task)
         sig = (e.kind, e.key, e.body.strip(), e.anchor.strip())
         if sig in seen_bytes:
+            keeper_eid, keeper = seen_bytes[sig]
+            merged_tasks = [t for t in e.target_tasks
+                            if t not in keeper.target_tasks]
+            keeper.target_tasks.extend(merged_tasks)
             audits.append(EditAudit(
                 eid, e.subject, "dropped",
-                f"byte-identical duplicate of {seen_bytes[sig]}", "gate"))
+                f"byte-identical duplicate of {keeper_eid}"
+                + (f"; unioned {len(merged_tasks)} target_task(s) into it"
+                   if merged_tasks else ""), "gate"))
             continue
-        seen_bytes[sig] = eid
+        seen_bytes[sig] = (eid, e)
 
         kept.append(e)
 
@@ -425,14 +434,18 @@ def detect_restatements(
                 continue
             overlap = _lines_overlap(lines, sec_lines)
             if overlap >= _RESTATE_RATIO:
+                shared = sorted(lines & sec_lines)[:3]
+                evidence = "; ".join(s[:70] for s in shared) or \
+                    "(paraphrase-level matches)"
                 violations.append(Violation(
                     "restates_existing", [_eid(i)],
-                    f"{_eid(i)} (add_section {e.subject!r}) restates "
+                    f"{_eid(i)} (add_section {e.subject!r}) overlaps "
                     f"{overlap:.0%} of the existing section {subject!r} "
-                    "nearly verbatim; rules.md must not contain duplicate "
-                    "instructions. Keep ONLY the genuinely new delta as "
-                    f"point edits inside {subject!r} (or a much smaller "
-                    "add_section if the delta is a truly new theme)"))
+                    f"(shared lines include: {evidence}). Judge whether "
+                    "this is a restatement or a genuinely new theme that "
+                    "merely shares setup steps. If restatement: keep ONLY "
+                    f"the new delta as point edits inside {subject!r}. "
+                    "Do NOT drop genuinely new material either way."))
                 break
         else:
             for peid, psubject, plines in prior_adds:

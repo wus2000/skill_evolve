@@ -458,11 +458,13 @@ def run_merger(
             new_violations += detect_conflicts(new_kept, doc)
             new_violations += detect_restatements(new_kept, doc)
             # Adopt only if strictly better (fewer coherence violations) and
-            # not lossy (comparable or larger edit count).
+            # lossless (no edit disappears without an audited ruling — a
+            # repair wanting to merge/drop must do it in the adjudication
+            # loop where every kill carries a reason).
             old_n = len([v for v in violations if v.vtype in _COHERENCE_TYPES])
             new_n = len([v for v in new_violations
                          if v.vtype in _COHERENCE_TYPES])
-            if new_n < old_n and len(new_kept) >= len(kept) - 1:
+            if new_n < old_n and len(new_kept) >= len(kept):
                 audits.append(EditAudit(
                     "*", "*", "normalized",
                     f"coherence repair adopted: {old_n} -> {new_n} coherence "

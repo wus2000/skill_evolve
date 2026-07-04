@@ -238,7 +238,7 @@ def test_apply_resolver_scoped_to_section():
     base = _load_rules("appworld_step1")
     calls = []
 
-    def resolver(subject, body, edit):
+    def resolver(subject, body, edit, feedback=""):
         calls.append(subject)
         return body + "\n" + edit.body      # contract-abiding insertion
 
@@ -256,7 +256,10 @@ def test_apply_resolver_hallucination_rejected():
     degrading to a content-preserving append."""
     base = _load_rules("appworld_step1")
 
-    def bad_resolver(subject, body, edit):
+    feedbacks = []
+
+    def bad_resolver(subject, body, edit, feedback=""):
+        feedbacks.append(feedback)
         return "completely unrelated hallucinated text"
 
     edits = [_edit(kind="add_point", subject="Pagination Discipline",
@@ -265,7 +268,11 @@ def test_apply_resolver_hallucination_rejected():
     assert "hallucinated" not in res.text          # rejected
     assert "- the real new rule." in res.text      # content preserved
     assert "**Mandatory Loop**" in res.text        # original body intact
-    assert any(a.fate == "degraded" and "sanity" in a.reason
+    # The LLM got a second chance WITH the rejection reason before rule
+    # fallback took over:
+    assert len(feedbacks) == 2 and feedbacks[0] == "" \
+        and "rejected" in feedbacks[1]
+    assert any(a.fate == "degraded" and "twice" in a.reason
                for a in res.audits)
     assert res.assertion_failures == []
 

@@ -95,12 +95,15 @@ Output: {"body": "<the complete updated section body>"}"""
 def make_section_resolver(client: Any) -> Resolver:
     """Build the LLM-backed anchor resolver; blast radius = one section."""
 
-    def resolver(subject: str, body: str, edit: SectionEdit) -> str | None:
+    def resolver(subject: str, body: str, edit: SectionEdit,
+                 feedback: str = "") -> str | None:
         user = (
             f"## Section: {subject}\n{body}\n\n"
             f"## Edit\nkind: {edit.kind}\nanchor (not found verbatim): "
             f"{edit.anchor!r}\nbody:\n{edit.body}"
         )
+        if feedback:
+            user += f"\n\n## Feedback on your previous attempt\n{feedback}"
         try:
             text, _usage = client.complete_optimizer(
                 _RESOLVER_SYSTEM, user, max_tokens=8192)
@@ -205,12 +208,17 @@ def apply_merged(
     client: Any,
     rules: str,
     merged_edits: list,
+    *,
+    audit_path: str | None = None,
 ) -> str:
     """v2 replacement for llm_apply_edit / llm_apply_edits.
 
     Deterministic section surgery + section-scoped LLM anchor resolution.
     Accepts MergedEdit objects (or dicts) in either vocabulary; the syntax
-    gate re-normalizes losslessly on the way in.
+    gate re-normalizes losslessly on the way in. When ``audit_path`` is
+    given, the FULL apply record (gate audits, apply audits, normalize
+    notes, assertion failures) is persisted — every degradation the apply
+    stage performs is part of the step's permanent record.
     """
     from css.optimizer.editpipe.render import RulesDoc
 
@@ -218,7 +226,7 @@ def apply_merged(
     for m in merged_edits:
         d = m.to_dict() if hasattr(m, "to_dict") else dict(m)
         edits.append(SectionEdit.from_dict(d))
-    kept, _violations, _audits = syntax_gate(edits, RulesDoc.parse(rules))
+    kept, _violations, gate_audits = syntax_gate(edits, RulesDoc.parse(rules))
     result = apply_edits(rules, kept, resolver=make_section_resolver(client))
     if result.assertion_failures:
         # Structure assertions failed even after normalization — log loudly;
@@ -226,6 +234,22 @@ def apply_merged(
         # rewrite), so return it rather than block the step.
         _log.warning("editpipe.apply_merged: assertion failures: %s",
                      result.assertion_failures)
+    if audit_path:
+        try:
+            payload = {
+                "gate_audits": [a.to_dict() for a in gate_audits],
+                "apply_audits": [a.to_dict() for a in result.audits],
+                "normalize_notes": result.normalize_notes,
+                "assertion_failures": result.assertion_failures,
+            }
+            os.makedirs(os.path.dirname(audit_path), exist_ok=True)
+            tmp = audit_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, audit_path)
+        except Exception:
+            _log.warning("editpipe: failed to persist apply audit",
+                         exc_info=True)
     return result.text
 
 
