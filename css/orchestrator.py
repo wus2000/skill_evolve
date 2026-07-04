@@ -545,22 +545,24 @@ def _run_node_epoch(
                   node.val_score)
 
     # (5) Test eval with the node's BEST skill -> generalization measure.
-    test_k = getattr(cfg, "test_k_rollouts", 1) or 1
-    test_items = list(env.test_items())
-    test_groups = grouped_batch_rollout(
-        env,
-        test_items,
-        val_skill_text,
-        target_client,
-        k_rollouts=test_k,
-        out_dir=_node_round_dir(out_dir, node, round_index, "test"),
-        max_workers=cfg.max_api_workers,
-        task_timeout=cfg.task_timeout_s,
-        epoch=round_index,
-        node_id=node.node_id,
+    # Every env-declared split is evaluated and reported (e.g. AppWorld runs
+    # test_normal AND test_challenge with TGC+SGC); the PRIMARY (first)
+    # split's task_hard remains the mechanism's test_score.
+    from css.evaluation.test_splits import evaluate_test_splits
+
+    split_report = evaluate_test_splits(
+        env, val_skill_text, target_client, cfg,
+        _node_round_dir(out_dir, node, round_index, "test"),
+        epoch=round_index, node_id=node.node_id,
+        label="Round %d test" % round_index,
     )
-    test_flat = [r for g in test_groups for r in g.rollouts]
-    test_score = float(aggregate_scores(test_flat).get("task_hard", 0.0))
+    primary = next(iter(split_report))
+    test_groups = split_report[primary]["groups"]
+    test_score = split_report[primary]["score"]
+    extra_split_scores = {
+        name: {"score": rep["score"], **rep["extra"]}
+        for name, rep in split_report.items()
+    }
 
     node.record_learning_point(
         LearningCurvePoint(
@@ -581,6 +583,7 @@ def _run_node_epoch(
     log_event("epoch_done", round_index=round_index, node_id=node.node_id,
               train_score=node.train_score, val_score=node.val_score,
               test_score=test_score,
+              test_splits=extra_split_scores,
               best_score=node.best_score, maturity=node.maturity,
               accept_rate=node.step_buffer.accept_rate(),
               accept_slope=node.accept_slope(cfg.W))

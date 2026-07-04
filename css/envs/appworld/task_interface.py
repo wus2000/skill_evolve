@@ -117,11 +117,47 @@ class AppworldEnv:
         return self._split("test")
 
     def test_challenge_items(self) -> list[dict]:
-        """The sealed challenge split — standalone eval script use ONLY.
+        """The official challenge split (417 tasks).
 
-        Not part of the ``TaskEnv`` contract; the mechanism never calls it.
+        Included in ``eval_splits`` since 2026-07-05 (user decision): EVERY
+        test evaluation of this experiment runs both test_normal and
+        test_challenge. Reporting-only — never feeds gates or selection.
         """
         return self._load_split_file("test_challenge")
+
+    # ── Optional reporting hooks (see css/envs/base.py) ────────────────────
+
+    def eval_splits(self) -> "list[tuple[str, list[dict]]]":
+        """test_normal first (primary: its task_hard is the mechanism's
+        test_score), then test_challenge (agreed 2026-07-05: always run)."""
+        return [
+            ("test_normal", self.test_items()),
+            ("test_challenge", self.test_challenge_items()),
+        ]
+
+    def extra_metrics(self, results: "list") -> "dict[str, float]":
+        """Official AppWorld aggregates: TGC (task-level) + SGC (scenario-
+        level: every variant of the scenario in this split must pass).
+
+        Task-level pass = any rollout of the task passed (K=1 in practice).
+        """
+        by_task: "dict[str, bool]" = {}
+        for r in results:
+            tid = str(getattr(r, "task_id", "") or "")
+            if not tid:
+                continue
+            by_task[tid] = by_task.get(tid, False) or bool(
+                getattr(r, "passed", False))
+        if not by_task:
+            return {}
+        scen: "dict[str, bool]" = {}
+        for tid, p in by_task.items():
+            s = tid.rsplit("_", 1)[0] if "_" in tid else tid
+            scen[s] = scen.get(s, True) and p
+        return {
+            "TGC": sum(by_task.values()) / len(by_task),
+            "SGC": sum(scen.values()) / len(scen),
+        }
 
     # ── Action space (L1 paradigm-design / analysis context) ───────────────
     def action_space_description(self) -> str:

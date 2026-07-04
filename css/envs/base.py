@@ -72,3 +72,18 @@ class TaskEnv(Protocol):
         have not implemented it yet).
         """
         return ""
+
+    # ── Optional reporting hooks (mechanism code probes with getattr) ──────
+    #
+    # eval_splits() -> list[tuple[str, list[dict]]]
+    #   Named TEST splits for reporting-time evaluation (cold-start bare
+    #   baseline and per-round best-skill test). The FIRST split is the
+    #   primary one — its task_hard remains the mechanism's ``test_score``
+    #   (learning curves, events); the rest are evaluated and reported
+    #   alongside. Default (absent): [("test", test_items())].
+    #   Reporting-only: never feeds gates, selection, or tree decisions.
+    #
+    # extra_metrics(results: list[TaskResult]) -> dict[str, float]
+    #   Env-specific aggregate metrics computed over a split's flat rollout
+    #   results (e.g. AppWorld's SGC alongside TGC). Reported next to
+    #   task_hard wherever splits are evaluated. Default (absent): {}.

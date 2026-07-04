@@ -359,36 +359,60 @@ def cold_start(
     if test_items:
         bare_test_dir = _os.path.join(cold_dir, "bare_test")
         _os.makedirs(bare_test_dir, exist_ok=True)
-        _cs_log.info("Cold start: running bare-LLM baseline on FULL test set "
-                     "(%d tasks × %d rollouts)", len(test_items), test_k)
-        test_groups = grouped_batch_rollout(
-            env,
-            test_items,
-            "",  # bare: empty skill
-            target_client,
-            k_rollouts=test_k,
-            out_dir=bare_test_dir,
-            max_workers=cfg.max_api_workers,
-            task_timeout=cfg.task_timeout_s,
-            epoch=0,
-            node_id=_COLD_START_NODE_ID,
+        _cs_log.info("Cold start: running bare-LLM baseline on every test "
+                     "split (k=%d)", test_k)
+        # NOTE: the primary split's rollouts land directly in bare_test/
+        # (not bare_test/<name>/) to stay layout-compatible with runs made
+        # before multi-split reporting — the prediction cache of an
+        # interrupted single-split run is then reused on resume.
+        from css.evaluation.test_splits import (
+            env_eval_splits,
+            env_extra_metrics,
+            _fmt_extra,
         )
-        test_flat = [r for g in test_groups for r in g.rollouts]
-        bare_test_score = float(aggregate_scores(test_flat).get("task_hard", 0.0))
-        _cs_log.info("Cold start: bare-LLM TEST baseline = %.4f "
-                     "(%d/%d passed, %d tasks)",
-                     bare_test_score,
-                     sum(1 for r in test_flat if r.passed), len(test_flat),
-                     len(test_items))
+        splits = env_eval_splits(env)
         import json as _json_test
+        bare_test_score = 0.0
+        split_summaries: "dict[str, dict]" = {}
+        for _si, (_name, _items) in enumerate(splits):
+            _sdir = bare_test_dir if _si == 0 \
+                else _os.path.join(bare_test_dir, _name)
+            _groups = grouped_batch_rollout(
+                env,
+                list(_items),
+                "",  # bare: empty skill
+                target_client,
+                k_rollouts=test_k,
+                out_dir=_sdir,
+                max_workers=cfg.max_api_workers,
+                task_timeout=cfg.task_timeout_s,
+                epoch=0,
+                node_id=_COLD_START_NODE_ID,
+            )
+            _flat = [r for g in _groups for r in g.rollouts]
+            _score = float(aggregate_scores(_flat).get("task_hard", 0.0))
+            _extra = env_extra_metrics(env, _flat)
+            if _si == 0:
+                bare_test_score = _score
+            _cs_log.info(
+                "Cold start: bare-LLM TEST baseline [%s] = %.4f "
+                "(%d/%d passed, %d tasks)%s",
+                _name, _score,
+                sum(1 for r in _flat if r.passed), len(_flat), len(_items),
+                _fmt_extra(_extra))
+            split_summaries[_name] = {
+                "score": _score,
+                "extra": _extra,
+                "n_items": len(_items),
+                "k_rollouts": test_k,
+                "n_total_rollouts": len(_flat),
+                "n_passed": sum(1 for r in _flat if r.passed),
+            }
         with open(_os.path.join(bare_test_dir, "bare_test_baseline.json"),
                   "w", encoding="utf-8") as _f:
             _json_test.dump({
                 "bare_test_score": bare_test_score,
-                "n_test_items": len(test_items),
-                "k_rollouts": test_k,
-                "n_total_rollouts": len(test_flat),
-                "n_passed": sum(1 for r in test_flat if r.passed),
+                "splits": split_summaries,
             }, _f, indent=2)
 
     # ── 1. Bare rollout on train subset: the frozen target model with NO skill
