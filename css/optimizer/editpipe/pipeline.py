@@ -153,6 +153,7 @@ def consolidate_to_merged(
     cfg: Any,
     *,
     audit_path: str | None = None,
+    telemetry_task_ids: "set[str] | None" = None,
 ) -> list:
     """v2 replacement for the legacy merger+validation stage.
 
@@ -188,7 +189,16 @@ def consolidate_to_merged(
         except Exception:
             _log.warning("editpipe: failed to persist audit trail",
                          exc_info=True)
-    return [e.to_merged() for e in cons.edits]
+
+    merged = [e.to_merged() for e in cons.edits]
+    try:
+        # Log-only purity telemetry, kept identical to the legacy path so the
+        # monitoring signal stays continuous across the pipeline switch.
+        from css.optimizer.edit_validator import purity_telemetry
+        purity_telemetry(merged, telemetry_task_ids)
+    except Exception:
+        _log.debug("editpipe: purity telemetry failed", exc_info=True)
+    return merged
 
 
 def apply_merged(

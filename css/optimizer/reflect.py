@@ -27,6 +27,7 @@ CSS types so it imports cleanly and is fully exercisable under
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 from typing import TYPE_CHECKING
@@ -34,6 +35,8 @@ from typing import TYPE_CHECKING
 from css.data.edit import EDIT_OPS, Edit, Patch, RawPatch
 from css.model.json_repair import complete_optimizer_json
 from css.trajectory import format_trajectory
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from css.config import CSSConfig
@@ -486,6 +489,12 @@ def _run_minibatch_proposer(
     except Exception:  # noqa: BLE001 — a proposer failure must not crash the step
         raw_edits = []
 
+    if len(raw_edits) > budget:
+        _log.info(
+            "reflect: proposer emitted %d edits; enforcing per-minibatch "
+            "budget L=%d (dropping the %d lowest-priority tail edits)",
+            len(raw_edits), budget, len(raw_edits) - budget,
+        )
     edits: list[Edit] = []
     for d in raw_edits[:budget]:  # enforce the per-minibatch budget
         edit = _edit_from_dict(d, source_type)

@@ -186,7 +186,31 @@ blocks, never silently loses content.
   surviving edits keep their positions through the collective apply (fixes
   a pre-existing information-loss bug independent of v2).
 
-## 7. Cost profile
+## 7. Legacy silent-path inventory and v2 dispositions
+
+Exhaustive accounting of every silent-drop / silent-no-op / silent-mutation
+path in the legacy chain, and what v2 does instead. "unchanged" means the
+behavior was already correct (parse failures and hard LLM failures have no
+content to preserve — they are retried by the JSON-repair layer and logged).
+
+| legacy path | v2 disposition |
+|---|---|
+| reflector: unparseable proposer output -> `[]` | unchanged (repair retry + log) |
+| reflector: bad op / locator-less refinement edit dropped | locator-less edit WITH content demotes to add_point (content survives); only content-less AND locator-less is junk |
+| reflector: `raw_edits[:budget]` truncation | kept (deliberate budget) but now logged with counts |
+| merger: `_validate_merged_edits` drops — invalid delta_type / content not `### ` / empty target_tasks / from_dict raises | all become violations or lossless normalizations; missing fields go through the required-field repair hook; **no mechanical drops** |
+| merger: duplicate section_target drop (the massacre) | identity_collision violation -> semantic adjudication; byte-identical duplicates are the only mechanical kill |
+| merger: silent auto-convert rewrite-of-missing -> new_section | kept (mechanically lossless) but audited as `converted` |
+| validator: optimistic `[]` on LLM failure | unchanged by design (mechanical detections still stand; apply degrades safely) — now with structural JSON repair first |
+| repair: out-of-scope / malformed ops rejected | unchanged (scope guard) + every accepted drop now REQUIRES a written reason -> audit |
+| salvage: phantom point_edit/point_remove dropped | dependency_on_new violation -> adjudication; fallback creates the section or treats removal as idempotent — content never dropped |
+| repair exhaustion: proceed with unresolved conflict_pairs -> downstream best-pick drops losers | deterministic fallback: keep-max-support + demote rest; nothing dropped; final-round repair that clears violations counts as convergence |
+| apply: anchor not found -> silent no-op | degradation chain: normalized match -> section-scoped LLM resolver -> content-preserving append; remove treated as idempotent; all audited |
+| apply: whole-document LLM rewrite, no assertions | deterministic section surgery + post-assembly structure assertions + normalize |
+| collective apply loses anchor/placement (EditVerification gap) | EditVerification now carries after_section/point_anchor end to end |
+| purity_telemetry (log-only) | wired identically in the v2 path (monitoring continuity) |
+
+## 8. Cost profile
 
 Converged path: 1 merger call + (0-1) coherence repair + 1 validator call
 per adjudication round (+1 repair call per non-converged round) + 0 apply
