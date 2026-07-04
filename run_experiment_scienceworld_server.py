@@ -105,10 +105,10 @@ def main() -> None:
         max_turns=50,          # generic mirror of the native step budget
         k_rollouts=3,
 
-        # L0 exploitation. batch = 45 (mirrors AppWorld's agreed value; ~1/4 of
-        # the 198-task pool per step — TO CONFIRM at first run: may raise for
-        # fuller per-step coverage once step throughput is measured).
-        batch_size=45,
+        # L0 exploitation. batch = 64 (agreed 2026-07-04, user decision at
+        # launch: ~1/3 of the 198-task pool per step for fuller per-step
+        # coverage; supersedes the provisional 45 carried from AppWorld).
+        batch_size=64,
         # Per-edit verification floor: ABSOLUTE 8 tasks (AppWorld precedent).
         verify_floor_tasks=8,
         minibatch_size=16,
