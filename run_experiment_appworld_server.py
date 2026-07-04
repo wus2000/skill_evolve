@@ -91,6 +91,14 @@ def main() -> None:
         minibatch_size=16,
         reflect_mode="plan_a",
         merger_granularity="point",
+        # Edit pipeline v2 (approved 2026-07-05): orthogonal schema +
+        # semantic adjudication + deterministic apply + structured
+        # provenance (source_raw_edits -> mechanical target_tasks union).
+        # Validated on real step replays: 0 silent drops vs legacy's 19,
+        # 6-7/7 lost-signal coverage, mean verification target set 3.5->6.0
+        # tasks/edit. See docs/edit_pipeline_v2.md. "legacy" kept for
+        # ablation only.
+        edit_pipeline="v2",
         # Budget-bounded L0 (V3.4) — same policy as the Bird/ALFWorld arms.
         min_l0_epochs=0,
         max_l0_steps=20,
