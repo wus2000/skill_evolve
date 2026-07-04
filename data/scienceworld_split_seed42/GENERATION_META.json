@@ -1,0 +1,32 @@
+{
+  "seed": 42,
+  "simplification": "selfWateringFlowerPots,openContainers,openDoors,noElectricalAction",
+  "universe": [
+    "boil",
+    "change-the-state-of-matter-of",
+    "chemistry-mix",
+    "chemistry-mix-paint-secondary-color",
+    "chemistry-mix-paint-tertiary-color",
+    "find-animal",
+    "find-living-thing",
+    "find-non-living-thing",
+    "freeze",
+    "identify-life-stages-1",
+    "lifespan-longest-lived",
+    "lifespan-longest-lived-then-shortest-lived",
+    "measure-melting-point-known-substance",
+    "measure-melting-point-unknown-substance",
+    "use-thermometer"
+  ],
+  "counts": {
+    "train": 198,
+    "val": 72,
+    "test_agentboard": 90,
+    "test_secondary": 116
+  },
+  "caps": {
+    "train": 15,
+    "val": 5,
+    "secondary": 8
+  }
+}

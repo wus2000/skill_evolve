@@ -27,6 +27,8 @@ _ALIASES = {
     "alfworld": "alfworld",
     "alfred": "alfworld",
     "appworld": "appworld",
+    "scienceworld": "scienceworld",
+    "sciworld": "scienceworld",
     # Scaffold env (css/envs/template) — toy QA task; used for mechanism smoke
     # tests and as the copy-me starting point for new benchmarks. See
     # docs/env_integration_guide.md.
@@ -65,6 +67,9 @@ def build_env(cfg: "CSSConfig", **kwargs) -> "TaskEnv":
     if name == "appworld":
         from css.envs.appworld.task_interface import AppworldEnv
         return AppworldEnv(cfg, **kwargs)
+    if name == "scienceworld":
+        from css.envs.scienceworld.task_interface import ScienceworldEnv
+        return ScienceworldEnv(cfg, **kwargs)
     if name == "template":
         from css.envs.template.task_interface import TemplateEnv
         return TemplateEnv(cfg, **kwargs)

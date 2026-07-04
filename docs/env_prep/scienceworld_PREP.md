@@ -80,9 +80,12 @@ by cloning the repo and `pip install scienceworld` into a clean venv, unless mar
 - **Train/dev/test split** is computed **deterministically inside the JAR**, not stored as files
   (`PythonInterface.getSets()`): **50% / 25% / 25%**. Dev/test variations deliberately contain
   substances/animals/plants **not seen in train** (paper §; verified: `boil` maxvar=30 → train=14 [idx 0–13],
-  dev=7 [14–20], test=9 [21–29]). Approx corpus-wide: **~3,592 train / ~1,796 dev / ~1,819 test**.
-  ⚠️ Edge cases for tiny tasks: maxvar==1 puts variation 0 in **both** train and test; maxvar==2 → train=[0],test=[1]
-  (no dev). Guard against train/test leakage on `identify-life-stages-*` (10–14 variations).
+  dev=7 [14–20], test=9 [21–29]). Corpus-wide (**exact**, measured per task via `get_variations_*`):
+  **3,592 train / 1,796 dev / 1,819 test** (= 7,207).
+  ⚠️ The `maxvar==1`/`==2` overlap math holds in principle, BUT — **correction (2026-07-04,
+  verified live): NO real task triggers it.** The smallest task is `identify-life-stages-2`
+  (maxvar=10 → 4/2/4) and **all 30 tasks split with ZERO train∩test overlap.** The leakage
+  guard is defensive only; no task needs exclusion. See `scienceworld_ONBOARDING.md` §2b/§10.
 - **Episode length**: bounded by `envStepLimit` (constructor arg, **default 100**). Oracle/gold trajectories run
   ~15–50+ actions; AgentBoard buckets tasks as short (<37 steps) vs long (>37 steps). Papers commonly use 100;
   some long-horizon setups use higher limits.
@@ -151,8 +154,12 @@ Notes:
 - Method names are **snake_case**; camelCase aliases exist but emit deprecation warnings.
 - **Gold path is the GT source** for the frozen-agent optimizer. Aligns with the project's GT-firewall principle
   (optimizer may read gold; the agent's context must never contain it). A precomputed
-  `goldpaths/goldpaths-all.zip` (8.7 MB, all tasks/variations, tagged by fold) also ships in the repo if you
+  `goldpaths/goldpaths-all.zip` (8.7 MB, tagged by fold) also ships in the repo if you
   prefer offline GT over live generation. Live generation adds a "Generating Gold Path" pass at `load()` time.
+  ⚠️ **Correction (2026-07-04, verified):** the zip covers **29/30 tasks / 6,907 variations**
+  (3,442 train / 1,721 dev / 1,744 test) — it **omits `measure-melting-point-unknown-substance`
+  entirely** (300 variations; the "missing index 5" in the archive filename). That task's GT
+  must come from **live `generateGoldPath=True`** (verified working — 32-step gold, score 100).
 - `reset()` re-runs `load()` with the same task/variation (regenerates gold if it was enabled).
 
 ---
