@@ -452,10 +452,16 @@ class OpenAICompatLLMClient:
     # sticky hashing measured 80/20 busy-seconds on 2 replicas (heavy-tailed
     # episode weights); the bound caps that while preserving prefix-cache
     # locality. With a single URL, behavior is byte-identical to before.
+    def _fleet(self) -> list[dict]:
+        """Per-node dicts (url + heterogeneity annotations) from base_url."""
+        from css.model.endpoints import parse_fleet
+
+        return parse_fleet(self.base_url or "")
+
     def _urls(self) -> list[str]:
-        urls = [u.strip() for u in (self.base_url or "").split(",") if u.strip()]
         out = []
-        for base in urls:
+        for node in self._fleet():
+            base = node["url"]
             out.append(base if base.endswith("/chat/completions")
                        else f"{base}/chat/completions")
         return out
@@ -485,8 +491,11 @@ class OpenAICompatLLMClient:
         if router is None:
             from css.model.routing import ReplicaRouter
 
+            fleet = self._fleet()
             router = ReplicaRouter(
                 self._urls(),
+                weights=[n["w"] for n in fleet],
+                max_inflights=[n["max_inflight"] for n in fleet],
                 load_factor=self.route_load_factor,
                 cooldown_s=self.route_cooldown_s,
             )
@@ -508,17 +517,22 @@ class OpenAICompatLLMClient:
         effective_timeout = timeout or self.timeout_seconds
         last_err: Exception | None = None
         for attempt in range(self.retries):
-            # Locality-aware bounded-load routing (css/model/routing.py):
-            # the session's preferred replica while under its load bound,
-            # deterministic spill otherwise; a connection-level failure puts
-            # the replica on cooldown, so the retry lands elsewhere.
+            # Two-tier session routing (css/model/routing.py): warm turns go
+            # home for prefix-cache locality; cold sessions place by weighted
+            # least-expected-wait over server-truth load. A connection-level
+            # failure puts the replica on cooldown so the retry lands
+            # elsewhere. ``ok`` guards the latency health signal: only full
+            # successes feed it (fast error responses would skew it low).
             index = router.acquire(session_key)
             url = urls[index]
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             t0 = time.time()
+            ok = False
             try:
                 with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
+                    data = json.loads(resp.read().decode("utf-8"))
+                ok = True
+                return data
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode("utf-8", errors="replace")
                 last_err = RuntimeError(
@@ -530,7 +544,7 @@ class OpenAICompatLLMClient:
                 router.mark_unhealthy(index)
                 last_err = RuntimeError(f"OpenAI-compat API request failed: {e}")
             finally:
-                router.release(index, time.time() - t0)
+                router.release(index, time.time() - t0, ok=ok)
             time.sleep(min(2 ** attempt, 30))
         raise last_err  # type: ignore[misc]
 

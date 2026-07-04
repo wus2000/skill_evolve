@@ -14,6 +14,14 @@
 # line drains a node the same way. Endpoint changes never break --resume
 # (the checkpoint fingerprint excludes runtime infra).
 #
+# Optional per-node annotations for heterogeneous fleets (H20 etc.),
+# space-separated after the URL:
+#   http://h20-host:8888/v1  w=0.5  max_inflight=320
+#   w            = rate PRIOR (relative speed; the router's adaptive
+#                  throughput estimate takes over once the node runs busy)
+#   max_inflight = hard per-node concurrency cap (client-side shadow of the
+#                  node's max_num_seqs; tail-latency fuse for weak nodes)
+#
 # Verify the fleet end-to-end with: python3 tools/probe_endpoints.py
 http://10.77.110.162:8888/v1
 http://10.77.110.162:8889/v1

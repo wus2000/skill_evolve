@@ -41,6 +41,31 @@ def test_empty_registry_falls_through(monkeypatch, tmp_path):
 
 def test_repo_registry_matches_current_fleet():
     """The committed registry must resolve to the live dual-replica fleet."""
-    urls = ep.resolve_base_url("").split(",")
+    urls = [n["url"] for n in ep.parse_fleet(ep.resolve_base_url(""))]
     assert "http://10.77.110.162:8888/v1" in urls
     assert "http://10.77.110.162:8889/v1" in urls
+
+
+def test_annotated_registry_lines_encode_and_parse(monkeypatch, tmp_path):
+    reg = tmp_path / "llm_endpoints.txt"
+    reg.write_text(
+        "http://a100:8888/v1  w=1.0  max_inflight=256\n"
+        "http://h20:8890/v1   w=0.5  max_inflight=320\n"
+        "http://plain:8891/v1\n",
+        encoding="utf-8")
+    monkeypatch.setattr(ep, "registry_path", lambda: str(reg))
+    monkeypatch.delenv("CSS_LLM_ENDPOINTS", raising=False)
+    base = ep.resolve_base_url("")
+    assert base == ("http://a100:8888/v1|w=1.0|max_inflight=256,"
+                    "http://h20:8890/v1|w=0.5|max_inflight=320,"
+                    "http://plain:8891/v1")
+    fleet = ep.parse_fleet(base)
+    assert fleet[0] == {"url": "http://a100:8888/v1", "w": 1.0, "max_inflight": 256}
+    assert fleet[1] == {"url": "http://h20:8890/v1", "w": 0.5, "max_inflight": 320}
+    assert fleet[2] == {"url": "http://plain:8891/v1", "w": 1.0, "max_inflight": 0}
+
+
+def test_parse_fleet_ignores_malformed_annotations():
+    fleet = ep.parse_fleet("http://x/v1|w=abc|bogus|max_inflight=-5,http://y/v1|w=2")
+    assert fleet[0] == {"url": "http://x/v1", "w": 1.0, "max_inflight": 0}
+    assert fleet[1]["w"] == 2.0
