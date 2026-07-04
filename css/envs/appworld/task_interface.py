@@ -137,25 +137,33 @@ class AppworldEnv:
 
     def extra_metrics(self, results: "list") -> "dict[str, float]":
         """Official AppWorld aggregates: TGC (task-level) + SGC (scenario-
-        level: every variant of the scenario in this split must pass).
+        level: every variant of the scenario must pass).
 
-        Task-level pass = any rollout of the task passed (K=1 in practice).
+        Expectation semantics so K>1 stays consistent with ``task_hard``:
+        task pass RATE = mean over the task's rollouts; TGC = mean task pass
+        rate (== task_hard by construction); SGC = mean over scenarios of
+        the PRODUCT of member-task pass rates (the probability that one
+        independent attempt per variant clears the whole scenario). At K=1
+        both reduce exactly to the official definitions.
         """
-        by_task: "dict[str, bool]" = {}
+        n_pass: "dict[str, int]" = {}
+        n_roll: "dict[str, int]" = {}
         for r in results:
             tid = str(getattr(r, "task_id", "") or "")
             if not tid:
                 continue
-            by_task[tid] = by_task.get(tid, False) or bool(
-                getattr(r, "passed", False))
-        if not by_task:
+            n_roll[tid] = n_roll.get(tid, 0) + 1
+            n_pass[tid] = n_pass.get(tid, 0) + (
+                1 if getattr(r, "passed", False) else 0)
+        if not n_roll:
             return {}
-        scen: "dict[str, bool]" = {}
-        for tid, p in by_task.items():
+        rate = {t: n_pass[t] / n_roll[t] for t in n_roll}
+        scen: "dict[str, float]" = {}
+        for tid, p in rate.items():
             s = tid.rsplit("_", 1)[0] if "_" in tid else tid
-            scen[s] = scen.get(s, True) and p
+            scen[s] = scen.get(s, 1.0) * p
         return {
-            "TGC": sum(by_task.values()) / len(by_task),
+            "TGC": sum(rate.values()) / len(rate),
             "SGC": sum(scen.values()) / len(scen),
         }
 
