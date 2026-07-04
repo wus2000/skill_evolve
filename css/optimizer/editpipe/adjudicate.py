@@ -178,19 +178,23 @@ def _parse_json_obj(text: str, must_have: str) -> dict | None:
 def semantic_check(
     client: Any, rules_md: str, edits: list[SectionEdit],
 ) -> list[Violation]:
-    """One LLM validator call. On failure returns [] (optimistic — the
-    mechanical detections still stand and apply still degrades safely)."""
+    """One LLM validator call (with structural JSON repair). On failure
+    returns [] (optimistic — the mechanical detections still stand and
+    apply still degrades safely)."""
     if not edits:
         return []
     user = _build_validator_user(rules_md, edits)
     try:
-        text, _usage = client.complete_optimizer(
-            _VALIDATOR_SYSTEM, user, max_tokens=4096)
+        obj = complete_optimizer_json(
+            client, _VALIDATOR_SYSTEM, user,
+            parse=lambda t: _parse_json_obj(t, "valid"),
+            max_tokens=4096,
+            stage="editpipe_validator",
+        )
     except Exception:
         _log.warning("editpipe.validator: LLM call failed; optimistic",
                      exc_info=True)
         return []
-    obj = _parse_json_obj(text, "valid")
     if obj is None:
         _log.warning("editpipe.validator: unparseable output; optimistic")
         return []

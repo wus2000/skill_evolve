@@ -40,7 +40,9 @@ from css.optimizer.editpipe.schema import (
     SECTION_KINDS,
     EditAudit,
     SectionEdit,
+    Violation,
     detect_conflicts,
+    detect_restatements,
     syntax_gate,
 )
 from css.optimizer.editpipe.render import (
@@ -50,6 +52,19 @@ from css.optimizer.editpipe.render import (
     normalize_subject,
     subject_key,
 )
+from css.optimizer.editpipe.apply import ApplyResult, apply_edits
+from css.optimizer.editpipe.adjudicate import AdjudicationResult, adjudicate
+from css.optimizer.editpipe.merger import run_merger
+from css.optimizer.editpipe.pipeline import (
+    ConsolidationResult,
+    PipelineResult,
+    apply_merged,
+    build_candidate,
+    consolidate,
+    consolidate_to_merged,
+    make_section_resolver,
+    run_pipeline,
+)
 
 __all__ = [
     "EDIT_KINDS",
@@ -57,11 +72,26 @@ __all__ = [
     "SECTION_KINDS",
     "EditAudit",
     "SectionEdit",
+    "Violation",
     "detect_conflicts",
+    "detect_restatements",
     "syntax_gate",
     "DocSection",
     "RulesDoc",
     "assert_structure",
     "normalize_subject",
     "subject_key",
+    "ApplyResult",
+    "apply_edits",
+    "AdjudicationResult",
+    "adjudicate",
+    "run_merger",
+    "ConsolidationResult",
+    "PipelineResult",
+    "apply_merged",
+    "build_candidate",
+    "consolidate",
+    "consolidate_to_merged",
+    "make_section_resolver",
+    "run_pipeline",
 ]

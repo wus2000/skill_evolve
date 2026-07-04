@@ -390,7 +390,7 @@ def run_merger(
     raw_patches: list[RawPatch],
     history_text: str = "",
     *,
-    max_tokens: int = 16384,
+    max_tokens: int = 20480,
 ) -> tuple[list[SectionEdit], list[Violation], list[EditAudit], dict]:
     """Merger call + syntax gate + at most one coherence feedback round.
 
