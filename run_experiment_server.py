@@ -66,9 +66,11 @@ def main() -> None:
         target_model="qwen3.6-35b-a3b",
         optimizer_model="qwen3.6-35b-a3b",
 
-        # Runtime. Workers = 256 (agreed 2026-07-05, user decision for this
-        # from-scratch run on the dedicated new endpoint; replaces 320).
-        max_api_workers=256,
+        # Runtime. Workers = 128 (agreed 2026-07-05, user decision: the 8889
+        # endpoint never came up, so this run shares the NEW 127.0.0.1:8888
+        # endpoint with the upcoming BFCL arm; 128 keeps the shared budget fair.
+        # Supersedes the provisional 256-on-dedicated-8889 plan).
+        max_api_workers=128,
         concurrency_limit=1,   # ONE tree node per round — new PROPOSAL nodes get inf UCB
                                # (n_steps=0) so they are always selected first for exploitation.
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
@@ -116,13 +118,13 @@ def main() -> None:
         # Output
         out_root=out_root,
 
-        # OpenAI-compatible LLM backend. Dedicated NEW endpoint (agreed
-        # 2026-07-05): server-local ssh tunnel to the new vLLM instance —
-        # single URL, no comma list; the old 10.77.110.162 pair stays with the
-        # AppWorld/ALFWorld/ScienceWorld experiments (zero contention).
+        # OpenAI-compatible LLM backend. NEW server-local endpoint (agreed
+        # 2026-07-05): single URL, SHARED with the upcoming BFCL arm (the 8889
+        # tunnel's remote vLLM never came up); the old 10.77.110.162 pair stays
+        # with the AppWorld/ALFWorld/ScienceWorld experiments.
         extra={
             "llm_backend": "openai_compat",
-            "base_url": "http://127.0.0.1:8889/v1",
+            "base_url": "http://127.0.0.1:8888/v1",
             "api_key": "token-abc123",
             "max_tokens": 16384,
             "temperature": 0.7,
