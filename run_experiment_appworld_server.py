@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""CSS experiment on AppWorld (interactive coding agent) — SERVER run.
+
+Mirrors run_experiment_alfworld_server.py; only the env, its data paths, and
+the env-specific knobs differ. Benchmark audit + deployment notes:
+docs/env_prep/appworld_PREP.md. Config values below were negotiated
+one-by-one on 2026-07-04 (per-env default-config convention: the launcher is
+the carrier; agreed values must not change silently).
+
+Split design (canonical four-way — community-comparable):
+  train 90 = optimization pool / val = dev 57 (paired gate) /
+  test = test_normal 168 (mechanism reporting) / test_challenge 417 SEALED
+  (never in config; standalone eval only, unsealed twice: bare + final best).
+
+Server prerequisites:
+  * conda env:  ~/miniconda3/envs/appworld  (python 3.11 + appworld 0.2.0
+    installed from the vendored clone's wheel — PyPI only carries 0.1.x!)
+  * data:       /home/wushang/workspace/data/appworld_root  ($APPWORLD_ROOT,
+    contains data/{datasets,tasks,base_dbs,api_docs}, version 0.2.0)
+"""
+from __future__ import annotations  # server runs Python 3.8: keep `X | None` lazy
+
+import logging
+import os
+import sys
+from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+from css.config import CSSConfig
+from css.envs.common.subprocess_worker import ensure_nofile_limit
+from css.envs.registry import build_env
+from css.model.client import build_clients
+from css.orchestrator import run_css
+
+
+DATA_BASE = "/home/wushang/workspace/data"
+
+
+def _latest_run_dir() -> str | None:
+    """Most recent runs/appworld_* directory (for --resume with no path)."""
+    import glob
+    runs = sorted(glob.glob("runs/appworld_*"))
+    return runs[-1] if runs else None
+
+
+def main() -> None:
+    resume = False
+    resume_dir = None
+    if len(sys.argv) > 1 and sys.argv[1] == "--resume":
+        resume = True
+        resume_dir = sys.argv[2] if len(sys.argv) > 2 else _latest_run_dir()
+        if not resume_dir:
+            print("--resume: no existing run dir found")
+            sys.exit(1)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_root = resume_dir if resume else f"runs/appworld_{timestamp}"
+
+    # 128 workers x 3 pipes + HTTP sockets exceed the common 1024 default.
+    ensure_nofile_limit(8192)
+
+    cfg = CSSConfig(
+        # ── Environment ──────────────────────────────────────────────────
+        env_name="appworld",
+
+        # Canonical splits (agreed: external comparability outranks internal
+        # gate power, which K=3 escalation buys back).
+        n_train=90,
+        n_val=57,
+        n_test=168,
+        data_root=f"{DATA_BASE}/appworld_root",
+
+        # LLM (remote OpenAI-compatible endpoint, reachable from this server)
+        target_model="qwen3.6-35b-a3b",
+        optimizer_model="qwen3.6-35b-a3b",
+
+        # Runtime. Each rollout runs its episode in a dedicated py3.11 worker
+        # subprocess; a loaded world is ~300-500MB RSS -> engine slots are the
+        # RAM-bound cap (128 ~= 40-64GB; calibrate after live measurement).
+        max_api_workers=128,
+        concurrency_limit=1,
+        task_timeout_s=1800,   # 50 interactions x worst-case LLM latency + eval
+        max_turns=50,          # mirrors appworld_max_interactions (generic field)
+        k_rollouts=3,
+
+        # L0 exploitation. batch = the FULL 90-task pool every step (no batch
+        # sampling noise; 1 step == 1 epoch on this tiny pool).
+        batch_size=90,
+        minibatch_size=16,
+        reflect_mode="plan_a",
+        merger_granularity="point",
+        # Budget-bounded L0 (V3.4) — same policy as the Bird/ALFWorld arms.
+        min_l0_epochs=0,
+        max_l0_steps=20,
+        l0_stall_steps=8,
+
+        # L0 val gate: item-paired two-stage gate on the full 57-item dev
+        # carve. K=1 screen + K=3 escalation (agreed 2026-07-04): the standard
+        # two-stage design; escalation buys back power on the small val.
+        gate_mode="paired",
+        gate_screen_k=1,
+        gate_escalation_k=3,
+
+        # Dataset-size subsets: the 90-task pool leaves no room for sampling.
+        coldstart_train_size=0,
+        exploitation_val_size=0,
+        analysis_train_size=0,
+
+        # L1 strategy cycle (v3) — shrunk to fit the 90-task pool (48+24 <= 90).
+        l1_diagnostic_tasks=48,
+        l1_regression_tasks=24,
+
+        # Analysis prompt-shape fixes (first env to run with both ON; legacy
+        # envs keep False until their in-flight experiments finish):
+        json_list_wrap=True,        # un-flatten list-shaped optimizer outputs
+        analysis_env_context=True,  # analyzer sees the REPL/termination semantics
+
+        out_root=out_root,
+
+        extra={
+            "llm_backend": "openai_compat",
+            "base_url": "http://10.77.110.162:8888/v1,http://10.77.110.162:8889/v1",
+            "api_key": "token-abc123",
+            "max_tokens": 16384,
+            "temperature": 0.7,
+            "enable_thinking": False,
+            "timeout_seconds": 1800,
+            "optimizer_json_mode": True,
+            # AppWorld env knobs (css/envs/appworld/task_interface.py).
+            "appworld_python": "/home/wushang/miniconda3/envs/appworld/bin/python",
+            "appworld_root": f"{DATA_BASE}/appworld_root",
+            # 50 = the official minimal-ReAct notebook cap (and our ALFWorld
+            # value) — agreed alignment with the community baseline protocol.
+            "appworld_max_interactions": 50,
+            # 0.4 everywhere (training AND eval): K=3 needs sampling diversity
+            # on a deterministic env; one temperature keeps internal baselines
+            # directly comparable (ALFWorld precedent).
+            "appworld_temperature": 0.4,
+            # Median agent turn is a short code block; 4096 bounds runaway
+            # generations that would zombie-hold a vLLM slot (agreed default).
+            "appworld_max_tokens": 4096,
+            # PROVISIONAL (agreed 2026-07-04): calibrate from live output-size
+            # distributions once real runs exist, then re-negotiate.
+            "appworld_obs_max_chars": 6000,
+            # RAM-bound engine cap; holds across concurrent batches via the
+            # env-internal EngineSlotLimiter. Calibrate after RAM measurement.
+            "appworld_engine_slots": 128,
+            # Eval-annotation GT richness (ablation knob): "solution" attaches
+            # the gold solution code on top of the per-requirement evaluation
+            # report; the ablation arm uses "tests" (report only).
+            "appworld_gt_mode": "solution",
+        },
+    )
+    cfg.validate()
+
+    os.makedirs(out_root, exist_ok=True)
+    cfg.to_json_file(os.path.join(out_root, "config.json"))
+
+    log_fmt = "%(asctime)s %(levelname)-7s %(name)s — %(message)s"
+    logging.basicConfig(level=logging.INFO, format=log_fmt, handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(out_root, "css.log")),
+    ])
+    log = logging.getLogger("css")
+    log.info("CSS AppWorld run starting — out_root=%s", out_root)
+    log.info("Config: env=%s target=%s optimizer=%s workers=%d turns=%d",
+             cfg.env_name, cfg.target_model, cfg.optimizer_model,
+             cfg.max_api_workers, cfg.max_turns)
+
+    target_client, optimizer_client = build_clients(cfg)
+    env = build_env(cfg)
+
+    log.info("Train=%d  Val=%d  Test=%d",
+             len(env.train_items()), len(env.val_items()), len(env.test_items()))
+
+    result = run_css(
+        env, target_client, optimizer_client,
+        cfg=cfg, out_dir=out_root, max_rounds=20, resume=resume,
+    )
+
+    log.info("Terminated: %s", result.terminated_reason)
+    log.info("Best node: %s", result.best_node_id)
+    log.info("Rounds: %d", len(result.rounds))
+    best = result.tree.get(result.best_node_id) if result.best_node_id else None
+    if best:
+        log.info("Best val_score: %.4f", best.val_score)
+        log.info("Best strategy:\n%s", best.strategy[:500])
+
+    print(f"\n{'='*60}")
+    print(f"Terminated: {result.terminated_reason}")
+    print(f"Best node:  {result.best_node_id}")
+    print(f"Rounds:     {len(result.rounds)}")
+    if best:
+        print(f"Val score:  {best.val_score:.4f}")
+    print(f"Output:     {out_root}")
+    print(f"{'='*60}")
+
+
+if __name__ == "__main__":
+    main()

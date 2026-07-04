@@ -123,10 +123,25 @@ trajectory actions>",
   }
 No prose, no markdown fences, no commentary — just the JSON list."""
 
+# json_list_wrap variant. response_format={"type": "json_object"} grammar-forbids
+# a top-level array, so the "JSON list" instruction is unsatisfiable and the model
+# emits a single bare element (measured: exactly 1 observation per trajectory on
+# every json-mode run). The wrapped form asks for an object the grammar CAN
+# produce; :func:`_coerce_obs_list` already unwraps the "observations" key.
+_SINGLE_SYSTEM_WRAPPED = _SINGLE_SYSTEM.replace(
+    "Output ONLY a JSON list, each element:",
+    'Output ONLY a single JSON object of the form {"observations": [<element>, '
+    "<element>, ...]}, where each <element> is:",
+).replace(
+    "just the JSON list.",
+    "just the JSON object.",
+)
+assert _SINGLE_SYSTEM_WRAPPED != _SINGLE_SYSTEM  # anchor-drift guard
+
 _SINGLE_USER_TMPL = """\
 Task id: {task_id}
 Rollout index: {rollout_index}
-Outcome: {outcome}{fail_reason}{task_desc}
+Outcome: {outcome}{fail_reason}{task_desc}{env_context}
 
 Trajectory (the agent's full conversation):
 -------------------------------------------
@@ -136,7 +151,20 @@ Trajectory (the agent's full conversation):
 Analyze HOW this agent thinks. Dig into the trajectory's specific content — \
 trace the agent's actual reasoning, decisions, and their consequences. Ground \
 every observation in concrete trajectory moments. Respond with ONLY the JSON \
-list described in the instructions."""
+{json_shape} described in the instructions."""
+
+
+def _fmt_env_context(env_context: str) -> str:
+    """Render the optional environment-context block (no outer newlines)."""
+    text = (env_context or "").strip()
+    if not text:
+        return ""
+    return (
+        "Environment context (how this environment works):\n"
+        "-------------------------------------------\n"
+        f"{text}\n"
+        "-------------------------------------------"
+    )
 
 
 # ── Prompt: same-task contrastive (success vs failure) analysis ──────────────
@@ -183,7 +211,7 @@ generalizable behavioral pattern (not a one-off slip or luck). \
 No prose, no markdown fences — just the JSON object."""
 
 _CONTRASTIVE_USER_TMPL = """\
-{pair}
+{env_context}{pair}
 
 Identify the decisive cognitive difference between the SUCCESS and the FAILURE. \
 Dig into the specific trajectory content — trace what each run actually did at \
@@ -315,6 +343,7 @@ def annotate_trajectory(
     result: "TaskResult",
     *,
     cfg: "CSSConfig",
+    env_context: str = "",
 ) -> list[Observation]:
     """Open-ended Layer-1 annotation of a single trajectory.
 
@@ -339,20 +368,25 @@ def annotate_trajectory(
         if result.task_description
         else ""
     )
+    wrap = bool(getattr(cfg, "json_list_wrap", False))
+    env_block = _fmt_env_context(env_context)
     user = _SINGLE_USER_TMPL.format(
         task_id=result.task_id,
         rollout_index=result.rollout_index,
         outcome=outcome,
         fail_reason=fail_reason,
         task_desc=task_desc,
+        env_context=("\n" + env_block) if env_block else "",
         trajectory=trajectory,
+        json_shape="object" if wrap else "list",
     )
+    system = _SINGLE_SYSTEM_WRAPPED if wrap else _SINGLE_SYSTEM
 
     from css.tracing import stage_context
     try:
         with stage_context(client, "layer1_annotate"):
             obs_list = complete_optimizer_json(
-                client, _SINGLE_SYSTEM, user, parse=_parse_obs_list,
+                client, system, user, parse=_parse_obs_list,
                 max_tokens=8192, stage="obs",
             )
     except Exception:
@@ -396,6 +430,7 @@ def annotate_contrastive_pair(
     failure: "TaskResult",
     *,
     cfg: "CSSConfig",
+    env_context: str = "",
 ) -> "ContrastiveDivergence | None":
     """Analyze one same-task (success, failure) pair for its decisive divergence.
 
@@ -403,7 +438,11 @@ def annotate_contrastive_pair(
     malformed/empty. Never raises.
     """
     pair = format_contrastive_pair(success, failure, tool_trunc=cfg.tool_trunc)
-    user = _CONTRASTIVE_USER_TMPL.format(pair=pair)
+    env_block = _fmt_env_context(env_context)
+    user = _CONTRASTIVE_USER_TMPL.format(
+        env_context=(env_block + "\n\n") if env_block else "",
+        pair=pair,
+    )
 
     from css.tracing import stage_context
     try:
@@ -444,6 +483,7 @@ def run_layer1(
     node_id: str,
     epoch: int,
     cfg: "CSSConfig",
+    env_context: str = "",
 ) -> tuple[list[Observation], list[ContrastiveDivergence]]:
     """Run Layer 1 over a batch of rollout groups.
 
@@ -471,10 +511,12 @@ def run_layer1(
     divergences: list[ContrastiveDivergence] = []
 
     def _annotate_one(rollout):
-        return annotate_trajectory(client, rollout, cfg=cfg)
+        return annotate_trajectory(client, rollout, cfg=cfg, env_context=env_context)
 
     def _annotate_pair(pair):
-        return annotate_contrastive_pair(client, pair[0], pair[1], cfg=cfg)
+        return annotate_contrastive_pair(
+            client, pair[0], pair[1], cfg=cfg, env_context=env_context
+        )
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         obs_futures = {pool.submit(_annotate_one, r): r for _, r in all_rollouts}

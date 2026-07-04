@@ -98,6 +98,19 @@ class CSSConfig:
     analysis_frac_mastered: float = 0.10  # solved (regression watch)
     analysis_ceiling_rounds: int = 4      # unsolved for >= this many rounds => likely
                                           # capability ceiling; down-weighted in analysis
+    # Analysis prompt-shape flags (per-env launcher opt-in; False preserves the
+    # legacy prompt bytes so runs already in flight stay on their own protocol).
+    json_list_wrap: bool = False        # wrap list-shaped optimizer outputs in a single
+                                        # JSON object ({"observations": [...]} etc.):
+                                        # response_format={"type":"json_object"} grammar-
+                                        # forbids a top-level array, which silently
+                                        # flattened "output a JSON list" prompts to
+                                        # exactly 1 element per call (measured 3000/3000
+                                        # ALFWorld + 3300/3300 Bird trajectories)
+    analysis_env_context: bool = False  # inject env.action_space_description() into
+                                        # Layer-1 annotate/contrastive prompts so the
+                                        # analyzer knows the environment's semantics
+                                        # (e.g. auto-termination vs self-declaration)
 
     # ── L1 STRATEGY CYCLE (diverse-iterate + objective lift selection) ────
     max_l1_iterations: int = 8          # max diverse-iterate rounds (hard cap)

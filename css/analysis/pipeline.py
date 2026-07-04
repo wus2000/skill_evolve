@@ -84,6 +84,24 @@ def _load_ckpt(path: str) -> dict | None:
         return json.load(f)
 
 
+def analysis_env_context(env: object, cfg: "CSSConfig") -> str:
+    """Env-context text for Layer-1 prompts.
+
+    Empty unless ``cfg.analysis_env_context`` is enabled AND the env provides
+    ``action_space_description()`` — the per-env launcher opts in, so runs
+    already in flight keep their legacy prompt bytes.
+    """
+    if not getattr(cfg, "analysis_env_context", False):
+        return ""
+    fn = getattr(env, "action_space_description", None)
+    if not callable(fn):
+        return ""
+    try:
+        return str(fn() or "")
+    except Exception:  # noqa: BLE001 — context is best-effort, never fatal
+        return ""
+
+
 def run_analysis_epoch(
     client: "LLMClient",
     node: "TreeNode",
@@ -93,6 +111,7 @@ def run_analysis_epoch(
     l0_saturated: bool,
     cfg: "CSSConfig",
     out_dir: str = "",
+    env_context: str = "",
 ) -> "AnalysisResult":
     """Run Layers 1→3 for one node over one epoch's rollout groups.
 
@@ -146,6 +165,7 @@ def run_analysis_epoch(
             node_id=node.node_id,
             epoch=epoch,
             cfg=cfg,
+            env_context=env_context,
         )
         if layer1_ckpt:
             _save_ckpt(layer1_ckpt, {

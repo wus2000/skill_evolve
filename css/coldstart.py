@@ -422,6 +422,7 @@ def cold_start(
         rules="",
         created_epoch=0,
     )
+    from css.analysis.pipeline import analysis_env_context
     analysis = run_analysis_epoch(
         optimizer_client,
         temp_node,
@@ -430,6 +431,7 @@ def cold_start(
         l0_saturated=True,  # cold start: nothing to L0-optimize; treat as saturated
         cfg=cfg,
         out_dir=_os.path.join(cold_dir, "analysis"),
+        env_context=analysis_env_context(env, cfg),
     )
     library = temp_node.pattern_records
     n_patterns = len(library)

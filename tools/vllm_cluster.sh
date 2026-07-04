@@ -39,7 +39,7 @@ STOP_TIMEOUT=60
 # function-calling agent. Prefix caching MUST be explicit: the deployed vLLM
 # defaulted it OFF (measured 0.1% hit rate vs 42% on the old deployment),
 # which made 10K-token optimizer prompts fully re-prefill on every call.
-EXTRA_ARGS=(--enable-auto-tool-choice --tool-call-parser hermes --enable-prefix-caching)
+EXTRA_ARGS=(--enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3 --enable-prefix-caching)
 # ────────────────────────────────────────────────────────────────────────────
 
 mkdir -p "$RUN_DIR"

@@ -484,6 +484,7 @@ def _run_node_epoch(
 
     # (3) Layer 1-3 analysis on post-exploitation trajectories.
     l0_saturated = node.is_saturated(cfg.N, stall_threshold=getattr(cfg, "l0_stall_steps", 0))
+    from css.analysis.pipeline import analysis_env_context
     analysis = run_analysis_epoch(
         optimizer_client,
         node,
@@ -492,6 +493,7 @@ def _run_node_epoch(
         l0_saturated=l0_saturated,
         cfg=cfg,
         out_dir=_node_round_dir(out_dir, node, round_index, "analysis"),
+        env_context=analysis_env_context(env, cfg),
     )
     _log.info("Analysis done — round=%d node=%s obs=%d patterns=%d l1_signals=%d l0_saturated=%s",
               round_index, node.node_id, analysis.n_observations, analysis.n_patterns,

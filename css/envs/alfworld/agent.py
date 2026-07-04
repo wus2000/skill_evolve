@@ -23,17 +23,14 @@ actions; the agent sees only observations and its own history.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
-import select
-import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING, Any
 
 from css.envs.alfworld.prompts import build_system_prompt
-from css.envs.alfworld.worker import CLOSE_SENTINEL
+from css.envs.common.subprocess_worker import SubprocessWorkerHost
 
 if TYPE_CHECKING:
     from css.model.client import LLMClient
@@ -69,16 +66,14 @@ class AlfredWorker:
         if data_root:
             env["ALFWORLD_DATA"] = data_root
         self.step_timeout = step_timeout
-        self.proc = subprocess.Popen(
+        # Shared host: fork+exec via Popen, own process group, spawn-rate gate,
+        # bounded reads, group-kill teardown (css/envs/common/subprocess_worker).
+        self.host = SubprocessWorkerHost(
             [python_exe or sys.executable, worker_script, gamefile, str(max_steps)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
             env=env,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
+            name="alfworld-worker",
         )
+        self.proc = self.host.proc  # back-compat handle (tests, diagnostics)
         ready = self._read_event(start_timeout)
         if ready.get("event") != "ready":
             raise RuntimeError(
@@ -87,37 +82,13 @@ class AlfredWorker:
         self.admissible = list(ready.get("admissible", []))
 
     def _read_event(self, timeout: float) -> dict:
-        """Read one protocol line with a hard timeout (POSIX select)."""
-        stdout = self.proc.stdout
-        deadline = time.time() + timeout
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                raise TimeoutError("alfworld worker timed out after %.0fs" % timeout)
-            readable, _, _ = select.select([stdout], [], [], min(remaining, 5.0))
-            if not readable:
-                if self.proc.poll() is not None:
-                    raise RuntimeError(
-                        "alfworld worker exited (code %s) without a protocol line"
-                        % self.proc.returncode)
-                continue
-            line = stdout.readline()
-            if not line:
-                raise RuntimeError(
-                    "alfworld worker closed stdout (code %s)" % self.proc.poll())
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                return json.loads(line)
-            except json.JSONDecodeError:
-                continue  # stray non-protocol output; keep reading
+        """Read one protocol line with a hard timeout (WorkerTimeout is a
+        TimeoutError subclass, so legacy except-clauses keep working)."""
+        return self.host.read_event(timeout)
 
     def step(self, command: str) -> dict:
         """Execute one command; returns the step event dict."""
-        assert self.proc.stdin is not None
-        self.proc.stdin.write(command.replace("\n", " ") + "\n")
-        self.proc.stdin.flush()
+        self.host.send_line(command)
         event = self._read_event(self.step_timeout)
         if event.get("event") == "fatal":
             raise RuntimeError("alfworld worker fatal: %s" % event.get("error", ""))
@@ -126,16 +97,7 @@ class AlfredWorker:
         return event
 
     def close(self) -> None:
-        try:
-            if self.proc.poll() is None and self.proc.stdin is not None:
-                self.proc.stdin.write(CLOSE_SENTINEL + "\n")
-                self.proc.stdin.flush()
-                self.proc.wait(timeout=5)
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            if self.proc.poll() is None:
-                self.proc.kill()
+        self.host.close()
 
 
 # ── Gold-episode replay (optimizer-only ground truth; GT firewall intact:
@@ -159,15 +121,10 @@ def run_gold_replay(
     env = dict(os.environ)
     if data_root:
         env["ALFWORLD_DATA"] = data_root
-    proc = subprocess.Popen(
+    host = SubprocessWorkerHost(
         [python_exe or sys.executable, worker_script, gamefile, str(max_steps), "--gold"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
         env=env,
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
+        name="alfworld-gold-replay",
     )
     try:
         deadline = time.time() + timeout
@@ -175,28 +132,13 @@ def run_gold_replay(
             remaining = deadline - time.time()
             if remaining <= 0:
                 raise TimeoutError("gold replay timed out after %.0fs" % timeout)
-            readable, _, _ = select.select([proc.stdout], [], [], min(remaining, 5.0))
-            if not readable:
-                if proc.poll() is not None:
-                    raise RuntimeError("gold replay worker exited (code %s)" % proc.returncode)
-                continue
-            line = proc.stdout.readline()
-            if not line:
-                raise RuntimeError("gold replay worker closed stdout (code %s)" % proc.poll())
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            event = host.read_event(remaining)
             if event.get("event") == "gold":
                 return {"won": bool(event.get("won")), "steps": list(event.get("steps", []))}
             if event.get("event") == "fatal":
                 raise RuntimeError("gold replay fatal: %s" % event.get("error", ""))
     finally:
-        if proc.poll() is None:
-            proc.kill()
+        host.kill()
 
 
 # ── Action parsing (deterministic, conservative) ───────────────────────────

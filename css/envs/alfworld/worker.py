@@ -41,25 +41,24 @@ alfworld load lazily inside main() in the worker interpreter.
 """
 from __future__ import annotations
 
-import json
+import importlib.util
 import os
 import sys
 import traceback
 
-CLOSE_SENTINEL = "__CLOSE__"
+# Shared worker-side runtime, loaded BY FILE PATH (the worker interpreter is
+# the env's conda python; the css package need not be importable there).
+_RT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), os.pardir, "common",
+    "worker_runtime.py")
+_rt_spec = importlib.util.spec_from_file_location("worker_runtime", _RT_PATH)
+_runtime = importlib.util.module_from_spec(_rt_spec)
+_rt_spec.loader.exec_module(_runtime)
 
+CLOSE_SENTINEL = _runtime.CLOSE_SENTINEL
 
-def _protocol_channel():
-    """Duplicate the real stdout for protocol lines, then fd1 -> fd2."""
-    proto = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)
-    os.dup2(2, 1)
-    sys.stdout = sys.stderr
-    return proto
-
-
-def _emit(proto, payload: dict) -> None:
-    proto.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    proto.flush()
+_protocol_channel = _runtime.protocol_channel
+_emit = _runtime.emit
 
 
 def _gold_replay(proto, gamefile: str, max_steps: int) -> int:
@@ -94,6 +93,7 @@ def _gold_replay(proto, gamefile: str, max_steps: int) -> int:
 
 
 def main() -> int:
+    _runtime.harden()  # PDEATHSIG (Linux): die with the parent even mid-engine-step
     proto = _protocol_channel()
     try:
         gamefile = sys.argv[1]
@@ -123,10 +123,7 @@ def main() -> int:
         _emit(proto, {"event": "fatal", "error": traceback.format_exc()})
         return 1
 
-    for line in sys.stdin:
-        command = line.rstrip("\n")
-        if command == CLOSE_SENTINEL:
-            break
+    for command in _runtime.iter_stdin_lines():
         try:
             obs, _score, done, infos = env.step(command)
             _emit(proto, {

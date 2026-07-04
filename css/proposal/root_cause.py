@@ -210,6 +210,20 @@ specific remedies tried>",
   }
 No prose, no markdown fences, no commentary — just the JSON list."""
 
+# json_list_wrap variant (see css/analysis/layer1.py for the rationale): the
+# json_object response_format grammar-forbids a top-level array, silently
+# capping the diagnosis at one bare element. _coerce_rc_list already unwraps
+# the "root_causes" key.
+_ROOT_CAUSE_SYSTEM_WRAPPED = _ROOT_CAUSE_SYSTEM.replace(
+    "Output ONLY a JSON list, each element:",
+    'Output ONLY a single JSON object of the form {"root_causes": [<element>, '
+    "<element>, ...]}, where each <element> is:",
+).replace(
+    "just the JSON list.",
+    "just the JSON object.",
+)
+assert _ROOT_CAUSE_SYSTEM_WRAPPED != _ROOT_CAUSE_SYSTEM  # anchor-drift guard
+
 _ROOT_CAUSE_USER_TMPL = """\
 CURRENT STRATEGY DOCUMENT (the text you may blame at level 3):
 -------------------------------------------------------------
@@ -228,7 +242,7 @@ PAIRED SUCCESS COUNTERPARTS (the agent thinking differently, and succeeding):
 Diagnose the TRUE root cause of each persistent pattern using the four-level \
 progressive inquiry. Cite evidence at EVERY level. Merge patterns that share a \
 strategy-level cause into one high-leverage root cause. Respond with ONLY the \
-JSON list described in the instructions."""
+JSON {json_shape} described in the instructions."""
 
 
 # ── Rendering helpers ────────────────────────────────────────────────────────
@@ -398,17 +412,20 @@ def attribute_root_cause(
     else:
         remedy_block = "  (none recorded; L0 saturation alone is the resistance evidence)"
 
+    wrap = bool(getattr(cfg, "json_list_wrap", False))
     user = _ROOT_CAUSE_USER_TMPL.format(
         strategy=strategy_text or "(strategy text unavailable)",
         remedy_history=remedy_block,
         patterns=patterns_block,
         counterparts=counterparts_block,
+        json_shape="object" if wrap else "list",
     )
+    system = _ROOT_CAUSE_SYSTEM_WRAPPED if wrap else _ROOT_CAUSE_SYSTEM
 
     try:
         from css.tracing import stage_context
         with stage_context(client, "root_cause_attribution"):
-            text, _usage = client.complete_optimizer(_ROOT_CAUSE_SYSTEM, user)
+            text, _usage = client.complete_optimizer(system, user)
     except Exception:
         return []
 

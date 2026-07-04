@@ -16,13 +16,26 @@ New environments should build on these instead of re-implementing them; the
 template env (``css/envs/template``) shows the intended usage. The two
 original envs (bird / spreadsheetbench) predate this module and carry local
 copies — behaviorally identical, kept untouched for run stability.
+
+EXECUTION-SUBSTRATE MENU. The mechanism's batch orchestration (scheduling,
+caching, timeouts, resume, tracing) is env-agnostic and never overridden;
+what varies per environment is the execution substrate inside one rollout
+slot, in increasing isolation:
+
+  (a) in-thread              — engine is thread-safe (Bird, SpreadsheetBench)
+  (b) per-episode worker     — engine not thread-safe / needs another
+                               interpreter / monkey-patches process globals
+                               (ALFWorld, AppWorld) -> ``.subprocess_worker``
+  (c) persistent worker pool — (b) with amortized interpreter startup
+  (d) shared server + per-slot session — one heavyweight in-process resource
+                               shared read-only across slots (WebShop-style)
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any  # noqa: F401 — Any kept for env imports
 
 from css.data.rollout import TaskResult
 
