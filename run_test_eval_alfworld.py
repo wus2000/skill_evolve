@@ -95,7 +95,9 @@ def main() -> None:
             "alfworld_python": "/home/wushang/miniconda3/envs/alfworld/bin/python",
             "alfworld_max_steps": 50,
             "alfworld_temperature": 0.4,
-            "alfworld_max_tokens": 16384,
+            # Agreed per-env default (2026-07-03): bounds runaway generations
+            # that would zombie-hold a vLLM slot; median agent turn is ~60 tok.
+            "alfworld_max_tokens": 4096,
         },
     )
     cfg.validate()
