@@ -16,6 +16,7 @@ from css.model.client import build_clients
 from css.envs.spreadsheetbench.task_interface import SpreadsheetBenchEnv
 from css.rollout.batch import grouped_batch_rollout
 from css.data.rollout import aggregate_scores
+from css.model.endpoints import resolve_base_url
 
 DATA_BASE = "/home/wushang/workspace/data"
 
@@ -39,7 +40,7 @@ def main() -> None:
         out_root=out_dir,
         extra={
             "llm_backend": "openai_compat",
-            "base_url": "http://10.77.110.162:8888/v1",
+            "base_url": resolve_base_url("http://10.77.110.162:8888/v1"),
             "api_key": "token-abc123",
             "max_tokens": 16384,
             "temperature": 0.7,

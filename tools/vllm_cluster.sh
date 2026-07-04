@@ -19,7 +19,15 @@
 # curl, nvidia-smi, and `vllm` on PATH (or set VLLM_BIN).
 set -uo pipefail
 
-# ── Config (EDIT ME) ────────────────────────────────────────────────────────
+# ── Config (EDIT ME — or override via env for per-host variants) ───────────
+# New-host deployment: copy this file + set env overrides, no edits needed:
+#   VLLM_REPLICA_GPUS="0,1;2,3"   semicolon-separated CUDA_VISIBLE_DEVICES sets
+#   VLLM_REPLICA_PORTS="8888 8889" space-separated, aligned with GPU sets
+#   VLLM_TP=2                      tensor-parallel size per replica
+# e.g. 8-GPU host, 4 replicas x TP=2:
+#   VLLM_REPLICA_GPUS="0,1;2,3;4,5;6,7" VLLM_REPLICA_PORTS="8888 8889 8890 8891" ./vllm_cluster.sh start
+# e.g. FP8 single-GPU variant, 4 replicas x TP=1 (needs an FP8 checkpoint):
+#   VLLM_MODEL_PATH=/path/to/FP8 VLLM_REPLICA_GPUS="0;1;2;3" VLLM_REPLICA_PORTS="8888 8889 8890 8891" VLLM_TP=1 ./vllm_cluster.sh start
 MODEL_PATH="${VLLM_MODEL_PATH:-/data3/wushang/model/Qwen/Qwen3.6-35B-A3B}"
 SERVED_NAME="qwen3.6-35b-a3b"
 API_KEY="token-abc123"
@@ -29,8 +37,9 @@ MAX_MODEL_LEN=262144          # 256K context (model config must support it,
 GPU_UTIL=0.93
 MAX_NUM_SEQS=256              # per replica
 MAX_BATCHED_TOKENS=32768      # chunked-prefill budget per engine step
-REPLICA_GPUS=("0,1" "2,3")    # one entry per replica (CUDA_VISIBLE_DEVICES)
-REPLICA_PORTS=(8888 8889)     # must align with REPLICA_GPUS
+TP_SIZE="${VLLM_TP:-2}"       # tensor-parallel size per replica
+IFS=';' read -r -a REPLICA_GPUS <<< "${VLLM_REPLICA_GPUS:-0,1;2,3}"
+IFS=' ' read -r -a REPLICA_PORTS <<< "${VLLM_REPLICA_PORTS:-8888 8889}"
 VLLM_BIN="${VLLM_BIN:-vllm}"
 RUN_DIR="${VLLM_CLUSTER_HOME:-$HOME/vllm_cluster}"   # pidfiles + logs
 HEALTH_TIMEOUT=900            # first start loads ~70GB weights; be patient
@@ -77,7 +86,7 @@ start_one() {  # start_one <index>
         --served-model-name "$SERVED_NAME" \
         --seed 1024 \
         --host "$HOST" --port "$port" \
-        --tensor-parallel-size 2 \
+        --tensor-parallel-size "$TP_SIZE" \
         --reasoning-parser qwen3 \
         --enable-auto-tool-choice \
         --tool-call-parser qwen3_coder \

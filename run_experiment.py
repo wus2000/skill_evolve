@@ -11,6 +11,7 @@ from css.config import CSSConfig
 from css.model.client import build_clients
 from css.envs.spreadsheetbench.task_interface import SpreadsheetBenchEnv
 from css.orchestrator import run_css
+from css.model.endpoints import resolve_base_url
 
 
 DATA_BASE = (
@@ -46,7 +47,7 @@ def main() -> None:
         # OpenAI-compatible LLM backend
         extra={
             "llm_backend": "openai_compat",
-            "base_url": "http://10.77.110.162:8888/v1",
+            "base_url": resolve_base_url("http://10.77.110.162:8888/v1"),
             "api_key": "token-abc123",
             "max_tokens": 16384,
             "temperature": 0.7,

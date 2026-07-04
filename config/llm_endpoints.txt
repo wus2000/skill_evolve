@@ -1,0 +1,19 @@
+# LLM endpoint fleet — SINGLE SOURCE OF TRUTH for every launcher.
+#
+# One OpenAI-compatible base URL per line ("#" comments and blanks ignored).
+# All run_experiment_* / run_test_eval_* launchers resolve their base_url
+# through css/model/endpoints.py:resolve_base_url(), priority:
+#   1. env CSS_LLM_ENDPOINTS (comma-separated) — ad-hoc override
+#   2. this file                                — the fleet registry
+#   3. the launcher's built-in default          — fallback
+#
+# TO ADD A NODE: bring the replica up (tools/vllm_cluster.sh on its host,
+# then `probe`), append its URL here, done. New launches and resumes pick it
+# up automatically; the client router (css/model/routing.py) rebalances with
+# minimal session remapping (~1/N) and no other config changes. Removing a
+# line drains a node the same way. Endpoint changes never break --resume
+# (the checkpoint fingerprint excludes runtime infra).
+#
+# Verify the fleet end-to-end with: python3 tools/probe_endpoints.py
+http://10.77.110.162:8888/v1
+http://10.77.110.162:8889/v1

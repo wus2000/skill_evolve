@@ -44,6 +44,7 @@ from css.model.client import build_clients
 from css.rollout.batch import batch_rollout
 from css.skill_document import SkillDocument
 from css.tracing import TracingLLMClient, init_trace
+from css.model.endpoints import resolve_base_url
 
 
 DATA_BASE = "/home/wushang/workspace/data"
@@ -101,7 +102,8 @@ def main() -> None:
 
         extra={
             "llm_backend": "openai_compat",
-            "base_url": "http://10.77.110.162:8888/v1,http://10.77.110.162:8889/v1",
+            "base_url": resolve_base_url(
+                "http://10.77.110.162:8888/v1,http://10.77.110.162:8889/v1"),
             "api_key": "token-abc123",
             "max_tokens": 16384,
             "temperature": 0.7,
