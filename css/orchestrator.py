@@ -708,6 +708,14 @@ def _branch_pass(
         l1_signals = payload["l1_signals"]
         decision = decide_branch(node, l1_signals, cfg=cfg)
 
+        # Operator override (experiment-ops, one-shot): a FORCE_SATURATE flag
+        # at the run root steers this SYNC to PROPOSAL and is consumed here.
+        from css.optimizer.exploitation import operator_force_saturate
+        if decision == "EXPLOITATION" and operator_force_saturate(out_dir, consume=True):
+            _log.warning("OPERATOR OVERRIDE: FORCE_SATURATE consumed — branching "
+                         "node %s to PROPOSAL despite unsaturated buffer", node_id)
+            decision = "PROPOSAL"
+
         log_event("branch_decision", round_index=round_index, node_id=node_id,
                   decision=decision, n_l1_signals=len(l1_signals),
                   saturated=node.is_saturated(cfg.N, stall_threshold=getattr(cfg, "l0_stall_steps", 0)))
