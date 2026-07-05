@@ -380,7 +380,15 @@ def run_paired_gate(
     if n_pos > n_neg:
         accept = True
     elif n_pos == n_neg:
-        accept = cand_mean > inc_mean
+        # Tie on item evidence -> the higher mean wins (user ruling 2026-07-05).
+        # Compare against the WEAKER of the two incumbent estimates: the
+        # accumulated ledger mean AND the node's recorded score. The old rule
+        # (ledger mean only) rejected candidates that visibly beat the recorded
+        # score (measured: ss step 8 — 4v4, cand 0.7018 vs recorded 0.6842,
+        # ledger ~0.71 -> reject), which reads as refusing a visible
+        # improvement at neutral item evidence.
+        recorded = float(getattr(node, "val_score", inc_mean) or inc_mean)
+        accept = cand_mean > min(inc_mean, recorded)
     else:
         accept = False
 

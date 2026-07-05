@@ -148,6 +148,33 @@ class PipelineResult:
 
 # ── Drop-in facades for the exploitation loop (MergedEdit wire format) ──────
 
+def _load_previous_unused(audit_path: "str | None") -> list:
+    """Previous step's ``unused_raw_edits`` from its audit ledger, else [].
+
+    Step dirs are siblings named ``step<N>``; the previous ledger lives at
+    the same filename under ``step<N-1>``. Best-effort: any miss returns [].
+    """
+    if not audit_path:
+        return []
+    try:
+        d = os.path.dirname(audit_path)
+        base = os.path.basename(d)
+        m = re.match(r"^(.*?step)(\d+)$", base)
+        if not m or int(m.group(2)) == 0:
+            return []
+        prev = os.path.join(os.path.dirname(d),
+                            "%s%d" % (m.group(1), int(m.group(2)) - 1),
+                            os.path.basename(audit_path))
+        if not os.path.exists(prev):
+            return []
+        with open(prev, encoding="utf-8") as f:
+            payload = json.load(f)
+        unused = payload.get("unused_raw_edits") or []
+        return unused if isinstance(unused, list) else []
+    except Exception:  # noqa: BLE001 — carry-over must never break a step
+        return []
+
+
 def consolidate_to_merged(
     client: Any,
     rules: str,
@@ -174,6 +201,23 @@ def consolidate_to_merged(
         if _check_has_history(step_buffer):
             window = getattr(cfg, "merger_history_window", 3)
             history_text = _format_merger_history(step_buffer, window)
+
+    # Carry-over consumer for the unused-raw ledger (fix 2026-07-05: the
+    # ledger was write-only — ~50% of raw signals per step were recorded as
+    # unused and never recycled). Inject the PREVIOUS step's unused summaries
+    # so signals whose failure mode does not recur in this batch still get a
+    # consolidation chance.
+    carry = _load_previous_unused(audit_path)
+    if carry:
+        lines = ["%s | %s | tasks:%s" % (
+            c.get("subject", "?"), c.get("content_head", ""),
+            ",".join(c.get("source_tasks", [])[:3]))
+            for c in carry[:12]]
+        history_text += (
+            "\n\nCARRY-OVER SIGNALS (raw edits from the PREVIOUS step that "
+            "no merged edit consumed — fold them into this step's edits "
+            "where they still apply; ignore the ones this batch's evidence "
+            "no longer supports):\n- " + "\n- ".join(lines))
 
     cons = consolidate(client, rules, raw_patches, history_text)
     if audit_path:

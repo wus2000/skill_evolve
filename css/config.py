@@ -86,6 +86,11 @@ class CSSConfig:
                                          # fingerprint (reporting/measurement knob).
     verify_min_net_flips: int = 2        # continuous tiebreaker requires >= this many net
                                          # rollout flips (single-flip passes are noise)
+    verify_mode: str = "harm_veto"       # "harm_veto" (fix 2026-07-05: the 5-8-task probe
+                                         # only VETOES measured net harm; unprovable edits
+                                         # join the candidate and the paired gate arbitrates
+                                         # — 79-83% of full-mode kills were null/no-effect)
+                                         # | "full" (legacy per-edit admission gate)
 
     # ── L0 val gate (paired sign-test vs legacy mean comparison) ──────────
     gate_mode: str = "paired"            # "paired" (two-stage item-paired sign test) | "mean"
@@ -269,6 +274,8 @@ class CSSConfig:
             problems.append("verify_floor_divisor must be >= 1")
         if self.verify_min_net_flips < 0:
             problems.append("verify_min_net_flips must be >= 0")
+        if self.verify_mode not in ("harm_veto", "full"):
+            problems.append("verify_mode must be 'harm_veto' or 'full'")
         if self.burst_steps < 1:
             problems.append("burst_steps must be >= 1")
         if self.saturation_dry_bursts < 1:

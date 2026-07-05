@@ -675,6 +675,21 @@ def adjudicate(
         repaired = _apply_ops(res.edits, ops, allowed, audits)
         # Re-gate tolerantly: lossless normalization + fresh violation set.
         gated, gate_viols, gate_audits = syntax_gate(repaired, doc)
+        # EMPTY-SET GUARD (measured failure 2026-07-05, AppWorld step 3:
+        # "repair: 20 ops -> 0 edits" then convergence — a repair round must
+        # never silently wipe a non-empty edit set; that is a whole-step loss,
+        # not a repair). Reject the round's ops wholesale and keep the
+        # previous edits; the loop proceeds (next round / fallback still run).
+        if res.edits and not gated:
+            _log.warning(
+                "editpipe.repair: round %d ops would wipe all %d edit(s) — "
+                "REJECTING this repair round (edits kept)",
+                round_no, len(res.edits))
+            audits.append(EditAudit(
+                "*", "*", "kept",
+                "repair round %d rejected: its ops would wipe all edits"
+                % round_no, "adjudicator"))
+            continue
         audits += gate_audits
         carried = gate_viols
         res.edits = gated

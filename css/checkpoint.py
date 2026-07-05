@@ -54,7 +54,7 @@ _FINGERPRINT_FIELDS = (
     "max_l1_iterations", "l1_diagnostic_tasks", "l1_regression_tasks",
     "merger_granularity", "gate_mode", "gate_paired_alpha",
     "gate_screen_k", "gate_escalation_k", "gate_max_escalation_rounds",
-    "verify_floor_divisor", "verify_min_net_flips",
+    "verify_floor_divisor", "verify_min_net_flips", "verify_mode",
     # Tree-search structural knobs (burst-granular mechanism). max_decisions is
     # deliberately EXCLUDED: it is a budget, and a resume may extend it.
     # l0_stall_steps is NOT fingerprinted anymore: the tree mechanism judges

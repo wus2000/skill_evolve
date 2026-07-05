@@ -472,6 +472,7 @@ def run_merger(
     history_text: str = "",
     *,
     max_tokens: int = 20480,
+    _is_split: bool = False,
 ) -> tuple[list[SectionEdit], list[Violation], list[EditAudit], dict]:
     """Merger call + syntax gate + at most one coherence feedback round.
 
@@ -504,9 +505,33 @@ def run_merger(
         stats["llm_calls"] += 1  # (+ any internal repair calls, not counted)
     except Exception:
         _log.warning("editpipe.merger: LLM call failed", exc_info=True)
-        return [], [], [], stats
+        raw_edits = None
 
     if not raw_edits:
+        # DIVIDE-AND-CONQUER retry (fix 2026-07-05: measured whole-step loss
+        # — 49/49 raw edits discarded when the consolidated output truncated
+        # at the token ceiling and could not be repaired). Halving the patch
+        # set roughly halves each output; one recursion level converts a
+        # total loss into (at worst) a partial one.
+        if len(patches) >= 2 and not _is_split:
+            _log.warning(
+                "editpipe.merger: unparseable output — retrying as two "
+                "half-merges (%d patches)", len(patches))
+            mid = len(patches) // 2
+            out_e: list = []
+            out_v: list = []
+            out_a: list = []
+            for part in (patches[:mid], patches[mid:]):
+                e, v, a, s = run_merger(
+                    client, rules, part, history_text,
+                    max_tokens=max_tokens, _is_split=True)
+                out_e += e
+                out_v += v
+                out_a += a
+                stats["llm_calls"] += s.get("llm_calls", 0)
+            stats["parsed_edits"] = len(out_e)
+            stats["split_retry"] = True
+            return out_e, out_v, out_a, stats
         _log.warning("editpipe.merger: unparseable output")
         return [], [], [], stats
     stats["parsed_edits"] = len(raw_edits)
