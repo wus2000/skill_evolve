@@ -126,11 +126,39 @@ class CSSConfig:
                                         # (e.g. auto-termination vs self-declaration)
 
     # ── L1 STRATEGY CYCLE (diverse-iterate + objective lift selection) ────
+    # LEGACY (v3 eight-round exam) — retained only while the old proposal cycle
+    # code exists; the tree-search mechanism below supersedes it.
     max_l1_iterations: int = 8          # max diverse-iterate rounds (hard cap)
     l1_target_effective: int = 3        # stop once this many EFFECTIVE (lift>0) strategies collected
     l1_diagnostic_tasks: int = 24       # R: residual tasks (baseline 0/K); 24 unless fewer available
     l1_regression_tasks: int = 12       # G: robustly-passing tasks (baseline K/K) — harm guard
     l1_diagnosis_per_category: int = 5  # max per-task trajectory analyses per category (cracked/regressed/still)
+
+    # ── L1 TREE SEARCH (burst-granular; L1_tree_mechanism_design.md) ──────
+    # Node three-state machine: ACTIVE (selected -> B-step L0 burst),
+    # SATURATED (selected -> spawn child + child's first burst, atomic),
+    # TERMINAL (out of the pool). Saturation = cross-burst stall (the
+    # steps_since_new_best counter persists across bursts; no epoch_reset).
+    burst_steps: int = 5                # B: L0 steps per tree visit (one burst)
+    node_degree: int = 3                # max children per STRATEGY node (root unlimited)
+    max_decisions: int = 40             # total tree-decision budget (bursts + spawns);
+                                        # NOT fingerprinted — a budget, resume may extend it
+    test_eval_on_new_best: bool = True  # run test eval only when the global best improves
+                                        # (plus the root baseline anchor at birth)
+
+    # Materials pipeline (per-burst interpretation -> mining -> living dossiers)
+    interp_max_per_burst: int = 0       # 0 = interpret ALL burst trajectories (user default);
+                                        # >0 caps per burst (reserved de-homogenization knob)
+    screen_batch_size: int = 10         # Altitude Screen: items per batched judge call
+
+    # Exploration (probe-based, before each spawn)
+    explore_probe_guardrail: int = 48   # silent hard cap on probes per session (anti-runaway;
+                                        # NOT in the prompt — tendency observation stays clean)
+    explore_probe_k_max: int = 2        # max k per dispatch_probe call
+    explore_neighbor_tasks: int = 3     # solved-neighbor tasks offered for contrast probes
+
+    # Generation pipelines
+    gen_novelty_retries: int = 2        # NEW: max regenerations after novelty-confrontation rejects
 
     # ── Reflect mode ─────────────────────────────────────────────────────
     # "legacy"  — original flat fail/success split (no per-task grouping)
@@ -237,6 +265,18 @@ class CSSConfig:
             problems.append("verify_floor_divisor must be >= 1")
         if self.verify_min_net_flips < 0:
             problems.append("verify_min_net_flips must be >= 0")
+        if self.burst_steps < 1:
+            problems.append("burst_steps must be >= 1")
+        if self.node_degree < 1:
+            problems.append("node_degree must be >= 1")
+        if self.max_decisions < 1:
+            problems.append("max_decisions must be >= 1")
+        if self.screen_batch_size < 1:
+            problems.append("screen_batch_size must be >= 1")
+        if self.explore_probe_guardrail < 1:
+            problems.append("explore_probe_guardrail must be >= 1")
+        if self.explore_probe_k_max < 1:
+            problems.append("explore_probe_k_max must be >= 1")
         if problems:
             raise ValueError("Invalid CSSConfig:\n  - " + "\n  - ".join(problems))
 

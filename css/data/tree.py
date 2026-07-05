@@ -17,8 +17,15 @@ from typing import Any, Literal
 from css.data.pattern import PatternLibrary
 from css.data.step_buffer import StepBuffer
 
-BranchType = Literal["ROOT", "PROPOSAL", "REFINE"]
-NodeStatus = Literal["active", "pruned", "saturated"]  # order matches design §3.1
+BranchType = Literal["ROOT", "PROPOSAL", "REFINE", "NEW"]
+# Node lifecycle (tree-search mechanism, L1_tree_mechanism_design.md §1.2):
+#   active    — selected => run a B-step L0 burst
+#   saturated — selected => spawn a child (root->NEW, strategy node->REFINE);
+#               the node is NOT dead: its results are locked in global_best and
+#               its UCB score prices its next child
+#   terminal  — out of the selection pool (degree exhausted / REFINE decline)
+#   pruned    — legacy (paired-bootstrap prune); kept for old checkpoints
+NodeStatus = Literal["active", "pruned", "saturated", "terminal"]
 
 
 @dataclass
@@ -98,6 +105,15 @@ class TreeNode:
 
     created_epoch: int = -1
 
+    # ── Tree-search (burst-granular) state ────────────────────────────────
+    # Bursts completed at this node. The UCB exploration term runs on bursts
+    # (one burst = one visit); spawn+first-burst is atomic, so every node in
+    # the selection pool has n_bursts >= 1 (no inf-UCB fresh nodes).
+    n_bursts: int = 0
+    # Per-burst gated net val movement (reward history; parallels bursts.jsonl
+    # on disk). Kept small: floats only.
+    burst_rewards: list[float] = field(default_factory=list)
+
     # Paired-gate incumbent ledger: per-val-item measurement record of the
     # CURRENT incumbent rules — {item_id: {"passes": int, "trials": int}}.
     # Bootstrapped lazily by the paired gate, folded with escalation rollouts,
@@ -115,6 +131,12 @@ class TreeNode:
 
     def is_saturated(self, n_threshold: int, stall_threshold: int = 0) -> bool:
         return self.step_buffer.is_saturated(n_threshold, stall_threshold=stall_threshold)
+
+    def degree_exhausted(self, degree_cap: int) -> bool:
+        """True when this STRATEGY node has spent its child quota (root: never)."""
+        if self.is_root:
+            return False
+        return len(self.children_ids) >= max(1, degree_cap)
 
     def accept_slope(self, window: int) -> float:
         return self.step_buffer.accept_slope(window)
@@ -148,6 +170,8 @@ class TreeNode:
             status=d.get("status", "active"),
             created_epoch=int(d.get("created_epoch", -1)),
             val_ledger=dict(d.get("val_ledger", {})),
+            n_bursts=int(d.get("n_bursts", 0)),
+            burst_rewards=[float(x) for x in d.get("burst_rewards", [])],
         )
 
     def to_dict(self, include_embeddings: bool = False) -> dict:
@@ -173,6 +197,8 @@ class TreeNode:
             "status": self.status,
             "created_epoch": self.created_epoch,
             "val_ledger": self.val_ledger,
+            "n_bursts": self.n_bursts,
+            "burst_rewards": self.burst_rewards,
         }
 
 
@@ -232,6 +258,15 @@ class SearchTree:
 
     def active_nodes(self) -> list[TreeNode]:
         return [n for n in self.nodes.values() if n.status == "active"]
+
+    def selectable_nodes(self) -> list[TreeNode]:
+        """Tree-search selection pool: ACTIVE (will burst) + SATURATED (will spawn).
+
+        TERMINAL / pruned nodes are excluded. Degree exhaustion is handled by
+        the loop at transition time (a saturated strategy node whose quota is
+        spent is flipped to terminal before the next selection).
+        """
+        return [n for n in self.nodes.values() if n.status in ("active", "saturated")]
 
     def best_node(self, metric: str = "val_score") -> TreeNode | None:
         if not self.nodes:

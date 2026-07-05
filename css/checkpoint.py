@@ -55,6 +55,9 @@ _FINGERPRINT_FIELDS = (
     "merger_granularity", "gate_mode", "gate_paired_alpha",
     "gate_screen_k", "gate_escalation_k", "gate_max_escalation_rounds",
     "verify_floor_divisor", "verify_min_net_flips",
+    # Tree-search structural knobs (burst-granular mechanism). max_decisions is
+    # deliberately EXCLUDED: it is a budget, and a resume may extend it.
+    "burst_steps", "node_degree",
 )
 
 
@@ -93,9 +96,14 @@ class Checkpoint:
     archive: NegativeArchive
     config_fingerprint: str
     rng_state: Any = None
-    rounds: list[dict] = field(default_factory=list)  # RoundResult metadata
+    rounds: list[dict] = field(default_factory=list)  # RoundResult / decision metadata
     created_ts: float = 0.0
     ledger: dict = field(default_factory=dict)        # TaskDifficultyLedger.to_dict()
+    # Tree-search: the all-time best (strategy, rules) snapshot — deployment is
+    # decoupled from selection, so the answer must survive nodes advancing past
+    # their best. {} until the first burst completes.
+    # Keys: val, node_id, decision_index, strategy, rules, test (optional).
+    global_best: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -107,6 +115,7 @@ class Checkpoint:
             "rounds": self.rounds,
             "created_ts": self.created_ts,
             "ledger": self.ledger,
+            "global_best": self.global_best,
             # Embeddings are kept: the archive's recall and any restored pattern
             # state must survive the round-trip intact.
             "tree": self.tree.to_dict(include_embeddings=True),
@@ -126,6 +135,7 @@ class Checkpoint:
             rounds=list(d.get("rounds", [])),
             created_ts=float(d.get("created_ts", 0.0)),
             ledger=dict(d.get("ledger", {})),
+            global_best=dict(d.get("global_best", {})),
         )
 
 

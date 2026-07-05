@@ -226,19 +226,39 @@ def _fail_scorer(item, rollout_index):
 # ── 1. SELECT (ucb1_score / select_node / select_batch) ─────────────────────────
 
 
-def test_ucb1_unvisited_is_infinite():
+def test_ucb1_unvisited_is_finite():
+    # Tree-search mechanism: spawn + first-burst is atomic, so n_bursts == 0
+    # only ever occurs for the run-opening root; the legacy `inf` branch (the
+    # chain-degeneration mechanism: fresh nodes unconditionally selected) is
+    # deliberately GONE. n_bursts is clamped to >= 1 in the formula.
     nd = _node("a", val=0.5, n_steps=0, slope=0.0)
-    score = ucb1_score(nd, total_steps=100, alpha=0.5, beta=0.5, window=10)
-    assert score == float("inf")
+    assert nd.n_bursts == 0
+    score = ucb1_score(nd, total_bursts=100, alpha=0.5, beta=0.5, window=10)
+    assert score != float("inf")
+    one = _node("b", val=0.5, n_steps=0, slope=0.0)
+    one.n_bursts = 1
+    assert score == ucb1_score(one, total_bursts=100, alpha=0.5, beta=0.5, window=10)
 
 
 def test_ucb1_visited_ranks_by_value_and_slope():
     good = _node("g", val=0.8, n_steps=10, slope=0.2)
     bad = _node("b", val=0.2, n_steps=10, slope=-0.1)
-    sg = ucb1_score(good, total_steps=100, alpha=0.5, beta=0.5, window=10)
-    sb = ucb1_score(bad, total_steps=100, alpha=0.5, beta=0.5, window=10)
+    good.n_bursts = 2
+    bad.n_bursts = 2
+    sg = ucb1_score(good, total_bursts=100, alpha=0.5, beta=0.5, window=10)
+    sb = ucb1_score(bad, total_bursts=100, alpha=0.5, beta=0.5, window=10)
     assert sg > sb
-    # Same n_steps/total -> same exploration term; the win is exploitation+slope.
+    # Same n_bursts/total -> same exploration term; the win is exploitation+slope.
+
+
+def test_ucb1_fewer_bursts_bigger_bonus():
+    a = _node("a", val=0.5, n_steps=10, slope=0.0)
+    b = _node("b", val=0.5, n_steps=10, slope=0.0)
+    a.n_bursts = 1
+    b.n_bursts = 8
+    sa = ucb1_score(a, total_bursts=9, alpha=0.5, beta=0.5, window=10)
+    sb = ucb1_score(b, total_bursts=9, alpha=0.5, beta=0.5, window=10)
+    assert sa > sb
 
 
 def test_select_node_argmax():
