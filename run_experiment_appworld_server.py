@@ -167,9 +167,10 @@ def main() -> None:
             # on a deterministic env; one temperature keeps internal baselines
             # directly comparable (ALFWorld precedent).
             "appworld_temperature": 0.4,
-            # Median agent turn is a short code block; 4096 bounds runaway
-            # generations that would zombie-hold a vLLM slot (agreed default).
-            "appworld_max_tokens": 4096,
+            # Agent-turn completion cap: 16384 (user ruling 2026-07-06 —
+            # unify target-agent caps at 16K across arms; supersedes the
+            # 4096 runaway bound).
+            "appworld_max_tokens": 16384,
             # Agreed 2026-07-05: NO observation truncation for AppWorld (the
             # provisional 6000-char cap is retired). 0 = unlimited — the
             # worker passes outputs through verbatim; the prompt still

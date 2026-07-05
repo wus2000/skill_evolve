@@ -74,7 +74,9 @@ def main() -> None:
         # subprocess (~100-150 MB RSS) — 256 concurrent ≈ 40 GB RAM.
         max_api_workers=256,
         concurrency_limit=1,
-        task_timeout_s=1200,   # 50 steps x worst-case LLM latency under load
+        task_timeout_s=1800,   # 50 steps x worst-case LLM latency under load
+                               # (1200->1800 on 2026-07-06 with the 16K turn
+                               # cap: longer worst-case turns need tail room)
         max_turns=50,          # mirrors alfworld_max_steps (generic field)
         k_rollouts=3,
 
@@ -138,11 +140,10 @@ def main() -> None:
             "alfworld_python": "/home/wushang/miniconda3/envs/alfworld/bin/python",
             "alfworld_max_steps": 50,
             "alfworld_temperature": 0.4,
-            # Agent-turn completion cap. Median turn output is ~60 tokens
-            # (measured); 4096 keeps huge headroom while bounding runaway
-            # generations that would zombie-hold a vLLM slot for hours at
-            # 16384 (agreed 2026-07-03; optimizer calls stay at 16384).
-            "alfworld_max_tokens": 4096,
+            # Agent-turn completion cap: 16384 (user ruling 2026-07-06 —
+            # unify target-agent caps at 16K across arms; supersedes the
+            # 4096 runaway bound of 2026-07-03).
+            "alfworld_max_tokens": 16384,
             # Eval-annotation GT richness (ablation knob): "episode" attaches
             # the expert-executed gold trajectory (memoized, ~6s once per game)
             # on top of the high-level plan; the ablation arm uses "plan".
