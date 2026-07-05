@@ -149,8 +149,16 @@ class SubprocessWorkerHost:
             if remaining <= 0:
                 raise WorkerTimeout(
                     "%s timed out after %.0fs" % (self.name, timeout))
-            readable, _, _ = select.select([stdout], [], [], min(remaining, 5.0))
-            if not readable:
+            # poll(), NOT select(): select() is hard-limited to fd numbers
+            # < FD_SETSIZE (1024) regardless of RLIMIT_NOFILE. Measured
+            # failure 2026-07-06 (ALFWorld, 256 workers x pipes + two-endpoint
+            # HTTP pools): 153/400 rollouts died with "filedescriptor out of
+            # range in select()" once pipe fds crossed 1023, silently gutting
+            # gate measurements. poll() has no such limit.
+            poller = select.poll()
+            poller.register(stdout, select.POLLIN | select.POLLHUP)
+            events = poller.poll(min(remaining, 5.0) * 1000)
+            if not events:
                 if self.proc.poll() is not None:
                     raise WorkerDied(
                         "%s exited (code %s) without a protocol line"
