@@ -66,11 +66,10 @@ def main() -> None:
         target_model="qwen3.6-35b-a3b",
         optimizer_model="qwen3.6-35b-a3b",
 
-        # Runtime. Workers = 128 (agreed 2026-07-05, user decision: the 8889
-        # endpoint never came up, so this run shares the NEW 127.0.0.1:8888
-        # endpoint with the upcoming BFCL arm; 128 keeps the shared budget fair.
-        # Supersedes the provisional 256-on-dedicated-8889 plan).
-        max_api_workers=128,
+        # Runtime. Workers = 256 (2026-07-06, user decision: the three fresh
+        # tree-mechanism arms each run 256 workers over the shared 3-endpoint
+        # pool; supersedes the 128-shared-with-BFCL arrangement).
+        max_api_workers=256,
         concurrency_limit=1,   # ONE tree node per round — new PROPOSAL nodes get inf UCB
                                # (n_steps=0) so they are always selected first for exploitation.
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
@@ -113,23 +112,31 @@ def main() -> None:
         gate_screen_k=3,
         gate_escalation_k=3,
 
-        # L1 strategy cycle (v3): diverse-iterate + objective lift/deploy_net.
-        # Test-set sizes for this run (residual = baseline-0/K, regression = baseline-K/K);
-        # other L1 knobs (k_rollouts=3, l1_target_effective=3, max_l1_iterations=8,
-        # l1_diagnosis_per_category=5) use the agreed-design dataclass defaults.
+        # ── L1 TREE SEARCH (mechanism default since 2026-07-06; design:
+        #    L1_tree_mechanism_design.md — run_css delegates to the
+        #    burst-granular tree loop; legacy L0/L1 knobs below are inert) ──
+        burst_steps=5,              # one tree visit = 5 L0 steps (agreed)
+        saturation_dry_bursts=2,    # 2 consecutive zero-accept bursts => saturated (user ruling 2026-07-05)
+        node_degree=3,              # REFINE children per strategy node; root unlimited (user ruling)
+        max_decisions=40,           # decision budget; NOT fingerprinted — resume may extend
+        verify_mode="harm_veto",    # per-edit probe only vetoes measured net harm (fix 2026-07-05)
+
+        # Legacy L1 cycle knobs (inert under the tree mechanism).
         l1_diagnostic_tasks=24,
         l1_regression_tasks=12,
 
         # Output
         out_root=out_root,
 
-        # OpenAI-compatible LLM backend. NEW server-local endpoint (agreed
-        # 2026-07-05): single URL, SHARED with the upcoming BFCL arm (the 8889
-        # tunnel's remote vLLM never came up); the old 10.77.110.162 pair stays
-        # with the AppWorld/ALFWorld/ScienceWorld experiments.
+        # OpenAI-compatible LLM backend. THREE shared endpoints, client-side
+        # balancing by llmfleet (agreed 2026-07-06: all three fresh
+        # tree-mechanism arms share the full pool). LITERAL string — bypasses
+        # the endpoint registry (BFCL mis-routing lesson, commit 5ed3f91).
         extra={
             "llm_backend": "openai_compat",
-            "base_url": "http://127.0.0.1:8888/v1",
+            "base_url": ("http://10.77.110.162:8888/v1,"
+                         "http://10.77.110.162:8889/v1,"
+                         "http://127.0.0.1:8888/v1"),
             "api_key": "token-abc123",
             "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,

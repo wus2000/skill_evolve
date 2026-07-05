@@ -79,7 +79,10 @@ def main() -> None:
         # Runtime. Each rollout runs its episode in a dedicated py3.11 worker
         # subprocess; a loaded world is ~300-500MB RSS -> engine slots are the
         # RAM-bound cap (128 ~= 40-64GB; calibrate after live measurement).
-        max_api_workers=128,
+        max_api_workers=256,   # raised 128->256 (2026-07-06, user decision:
+                               # three arms share three endpoints at 256 each);
+                               # engine slots stay 128 (RAM-bound physical cap
+                               # — the EngineSlotLimiter is the env throttle)
         concurrency_limit=1,
         task_timeout_s=1800,   # 50 interactions x worst-case LLM latency + eval
         max_turns=50,          # mirrors appworld_max_interactions (generic field)
@@ -115,6 +118,15 @@ def main() -> None:
         gate_screen_k=1,
         gate_escalation_k=3,
 
+        # ── L1 TREE SEARCH (mechanism default since 2026-07-06; design:
+        #    L1_tree_mechanism_design.md — run_css delegates to the
+        #    burst-granular tree loop; legacy L0 budget knobs are inert) ──
+        burst_steps=5,              # one tree visit = 5 L0 steps (agreed)
+        saturation_dry_bursts=2,    # 2 consecutive zero-accept bursts => saturated (user ruling 2026-07-05)
+        node_degree=3,              # REFINE children per strategy node; root unlimited (user ruling)
+        max_decisions=40,           # decision budget; NOT fingerprinted — resume may extend
+        verify_mode="harm_veto",    # per-edit probe only vetoes measured net harm (fix 2026-07-05)
+
         # Dataset-size subsets: the 90-task pool leaves no room for sampling.
         coldstart_train_size=0,
         exploitation_val_size=0,
@@ -133,8 +145,12 @@ def main() -> None:
 
         extra={
             "llm_backend": "openai_compat",
-            "base_url": resolve_base_url(
-                "http://10.77.110.162:8888/v1,http://10.77.110.162:8889/v1"),
+            # THREE shared endpoints, client-side balancing by llmfleet
+            # (agreed 2026-07-06). LITERAL string — bypasses the endpoint
+            # registry (BFCL mis-routing lesson, commit 5ed3f91).
+            "base_url": ("http://10.77.110.162:8888/v1,"
+                         "http://10.77.110.162:8889/v1,"
+                         "http://127.0.0.1:8888/v1"),
             "api_key": "token-abc123",
             "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,

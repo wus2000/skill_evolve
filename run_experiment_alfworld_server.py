@@ -95,6 +95,16 @@ def main() -> None:
         gate_screen_k=1,
         gate_escalation_k=3,
 
+        # ── L1 TREE SEARCH (mechanism default since 2026-07-06; design:
+        #    L1_tree_mechanism_design.md — run_css delegates to the
+        #    burst-granular tree loop; the legacy L0 budget knobs above are
+        #    fingerprint-inert under burst mode) ─────────────────────────
+        burst_steps=5,              # one tree visit = 5 L0 steps (agreed)
+        saturation_dry_bursts=2,    # 2 consecutive zero-accept bursts => saturated (user ruling 2026-07-05)
+        node_degree=3,              # REFINE children per strategy node; root unlimited (user ruling)
+        max_decisions=40,           # decision budget (bursts+spawns); NOT fingerprinted — resume may extend
+        verify_mode="harm_veto",    # per-edit probe only vetoes measured net harm (fix 2026-07-05)
+
         # Dataset-size subsets (0 = use all). Values agreed 2026-07-03:
         # derivation failure-diversity and L1 evidence richness are prioritized
         # over rollout cost at this stage.
@@ -110,8 +120,14 @@ def main() -> None:
 
         extra={
             "llm_backend": "openai_compat",
-            "base_url": resolve_base_url(
-                "http://10.77.110.162:8888/v1,http://10.77.110.162:8889/v1"),
+            # THREE shared endpoints, client-side balancing by llmfleet
+            # (agreed 2026-07-06: all three fresh tree-mechanism arms share
+            # the full pool). LITERAL string — resolve_base_url would let the
+            # config/llm_endpoints.txt registry override the pool (the BFCL
+            # mis-routing lesson, commit 5ed3f91).
+            "base_url": ("http://10.77.110.162:8888/v1,"
+                         "http://10.77.110.162:8889/v1,"
+                         "http://127.0.0.1:8888/v1"),
             "api_key": "token-abc123",
             "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,
