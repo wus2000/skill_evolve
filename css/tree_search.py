@@ -9,9 +9,9 @@ node pool. Each decision either
     REFINE) and immediately runs the child's first burst — spawn and first
     burst are ATOMIC, so the selection pool never contains an unvisited node.
 
-Saturation is judged at burst boundaries by the CROSS-BURST stall counter
-(``steps_since_new_best >= cfg.l0_stall_steps`` — the counter is never reset,
-unlike the legacy round loop which inserted ``epoch_reset`` sentinels).
+Saturation is judged at burst boundaries: the node's last
+``cfg.saturation_dry_bursts`` (default 2) bursts all produced ZERO gate
+accepts (user ruling 2026-07-05 — one dry burst is not evidence enough).
 Saturated nodes are not killed: their results are locked into the run-level
 ``global_best`` snapshot, and their UCB score prices their next child.
 TERMINAL is reached only by degree exhaustion (strategy nodes,
@@ -137,7 +137,8 @@ class BurstResult:
     reward: float = 0.0           # gated net val movement (val_after - val_before)
     best_updated: bool = False
     exploit_dir: str = ""         # step artifacts (rollout trajectories live here)
-    stall_after: int = 0          # steps_since_new_best at the burst boundary
+    stall_after: int = 0          # telemetry: steps_since_new_best at the boundary
+                                  # (saturation itself is judged on burst_accepts)
 
 
 def run_burst(
@@ -155,7 +156,7 @@ def run_burst(
     """Run exactly ``cfg.burst_steps`` L0 steps at ``node`` (one tree visit).
 
     No saturation break inside the burst — saturation is judged by the caller
-    at the burst boundary via the cross-burst stall counter. The node's val
+    at the burst boundary (consecutive dry bursts). The node's val
     refresh reuses the gate's accepted-candidate predictions (zero-rollout
     policy, same as the legacy round loop).
     """
@@ -178,9 +179,11 @@ def run_burst(
     cfg._val_baseline_dir = os.path.join(node_dir(out_dir, node.node_id), "val_baseline")
 
     val_before = node.val_score
-    _log.info("Burst start — decision=%d node=%s burst=%d val=%.4f stall=%d rules=%d chars",
+    _log.info("Burst start — decision=%d node=%s burst=%d val=%.4f dry_streak=%d rules=%d chars",
               decision_index, node.node_id, burst_index, val_before,
-              node.step_buffer.steps_since_new_best(), len(node.rules or ""))
+              sum(1 for a in reversed(node.burst_accepts) if a == 0
+                  ) if node.burst_accepts and node.burst_accepts[-1] == 0 else 0,
+              len(node.rules or ""))
     log_event("burst_start", decision_index=decision_index, node_id=node.node_id,
               burst_index=burst_index, val_before=val_before,
               stall=node.step_buffer.steps_since_new_best())
@@ -214,6 +217,7 @@ def run_burst(
     node.n_bursts += 1
     reward = node.val_score - val_before
     node.burst_rewards.append(reward)
+    node.burst_accepts.append(int(summary.n_accepted))
     node.maturity += 1
     node.record_learning_point(LearningCurvePoint(
         epoch=decision_index,
@@ -312,17 +316,20 @@ def _unwired_spawner(ctx: SpawnContext) -> SpawnOutcome:  # pragma: no cover
 
 
 def node_stalled(node: "TreeNode", cfg: "CSSConfig") -> bool:
-    """Saturation judgement at the burst boundary — CROSS-BURST STALL ONLY.
+    """Saturation judgement at the burst boundary — CONSECUTIVE DRY BURSTS.
 
-    Design §1.3 (user-selected plan A): one dry 5-step burst has a ~17% false
-    saturation rate at typical accept probabilities, so the legacy
-    consecutive-reject criterion (``N`` in a row) is deliberately NOT used
-    here — only ``steps_since_new_best >= l0_stall_steps`` (the counter
-    persists across bursts; ~6% false rate; adaptively protects nodes whose
-    last burst still produced a best).
+    User ruling 2026-07-05 (supersedes the cross-burst stall counter): the
+    node is saturated when its last ``cfg.saturation_dry_bursts`` (default 2)
+    bursts ALL had zero gate accepts. One dry burst is deliberately NOT enough
+    (~17% false saturation at typical accept rates; two dry bursts ~3%). Any
+    accept — best or not — is basin yield and resets the dry streak. Judged on
+    per-burst accept counts (robust to bursts cut short by hard errors).
     """
-    stall = getattr(cfg, "l0_stall_steps", 8)
-    return stall > 0 and node.step_buffer.steps_since_new_best() >= stall
+    k = max(1, getattr(cfg, "saturation_dry_bursts", 2))
+    accepts = node.burst_accepts
+    if len(accepts) < k:
+        return False
+    return all(a == 0 for a in accepts[-k:])
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -503,13 +510,12 @@ def run_css_tree(
                                    "(continuing)", node.node_id, br.burst_index)
             if node_stalled(node, cfg):
                 node.status = "saturated"
-                _log.info("Node %s SATURATED at burst boundary (stall=%d, "
-                          "consecutive_rejects=%d)", node.node_id,
-                          node.step_buffer.steps_since_new_best(),
-                          node.step_buffer.consecutive_rejects())
+                _log.info("Node %s SATURATED at burst boundary (last %d bursts "
+                          "zero-accept)", node.node_id,
+                          getattr(cfg, "saturation_dry_bursts", 2))
                 log_event("node_saturated", node_id=node.node_id,
                           decision_index=decision_index,
-                          stall=node.step_buffer.steps_since_new_best())
+                          burst_accepts=list(node.burst_accepts))
         else:  # saturated -> spawn + first burst (atomic)
             mode = "NEW" if node.is_root else "REFINE"
             ctx = SpawnContext(

@@ -53,7 +53,9 @@ class CSSConfig:
     min_l0_epochs: int = 1             # full train-set passes before saturation check activates (0 = no epoch floor)
     max_l0_epochs: int = 100           # hard cap on train-set passes (effectively unlimited)
     max_l0_steps: int = 0              # absolute per-round L0 step budget (0 = epoch caps only)
-    l0_stall_steps: int = 8            # saturation: consecutive steps without accept_new_best (0 = disabled)
+    l0_stall_steps: int = 8            # LEGACY (epoch-mode saturation only): consecutive steps
+                                       # without accept_new_best. The tree mechanism judges
+                                       # saturation by saturation_dry_bursts instead.
     batch_size: int = 40                # tasks per batch in batch-step architecture
     num_generators: int = 3             # deprecated (plan_a v1 N-generator stage); unused by per-minibatch plan_a
     l0_edit_budget: int = 3             # per-minibatch edit guideline (L) injected into the
@@ -137,9 +139,11 @@ class CSSConfig:
     # ── L1 TREE SEARCH (burst-granular; L1_tree_mechanism_design.md) ──────
     # Node three-state machine: ACTIVE (selected -> B-step L0 burst),
     # SATURATED (selected -> spawn child + child's first burst, atomic),
-    # TERMINAL (out of the pool). Saturation = cross-burst stall (the
-    # steps_since_new_best counter persists across bursts; no epoch_reset).
+    # TERMINAL (out of the pool). Saturation (user ruling 2026-07-05,
+    # supersedes the cross-burst stall counter): the last
+    # ``saturation_dry_bursts`` bursts were ALL zero-accept.
     burst_steps: int = 5                # B: L0 steps per tree visit (one burst)
+    saturation_dry_bursts: int = 2      # consecutive all-reject bursts => saturated
     node_degree: int = 3                # max children per STRATEGY node (root unlimited)
     max_decisions: int = 40             # total tree-decision budget (bursts + spawns);
                                         # NOT fingerprinted — a budget, resume may extend it
@@ -267,6 +271,8 @@ class CSSConfig:
             problems.append("verify_min_net_flips must be >= 0")
         if self.burst_steps < 1:
             problems.append("burst_steps must be >= 1")
+        if self.saturation_dry_bursts < 1:
+            problems.append("saturation_dry_bursts must be >= 1")
         if self.node_degree < 1:
             problems.append("node_degree must be >= 1")
         if self.max_decisions < 1:

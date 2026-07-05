@@ -113,6 +113,11 @@ class TreeNode:
     # Per-burst gated net val movement (reward history; parallels bursts.jsonl
     # on disk). Kept small: floats only.
     burst_rewards: list[float] = field(default_factory=list)
+    # Per-burst gate-accept counts. Saturation (user ruling 2026-07-05): the
+    # last ``cfg.saturation_dry_bursts`` (=2) bursts all zero-accept => the
+    # node is saturated. Any gate accept — best or not — counts as basin
+    # yield and resets the dry streak.
+    burst_accepts: list[int] = field(default_factory=list)
 
     # Paired-gate incumbent ledger: per-val-item measurement record of the
     # CURRENT incumbent rules — {item_id: {"passes": int, "trials": int}}.
@@ -172,6 +177,7 @@ class TreeNode:
             val_ledger=dict(d.get("val_ledger", {})),
             n_bursts=int(d.get("n_bursts", 0)),
             burst_rewards=[float(x) for x in d.get("burst_rewards", [])],
+            burst_accepts=[int(x) for x in d.get("burst_accepts", [])],
         )
 
     def to_dict(self, include_embeddings: bool = False) -> dict:
@@ -199,6 +205,7 @@ class TreeNode:
             "val_ledger": self.val_ledger,
             "n_bursts": self.n_bursts,
             "burst_rewards": self.burst_rewards,
+            "burst_accepts": self.burst_accepts,
         }
 
 

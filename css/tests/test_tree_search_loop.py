@@ -61,6 +61,7 @@ def _fake_burst(plans: dict):
         node.best_rules = node.rules or node.best_rules
         node.n_bursts += 1
         node.burst_rewards.append(node.val_score - before)
+        node.burst_accepts.append(1 if gain > 0 else 0)
         return BurstResult(
             node_id=node.node_id, burst_index=idx, decision_index=decision_index,
             steps=cfg.burst_steps, n_accepted=1 if gain > 0 else 0,
@@ -85,31 +86,40 @@ def _spawner(strategy="## Mechanism A\ndo things differently", decline_ids=()):
     return fn
 
 
-# ── cross-burst stall semantics ─────────────────────────────────────────────
+# ── consecutive-dry-burst saturation semantics (user ruling 2026-07-05) ─────
 def test_single_dry_burst_does_not_saturate():
     cfg = _cfg()
     node = TreeNode(node_id="n0000")
-    for _ in range(5):
-        node.step_buffer.append(StepBufferEntry(
-            step=0, action="reject", score_before=0, score_after=0))
-    assert node.step_buffer.steps_since_new_best() == 5
-    assert not node_stalled(node, cfg)   # 5 < 8: one dry burst is NOT saturation
-    # legacy criterion would have fired here — deliberately unused:
-    assert node.step_buffer.consecutive_rejects() >= cfg.N
+    node.n_bursts = 1
+    node.burst_accepts = [0]            # one all-reject burst
+    assert not node_stalled(node, cfg)  # 1 dry burst is NOT evidence enough
+    node.n_bursts = 2
+    node.burst_accepts = [0, 0]         # two consecutive dry bursts
+    assert node_stalled(node, cfg)
 
 
-def test_stall_counter_persists_across_bursts(tmp_path, monkeypatch):
+def test_any_accept_resets_dry_streak():
+    cfg = _cfg()
+    node = TreeNode(node_id="n0000")
+    node.n_bursts = 3
+    node.burst_accepts = [0, 1, 0]      # accept in the middle burst
+    assert not node_stalled(node, cfg)  # streak is 1, not 2
+    node.burst_accepts = [1, 0, 0]
+    assert node_stalled(node, cfg)
+
+
+def test_dry_streak_judged_across_bursts_in_loop(tmp_path, monkeypatch):
     cfg = _cfg(max_decisions=3)
     monkeypatch.setattr(ts, "measure_initial_val", _fake_measure({"n0000": 0.5}))
-    burst = _fake_burst({"n0000": [0.1, 0.0]})  # gain burst, then dry burst
+    burst = _fake_burst({"n0000": [0.1, 0.0, 0.0]})  # gain, dry, dry
     result = run_css_tree(None, None, None, cfg=cfg, out_dir=str(tmp_path),
                           spawner=_spawner(), burst_fn=burst)
     root = result.tree.get("n0000")
-    # burst 0: accept at step 0 then 4 rejects (stall 4, active);
-    # burst 1: 5 more rejects (stall 9 >= 8 -> saturated);
-    # decision 2: saturated root spawns.
-    assert [c for c in burst.calls if c[0] == "n0000"] == [("n0000", 0), ("n0000", 1)]
-    assert root.status in ("saturated", "terminal") or root.children_ids
+    # bursts 0 (accept) + 1 (dry): streak 1 -> still ACTIVE after decision 1;
+    # burst 2 (dry): streak 2 -> SATURATED at the boundary.
+    assert [c for c in burst.calls if c[0] == "n0000"] == [
+        ("n0000", 0), ("n0000", 1), ("n0000", 2)]
+    assert root.status == "saturated"
 
 
 # ── spawn atomicity + zero inheritance ──────────────────────────────────────

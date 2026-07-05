@@ -57,7 +57,9 @@ _FINGERPRINT_FIELDS = (
     "verify_floor_divisor", "verify_min_net_flips",
     # Tree-search structural knobs (burst-granular mechanism). max_decisions is
     # deliberately EXCLUDED: it is a budget, and a resume may extend it.
-    "burst_steps", "node_degree",
+    # l0_stall_steps is NOT fingerprinted anymore: the tree mechanism judges
+    # saturation by saturation_dry_bursts (l0_stall_steps is legacy-inert).
+    "burst_steps", "node_degree", "saturation_dry_bursts",
 )
 
 
