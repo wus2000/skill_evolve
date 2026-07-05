@@ -81,16 +81,18 @@
   bare burst 开局,root 饱和后的历次被选中逐个产出 NEW 子。css/coldstart.py
   的单发 design+critique 机制退役。
 
-### 1.3 饱和判据(方案 A,已选定)
+### 1.3 饱和判据(用户终裁 2026-07-05:连续干涸 burst,取代方案 A)
 
-复用现有 `steps_since_new_best` 停滞计数器,**跨 burst 边界延续**,阈值
-`l0_stall_steps=8`:
+**判据:节点最近 `saturation_dry_bursts`(=2)个 burst 的 gate accept 数全为 0
+→ 饱和**。实现记账在 `TreeNode.burst_accepts`(每 burst 一个 accept 计数,
+对因硬错误提前结束的短 burst 也稳健);任何 accept(无论是否新 best)都算
+盆地仍有产出,重置干涸计数。
 
-- 单个 5 步零 accept burst 在 p(accept)=0.3 下有 0.7⁵≈17% 假饱和率——不足为凭
-  (用户判断正确);
-- 跨 burst 累计 ≥8 步无新 best 才判饱和:上个 burst 末段仍在 accept 的节点
-  需近两个干涸 burst,已停滞节点一个干涸 burst 即翻转——自适应方向恰好正确,
-  假饱和率 ≈0.7⁸≈6%;
+- 单个 5 步零 accept burst 在 p(accept)=0.3 下有 0.7⁵≈17% 假饱和率——不足为凭;
+  连续两个干涸 burst 假饱和率 ≈0.7¹⁰≈3%;
+- (设计史:方案 A"跨 burst stall 计数器 ≥8"曾短暂采用,2026-07-05 用户终裁
+  统一为本判据——更直观,且判定单位与决策单位[burst]对齐;`l0_stall_steps`
+  自此为 legacy-inert,退出 resume 指纹,`saturation_dry_bursts` 入指纹。)
 - 假饱和代价温和(不杀节点,只是提前产子,战术余量随 REFINE 继承迁移),无需
   更保守。
 
@@ -512,7 +514,7 @@ REFINE 采用 L0 同族的**受控编辑**方式,但编辑单元锁定在策略�
 | 参数 | 默认 | 依据 |
 |---|---|---|
 | B(burst 步数) | 5 | 各环境 L0 增益集中前 3–8 步;决策频率 vs 单次信号质量折中 |
-| 饱和判据 | 跨 burst stall ≥ l0_stall_steps=8 | §1.3;假饱和 ~6% |
+| 饱和判据 | 连续 saturation_dry_bursts=2 个零 accept burst | §1.3 用户终裁;假饱和 ~3% |
 | 度数 | 策略节点 3 / root 不限 | 用户拍板 2026-07-05:先实施观察 |
 | 深度 | 不限 | 同上;run 终止=总预算 |
 | UCB α/β/W | 沿用 config 现值(0.5/0.5/10) | 已 pilot-tuned;n 换 burst 单位后按首环境实测复核 |
