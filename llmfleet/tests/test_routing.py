@@ -284,3 +284,15 @@ def test_single_url_short_circuit():
     assert r.acquire("any") == 0
     r.release(0, 0.1)
     assert r.snapshot()["local_inflight"] == [0]
+
+
+def test_mark_unhealthy_survives_long_outage():
+    """Live incident 2026-07-05: an hours-dead endpoint grew fail_streak into
+    the thousands and ``base * 2**streak`` raised OverflowError before min()
+    could clamp — every LLM call then failed instantly. The exponent must be
+    clamped BEFORE exponentiating."""
+    r = ReplicaRouter(["http://a/v1"])
+    for _ in range(5000):
+        r.mark_unhealthy(0)  # must never raise
+    snap = r.snapshot()
+    assert snap  # router still serviceable

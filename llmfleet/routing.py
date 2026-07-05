@@ -467,8 +467,13 @@ class ReplicaRouter:
         with self._lock:
             n = self._nodes[index]
             n.fail_streak += 1
-            cooldown = min(
-                self.cooldown_base * (2 ** (n.fail_streak - 1)), COOLDOWN_MAX_S)
+            # Clamp the exponent BEFORE exponentiating: a long outage grows
+            # fail_streak unbounded, and float * 2**1024 raises OverflowError
+            # before min() can cap it (live incident 2026-07-05: a dead tunnel
+            # turned every call into "LLM error: OverflowError" and killed two
+            # runs). 2**16 * base already exceeds any sane COOLDOWN_MAX_S.
+            exp = min(n.fail_streak - 1, 16)
+            cooldown = min(self.cooldown_base * (2 ** exp), COOLDOWN_MAX_S)
             n.unhealthy_until = now + cooldown
 
     # ── Observability ───────────────────────────────────────────────────────
