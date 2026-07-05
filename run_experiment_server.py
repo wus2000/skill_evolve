@@ -75,7 +75,12 @@ def main() -> None:
                                # (n_steps=0) so they are always selected first for exploitation.
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
         bash_timeout_s=180,    # per single bash command (3 min); kills hung commands fast (+ their whole tree)
-        max_turns=50,          # 99.84% of rollouts finish <=50 turns (median 5); halves the long-tail budget
+        max_turns=30,          # agreed 2026-07-05: aligned to the Trace2Skill-family
+                               # spreadsheet protocol (sts harness_spreadsheet
+                               # agent_max_turns=30; agent_skills spreadsheet configs
+                               # =30). Median rollout is 5 turns, so the 30->50 band
+                               # only fed the failing long tail (the throughput sink
+                               # under endpoint sharing). Supersedes the earlier 50.
 
         # L0 exploitation. batch = 40 (the historical SpreadsheetBench value,
         # now explicit; ~29% of the 140 pool, 3-4 steps/epoch).
