@@ -61,8 +61,12 @@ pinned source or running code on this Mac** — not from memory or the web. Comp
   ```
   Mirrors the `spreadsheet-env-vendored` precedent (zero-dependency copy into the css library).
 - **Offline transfer** (server has GitHub + HF blocked, PyPI reachable): `git bundle` from the Mac,
-  OR just copy the vendored subset + the data files. `mpmath` is on PyPI (pin `1.3.0`; `1.4.1` also
-  imported cleanly in the probe).
+  OR just copy the vendored subset + the data files.
+- **SERVER DEPLOYMENT FACT (verified 2026-07-05):** `mpmath` (math_api only) **must be pinned to
+  `==1.3.0` on the server** — the css harness there is Python 3.8, and `mpmath` 1.4.x requires
+  Python >=3.9. With `mpmath==1.3.0` the in-process env imports and runs on py3.8 (server gold
+  replays 8/8 across all 4 categories). This is also why the one `list[str]` annotation in
+  `vehicle_control` was rewritten to `List[str]` (see the vendor note).
 
 ## 2. Offline capability / deployment
 
