@@ -198,7 +198,7 @@ def semantic_check(
         obj = complete_optimizer_json(
             client, _VALIDATOR_SYSTEM, user,
             parse=lambda t: _parse_json_obj(t, "valid"),
-            max_tokens=4096,
+            max_tokens=8192,  # 4096 clipped violation lists on big edit sets (cap-hit measured 2026-07-05)
             stage="editpipe_validator",
         )
     except Exception:
@@ -469,7 +469,7 @@ def _purify_impure_edits(
             text, _usage = client.complete_optimizer(
                 _PURGE_SYSTEM,
                 f"## Problem\n{v.detail}\n\n## Edit body\n{e.body}",
-                max_tokens=4096)
+                max_tokens=8192)  # purged bodies of large sections need headroom (2026-07-05)
             obj = _parse_json_obj(text, "body")
         except Exception:
             obj = None

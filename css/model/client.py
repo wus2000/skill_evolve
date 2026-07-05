@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+
+_log = logging.getLogger(__name__)
 
 from css.trajectory import GROUND_TRUTH_FIREWALL
 
@@ -620,6 +623,13 @@ class OpenAICompatLLMClient:
         *,
         response_format: dict | None = None,
     ) -> tuple[str, dict[str, int]]:
+        if max_tokens > self.max_tokens:
+            # Silent clamping bit us (2026-07-05: the merger's 20480 request was
+            # clamped to the 16384 client ceiling and truncated a merge) — make
+            # every clamp visible so the ceiling gets raised deliberately.
+            _log.warning("max_tokens clamp: requested %d > client ceiling %d "
+                         "(model=%s) — raise extra['max_tokens'] if intended",
+                         max_tokens, self.max_tokens, model)
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -636,6 +646,12 @@ class OpenAICompatLLMClient:
         choices = data.get("choices") or []
         if not choices:
             raise RuntimeError(f"OpenAI-compat API returned no choices: {data}")
+        if choices[0].get("finish_reason") == "length":
+            # Live truncation telemetry (measured 2026-07-05: proposer ~1-1.5%
+            # cap hits; each one silently loses edits) — forensics needed a
+            # 40k-line log scan before; now it is one grep.
+            _log.warning("completion TRUNCATED at max_tokens=%d (model=%s)",
+                         min(max_tokens, self.max_tokens), model)
         message = choices[0].get("message") or {}
         text = message.get("content") or ""
         if not isinstance(text, str):

@@ -134,7 +134,7 @@ def main() -> None:
             # shared only with the SpreadsheetBench arm.
             "base_url": "http://127.0.0.1:8888/v1",
             "api_key": "token-abc123",
-            "max_tokens": 16384,        # optimizer completion cap
+            "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,          # optimizer temperature
             "enable_thinking": False,
             "timeout_seconds": 1800,

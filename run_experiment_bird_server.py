@@ -114,7 +114,7 @@ def main() -> None:
             "base_url": resolve_base_url(
                 "http://10.77.110.162:8888/v1,http://10.77.110.162:8889/v1"),
             "api_key": "token-abc123",
-            "max_tokens": 16384,
+            "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,
             "enable_thinking": False,
             "timeout_seconds": 1800,

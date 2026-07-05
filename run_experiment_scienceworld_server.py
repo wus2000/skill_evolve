@@ -149,7 +149,7 @@ def main() -> None:
             "base_url": resolve_base_url(
                 "http://10.77.110.162:8888/v1,http://10.77.110.162:8889/v1"),
             "api_key": "token-abc123",
-            "max_tokens": 16384,
+            "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,
             "enable_thinking": False,
             "timeout_seconds": 1800,
@@ -174,9 +174,11 @@ def main() -> None:
             # 0.4 everywhere (train AND eval): K=3 needs sampling diversity on a
             # deterministic env; one temperature keeps baselines comparable.
             "scienceworld_temperature": 0.4,
-            # One <reasoning>+<action> per turn is short; 512 bounds runaway
-            # generations that would zombie-hold a vLLM slot (optimizer stays 16384).
-            "scienceworld_max_tokens": 512,
+            # One <reasoning>+<action> per turn is short; the cap bounds runaway
+            # generations that would zombie-hold a vLLM slot. Raised 512->768 on
+            # 2026-07-05: measured 1.53% of target calls (306/19,944) truncated
+            # before </action> at 512 — each one wastes a step on the fallback.
+            "scienceworld_max_tokens": 768,
             # In-process JVM pool: cap live JVMs at the rollout concurrency
             # (RAM-bound, ~265 MB each); recycle every 200 episodes to bound RSS
             # creep; -Xmx256m caps heap tail growth (non-heap ~130 MB floor stays).

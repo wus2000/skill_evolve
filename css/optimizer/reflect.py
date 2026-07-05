@@ -484,7 +484,7 @@ def _run_minibatch_proposer(
     try:
         raw_edits = complete_optimizer_json(
             client, system_prompt, user, parse=_parse_edit_list,
-            max_tokens=8192, stage="proposer",
+            max_tokens=12288, stage="proposer",  # 8192 hit its ceiling ~1-1.5% of calls (measured 2026-07-05): truncated multi-edit JSON loses edits at the source
         )
     except Exception:  # noqa: BLE001 — a proposer failure must not crash the step
         raw_edits = []

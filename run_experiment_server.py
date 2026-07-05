@@ -131,7 +131,7 @@ def main() -> None:
             "llm_backend": "openai_compat",
             "base_url": "http://127.0.0.1:8888/v1",
             "api_key": "token-abc123",
-            "max_tokens": 16384,
+            "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,
             "enable_thinking": False,
             "timeout_seconds": 1800,   # 30 min per-HTTP-request timeout (avoid 300s timeout->retry waste under 512-way saturation)
