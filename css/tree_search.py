@@ -129,7 +129,7 @@ class BurstResult:
 
     node_id: str
     burst_index: int              # the node's own burst ordinal (0-based)
-    decision_index: int           # global decision ordinal
+    decision_index: int = 0       # global decision ordinal
     steps: int = 0
     n_accepted: int = 0
     val_before: float = 0.0

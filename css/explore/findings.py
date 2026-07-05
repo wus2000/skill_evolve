@@ -101,8 +101,7 @@ def _purity_screen(findings: str, optimizer_client: Any) -> str:
 def _altitude_screen(findings: str, optimizer_client: Any, cfg: Any) -> str:
     """Altitude screen — reuse ``css.materials.screen.screen_items`` if present.
 
-    The materials package lands in a later phase; until then this falls back to a
-    local single-call screen with the design's verdict shape
+    Falls back to a local single-call screen with the design's verdict shape
     ({verdict, violated_criteria, feedback, quoted_offense} + a ``rewritten`` field
     so one call both judges and lifts). The reuse hook is guarded against
     signature drift: any failure degrades to the local screen.
@@ -113,11 +112,11 @@ def _altitude_screen(findings: str, optimizer_client: Any, cfg: Any) -> str:
         screen_items = None
     if screen_items is not None:
         try:
-            # Assumed contract: screen_items(items, client=..., cfg=..., kind=...)
+            # Materials contract: screen_items(items, optimizer_client, cfg, stage)
             # -> list of verdict dicts in the design shape. screen_items judges but
             # does not rewrite, so a non-pass verdict is lifted locally.
             verdicts = screen_items(
-                [findings], client=optimizer_client, cfg=cfg, kind="altitude"
+                [findings], optimizer_client, cfg, "explore_findings_altitude"
             )
             v = verdicts[0] if verdicts and isinstance(verdicts[0], dict) else None
             if v is not None and str(v.get("verdict", "")).lower() == "pass":
