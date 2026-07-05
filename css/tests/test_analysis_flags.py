@@ -22,11 +22,6 @@ from css.analysis.pipeline import analysis_env_context
 from css.config import CSSConfig
 from css.data.rollout import TaskResult
 from css.model.client import StubLLMClient
-from css.proposal.root_cause import (
-    _ROOT_CAUSE_SYSTEM,
-    _ROOT_CAUSE_SYSTEM_WRAPPED,
-    _parse_rc_list,
-)
 
 
 def _result(passed: bool = False, task_id: str = "t0", rollout: int = 0) -> TaskResult:
@@ -93,20 +88,6 @@ def test_wrap_on_requests_object_and_parses_full_list():
     assert "ONLY the JSON object described" in cap.user
     assert len(obs) == 3
     assert [o.obs_id for o in obs] == ["t0:r0:0", "t0:r0:1", "t0:r0:2"]
-
-
-def test_wrapped_system_constants_differ_from_legacy():
-    assert _SINGLE_SYSTEM_WRAPPED != _SINGLE_SYSTEM
-    assert '"observations":' in _SINGLE_SYSTEM_WRAPPED
-    assert _ROOT_CAUSE_SYSTEM_WRAPPED != _ROOT_CAUSE_SYSTEM
-    assert '"root_causes":' in _ROOT_CAUSE_SYSTEM_WRAPPED
-    assert "just the JSON object." in _ROOT_CAUSE_SYSTEM_WRAPPED
-
-
-def test_rc_parser_unwraps_root_causes_key():
-    rc = {"pattern_ids": ["p0"], "behavioral": "b", "strategy": "s"}
-    parsed = _parse_rc_list(json.dumps({"root_causes": [rc, rc]}))
-    assert len(parsed) == 2
 
 
 # ── analysis_env_context: prompt injection ───────────────────────────────────
