@@ -76,6 +76,15 @@ class SiteLeaseManager:
         self._rr_lock = threading.Lock()
         self._mu = threading.Lock()   # guards lane.dirty / lane.refreshing
 
+    @staticmethod
+    def _log_wait(t0: float, wanted: "list[str]", task_type: str) -> None:
+        """Lane-starvation telemetry: waits over 30s mean the stack pool is
+        the bottleneck (grounds for adding stacks), not a fault."""
+        waited = time.monotonic() - t0
+        if waited >= 30.0:
+            _log.info("webarena/scheduler — lane wait %.0fs (sites=%s type=%s)",
+                      waited, wanted, task_type)
+
     # -- refresh -------------------------------------------------------------
     def _refresh_locked(self, stack: str, site: str, lane: _Lane) -> None:
         """Refresh a lane if dirty. Caller MUST hold lane.lock; the
@@ -116,9 +125,10 @@ class SiteLeaseManager:
         """
         wanted = [s for s in sites if s in next(iter(self._stacks.values()))]
         names = sorted(self._stacks)
+        t0 = time.monotonic()
 
         if task_type != MUTATING_TASK_TYPE:
-            deadline_ts = time.monotonic() + timeout_s
+            deadline_ts = t0 + timeout_s
             while True:
                 with self._rr_lock:
                     self._rr = (self._rr + 1) % len(names)
@@ -129,6 +139,7 @@ class SiteLeaseManager:
                         busy = any(self._lanes[(stack, s)].refreshing
                                    for s in wanted)
                     if not busy:
+                        self._log_wait(t0, wanted, task_type)
                         return Lease(stack=stack, urls=self._stacks[stack],
                                      sites=(), exclusive=False)
                 if time.monotonic() >= deadline_ts:
@@ -154,6 +165,7 @@ class SiteLeaseManager:
                             ok = False
                             break
                     if ok:
+                        self._log_wait(t0, wanted, task_type)
                         for site, lane in zip(wanted, lanes):
                             self._refresh_locked(stack, site, lane)
                         return Lease(stack=stack, urls=self._stacks[stack],
