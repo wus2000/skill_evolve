@@ -56,6 +56,41 @@ def _chunk(items: list["TaskResult"], size: int) -> list[list["TaskResult"]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+# Proposer output reservation (8192 hit its ceiling ~1-1.5% of calls, 2026-07-05).
+_PROPOSER_MAX_TOKENS = 12288
+# Per-message elision floor for budget decay: typical action/reasoning text is
+# shorter than this, so D7's "never clip reasoning/action" holds in practice
+# even at the floor; only oversized observations keep shrinking.
+_TRUNC_FLOOR = 600
+# Conservative chars-per-token for budget math (AXTree-dense text runs ~3.5-4).
+_CHARS_PER_TOKEN = 3.0
+
+
+def _fit_render_to_budget(render, tool_trunc: int, char_budget: int) -> "tuple[str, bool]":
+    """Render a trajectory block, decaying the per-message elision cap until it
+    fits ``char_budget``. Returns ``(text, fitted)``.
+
+    Long-observation envs break the fixed-cap arithmetic: a WebArena minibatch
+    (8 traj x ~30 turns x tool_trunc=8k) rendered ~250k TOKENS and the proposer
+    call died with HTTP 400 context overflow (2026-07-06 smoke). The cap halves
+    down to ``_TRUNC_FLOOR``; the caller decides what to do if even the floor
+    render does not fit (e.g. drop whole trajectories, loudly).
+    """
+    text = render(tool_trunc)
+    if char_budget <= 0 or len(text) <= char_budget:
+        return text, True
+    cap = tool_trunc if tool_trunc > 0 else 8_000
+    while cap > _TRUNC_FLOOR:
+        cap = max(_TRUNC_FLOOR, cap // 2)
+        text = render(cap)
+        if len(text) <= char_budget:
+            _log.info(
+                "reflect: trajectory block fit at per-message cap %d "
+                "(%d/%d chars)", cap, len(text), char_budget)
+            return text, True
+    return text, False
+
+
 def _render_minibatch(minibatch: list["TaskResult"], tool_trunc: int) -> str:
     """Render a minibatch of trajectories into analyst-readable text.
 
@@ -439,11 +474,6 @@ def _run_minibatch_proposer(
     scope of one minibatch keeps the proposed edits small and single-theme. Never
     raises — a malformed/failed call yields an empty patch.
     """
-    if contrastive_group is not None:
-        traj = _render_contrastive_group(contrastive_group, cfg.tool_trunc)
-    else:
-        traj = _render_minibatch(rollouts, cfg.tool_trunc)
-
     budget = max(1, int(getattr(cfg, "l0_edit_budget", 3)))
     sections: list[str] = [
         "## strategy.md (READ-ONLY)\n" + (strategy.strip() or "(empty)"),
@@ -468,25 +498,66 @@ def _run_minibatch_proposer(
         f"## Edit budget\nProduce AT MOST L={budget} minimal single-theme edits. "
         "Fewer is better; empty list if already covered."
     )
-    sections.append("## Trajectories\n" + traj)
+    tail_sections: list[str] = []
     if failure_pats:
-        sections.append(
+        tail_sections.append(
             "## Recent unresolved failure patterns\n"
             + "\n".join(f"- {p}" for p in failure_pats)
         )
     if rejected:
-        sections.append(
+        tail_sections.append(
             "## Previously rejected edits (do NOT re-propose)\n"
             + _render_rejected_edits(rejected)
         )
-    user = "\n\n".join(sections)
+
+    # Trajectory block gets whatever context the fixed sections leave over
+    # (first real consumer of context_cap * context_use_frac). 2k chars of
+    # slack covers separators + the injected firewall clause.
+    fixed_chars = (len(system_prompt) + sum(len(s) for s in sections)
+                   + sum(len(s) for s in tail_sections) + 2_000)
+    threshold = int(getattr(cfg, "effective_context_threshold", 204_800))
+    char_budget = max(
+        40_000,
+        int((threshold - _PROPOSER_MAX_TOKENS) * _CHARS_PER_TOKEN) - fixed_chars)
+
+    rolls = list(rollouts)
+    if contrastive_group is not None:
+        traj, fitted = _fit_render_to_budget(
+            lambda cap: _render_contrastive_group(contrastive_group, cap),
+            cfg.tool_trunc, char_budget)
+    else:
+        traj, fitted = _fit_render_to_budget(
+            lambda cap: _render_minibatch(rolls, cap),
+            cfg.tool_trunc, char_budget)
+        while not fitted and len(rolls) > 1:
+            # Even floor-capped messages overflow: shed whole trajectories,
+            # loudly, rather than send a call that 400s into silence.
+            rolls = rolls[: max(1, len(rolls) // 2)]
+            traj, fitted = _fit_render_to_budget(
+                lambda cap: _render_minibatch(rolls, cap),
+                cfg.tool_trunc, char_budget)
+        if len(rolls) < len(rollouts):
+            _log.warning(
+                "reflect: dropped %d/%d trajectories to fit context budget "
+                "(%d chars)", len(rollouts) - len(rolls), len(rollouts),
+                char_budget)
+    if not fitted:
+        _log.warning(
+            "reflect: trajectory block still over budget at floor cap "
+            "(%d > %d chars); proposer call may overflow the context",
+            len(traj), char_budget)
+
+    user = "\n\n".join(sections + ["## Trajectories\n" + traj] + tail_sections)
 
     try:
         raw_edits = complete_optimizer_json(
             client, system_prompt, user, parse=_parse_edit_list,
-            max_tokens=12288, stage="proposer",  # 8192 hit its ceiling ~1-1.5% of calls (measured 2026-07-05): truncated multi-edit JSON loses edits at the source
+            max_tokens=_PROPOSER_MAX_TOKENS, stage="proposer",
         )
     except Exception:  # noqa: BLE001 — a proposer failure must not crash the step
+        _log.warning(
+            "reflect: proposer LLM call failed (source=%s, %d rollouts); "
+            "unit yields no edits", source_type, len(rollouts), exc_info=True)
         raw_edits = []
 
     # The edit budget (L) is a PROMPT guideline, not a mechanical truncation:
