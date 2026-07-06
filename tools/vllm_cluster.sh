@@ -46,8 +46,8 @@ HEALTH_TIMEOUT=900            # first start loads ~70GB weights; be patient
 STOP_TIMEOUT=60
 # Watchdog (auto-restart dead replicas; started by `start`, stopped by `stop`)
 WATCH_INTERVAL=30             # seconds between health sweeps
-WATCH_MAX_RESTARTS=3          # flap breaker: max auto-restarts per port ...
-WATCH_FLAP_WINDOW=1800        # ... within this many seconds; then hold off
+# No restart-count limit (user decision 2026-07-06): a dead replica is ALWAYS
+# relaunched; restarts_<port>.log keeps timestamps as telemetry only.
 # Extra args every replica gets. Tool parser is REQUIRED by the Bird
 # function-calling agent. Prefix caching MUST be explicit: the deployed vLLM
 # defaulted it OFF (measured 0.1% hit rate vs 42% on the old deployment),
@@ -159,14 +159,6 @@ wd_alive() {
     [[ -f "$(wd_pidfile)" ]] && kill -0 "$(cat "$(wd_pidfile)")" 2>/dev/null
 }
 
-wd_restart_budget_ok() {  # wd_restart_budget_ok <port> — flap breaker
-    local f="$RUN_DIR/restarts_$1.log" now cutoff n
-    now=$(date +%s); cutoff=$((now - WATCH_FLAP_WINDOW))
-    [[ -f "$f" ]] || return 0
-    n=$(awk -v c="$cutoff" '$1 >= c' "$f" | wc -l)
-    (( n < WATCH_MAX_RESTARTS ))
-}
-
 watchdog_loop() {  # internal: runs in its own process group
     declare -A grace_until
     local now port
@@ -192,14 +184,10 @@ watchdog_loop() {  # internal: runs in its own process group
             else
                 echo "$(date -Is) :$port DEAD (no process)" >> "$(wd_logfile)"
             fi
-            if wd_restart_budget_ok "$port"; then
-                date +%s >> "$RUN_DIR/restarts_$port.log"
-                echo "$(date -Is) :$port auto-restarting" >> "$(wd_logfile)"
-                start_one "$i" >> "$(wd_logfile)" 2>&1
-                grace_until[$port]=$(( $(date +%s) + HEALTH_TIMEOUT ))
-            else
-                echo "$(date -Is) :$port FLAPPING (>=${WATCH_MAX_RESTARTS} restarts in ${WATCH_FLAP_WINDOW}s) — holding off; investigate $(logfile "$port")" >> "$(wd_logfile)"
-            fi
+            date +%s >> "$RUN_DIR/restarts_$port.log"   # telemetry only
+            echo "$(date -Is) :$port auto-restarting" >> "$(wd_logfile)"
+            start_one "$i" >> "$(wd_logfile)" 2>&1
+            grace_until[$port]=$(( $(date +%s) + HEALTH_TIMEOUT ))
         done
         sleep "$WATCH_INTERVAL"
     done
@@ -209,7 +197,7 @@ watchdog_start() {
     if wd_alive; then say "watchdog already running (pid $(cat "$(wd_pidfile)"))"; return 0; fi
     setsid nohup "$0" __watchdog >> "$(wd_logfile)" 2>&1 &
     echo $! > "$(wd_pidfile)"
-    say "watchdog started (pid $!, interval ${WATCH_INTERVAL}s, flap breaker ${WATCH_MAX_RESTARTS}/${WATCH_FLAP_WINDOW}s)"
+    say "watchdog started (pid $!, interval ${WATCH_INTERVAL}s, unlimited auto-restarts)"
 }
 
 watchdog_stop() {
