@@ -50,17 +50,26 @@ start_site() {  # start_site <stack> <site>
         "$(golden_img "$site")" >/dev/null && echo "started $name"
 }
 
-wait_ready() {  # wait_ready <stack> <site> — block until the site answers HTTP 2xx/3xx
-    local stack="$1" site="$2" p port t0 code
+ready_path() { case "$1" in gitlab) echo "/explore";; *) echo "/";; esac; }
+
+wait_ready() {  # wait_ready <stack> <site> — block until the site serves for real
+    # Probes a rails/db-backed path (gitlab "/" goes 302 while puma workers are
+    # still cycling and deep pages drop connections — observed ERR_EMPTY_RESPONSE
+    # minutes after "/" first answered) and requires 3 consecutive successes.
+    local stack="$1" site="$2" p port t0 code ok=0
     p="$(prefix "$stack")" || return 1
     port="${p}$(site_port "$site")"
     t0=$(date +%s)
     while :; do
         code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' \
-               "http://localhost:${port}/") || code=000
+               "http://localhost:${port}$(ready_path "$site")") || code=000
         case "$code" in
-            2*|3*) echo "ready ${site}_${stack} after $(( $(date +%s) - t0 ))s (http $code)"
-                   return 0;;
+            2*|3*) ok=$(( ok + 1 ))
+                   if [ "$ok" -ge 3 ]; then
+                       echo "ready ${site}_${stack} after $(( $(date +%s) - t0 ))s (http $code)"
+                       return 0
+                   fi;;
+            *) ok=0;;
         esac
         if [ $(( $(date +%s) - t0 )) -ge "$READY_TIMEOUT" ]; then
             echo "TIMEOUT ${site}_${stack} not ready after ${READY_TIMEOUT}s (last http $code)" >&2
