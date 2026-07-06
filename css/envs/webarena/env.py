@@ -27,6 +27,33 @@ if TYPE_CHECKING:  # pragma: no cover
 _log = logging.getLogger("css.webarena")
 
 
+def _build_refresh_fn(extra: dict):
+    """Lane-refresh hook from config: a shell template with {stack}/{site}.
+
+    Production value (agreed topology): an ssh into the farm host running
+    ``farm.sh refresh <stack> <site>`` — recreates ONE site container from its
+    golden image. Empty/missing template -> no-op refresh (single-stack P0).
+    Blocking by design: the scheduler refreshes lazily, right before granting
+    the next mutating lease on a dirty lane.
+    """
+    template = str(extra.get("webarena_refresh_cmd", "") or "")
+    timeout_s = int(extra.get("webarena_refresh_timeout_s", 300))
+    if not template:
+        return None
+
+    def refresh(stack: str, site: str) -> None:
+        import subprocess
+        cmd = template.format(stack=stack, site=site)
+        proc = subprocess.run(cmd, shell=True, capture_output=True,
+                              text=True, timeout=timeout_s)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"refresh {stack}/{site} rc={proc.returncode}: "
+                f"{(proc.stderr or proc.stdout)[-300:]}")
+        _log.info("webarena/refresh — %s/%s done", stack, site)
+    return refresh
+
+
 def _expected(record: dict) -> dict:
     for e in record.get("eval", []):
         exp = e.get("expected")
@@ -58,7 +85,8 @@ class WebArenaEnv:
                 raise ValueError(
                     "cfg.extra['webarena_stacks'] required: "
                     "{stack_name: {site: base_url}}")
-            self.leases = SiteLeaseManager(stacks)
+            self.leases = SiteLeaseManager(
+                stacks, refresh_fn=_build_refresh_fn(extra))
 
         if scorer is not None:
             self.scorer = scorer
@@ -69,6 +97,13 @@ class WebArenaEnv:
                            if cli and env_config else None)
         # episode_fn injection keeps unit tests free of playwright.
         self._episode_fn = episode_fn
+        # Browser concurrency is a separate budget from LLM concurrency
+        # (max_api_workers): chromium instances are the CPU/RAM hogs on the
+        # harness host, so run_one gates episodes on this semaphore while the
+        # batch layer may hold many more task threads.
+        import threading
+        self._browser_slots = threading.BoundedSemaphore(
+            int(extra.get("webarena_max_browsers", 24)))
 
     # -- splits --------------------------------------------------------------
     @staticmethod
@@ -125,8 +160,9 @@ class WebArenaEnv:
             episode_fn = self._episode_fn
             if episode_fn is None:
                 from css.envs.webarena.agent import run_episode as episode_fn
-            episode = episode_fn(agent_item, skill_text, target_client,
-                                 self.cfg, lease, pred_dir)
+            with self._browser_slots:
+                episode = episode_fn(agent_item, skill_text, target_client,
+                                     self.cfg, lease, pred_dir)
             result["conversation"] = episode.get("messages", [])
             result["n_turns"] = int(episode.get("n_turns", 0))
             result["agent_response"] = episode.get("agent_response")
