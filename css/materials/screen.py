@@ -21,8 +21,8 @@ from css.materials import common, prompts
 
 _log = logging.getLogger("css.materials")
 
-_SCREEN_MAX_TOKENS = 4096
-_REVISE_MAX_TOKENS = 3000
+_SCREEN_MAX_TOKENS = 6144
+_REVISE_MAX_TOKENS = 4096
 
 
 def _normalize_verdict(v: Any, index: int, item: str) -> dict:

@@ -32,7 +32,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_FRONTIER_MAX_TOKENS = 6000
+_FRONTIER_MAX_TOKENS = 10240
 
 
 def _node_stalled(node: "TreeNode", cfg: "CSSConfig") -> bool:

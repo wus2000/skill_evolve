@@ -25,8 +25,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_INTEGRATE_MAX_TOKENS = 8000
-_AUDIT_MAX_TOKENS = 6000
+_INTEGRATE_MAX_TOKENS = 12288
+_AUDIT_MAX_TOKENS = 8192
 
 
 # ── reusable living-document integration + no-silent-loss audit ──────────────

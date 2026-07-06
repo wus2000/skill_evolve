@@ -22,7 +22,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_INTERP_MAX_TOKENS = 5000
+_INTERP_MAX_TOKENS = 8192
 
 
 def _interp_required(obj: Any) -> list:

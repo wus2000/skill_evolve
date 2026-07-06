@@ -28,8 +28,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_GROUP_MAX_TOKENS = 5000
-_READING_MAX_TOKENS = 6000
+_GROUP_MAX_TOKENS = 8192
+_READING_MAX_TOKENS = 10240
 
 
 def _node_latest_residuals(out_dir: str, node_id: str) -> set[str] | None:
