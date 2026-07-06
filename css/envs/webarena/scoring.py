@@ -37,10 +37,26 @@ class VerifiedScorer:
         Returns {"hard": 0|1, "detail": {...}}; never raises for a scoring
         failure (a failed evaluation is a scored-0 with diagnostics — the
         rollout batch layer requires run_one to stay non-throwing).
+
+        Layout (pinned empirically on v1.2.x, P0 2026-07-06): the CLI expects
+        ``--output-dir D`` to contain a ``<task_id>/`` subdirectory with the
+        episode's log files. We hard-link the flat episode artifacts into
+        ``<workdir>/wv_eval/<task_id>/`` and point the CLI there.
         """
+        stage_root = os.path.join(workdir, "wv_eval")
+        stage = os.path.join(stage_root, str(task_id))
+        os.makedirs(stage, exist_ok=True)
+        for fn in ("agent_response.json", "network.har"):
+            src, dst = os.path.join(workdir, fn), os.path.join(stage, fn)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    import shutil
+                    shutil.copyfile(src, dst)
         cmd = [self.cli, "eval-tasks",
                "--task-ids", str(task_id),
-               "--output-dir", workdir,
+               "--output-dir", stage_root,
                "--config", self.config_path]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -63,11 +79,15 @@ class VerifiedScorer:
     def _read_eval_result(self, task_id: int, workdir: str) -> "dict | None":
         # v1.2.3 writes eval_result.json under the task's output dir; accept
         # both flat and per-task-subdir layouts until P0 pins one.
+        stage = os.path.join(workdir, "wv_eval", str(task_id))
         candidates = [
+            os.path.join(stage, "eval_result.json"),
+            os.path.join(workdir, "wv_eval", "eval_result.json"),
             os.path.join(workdir, "eval_result.json"),
-            os.path.join(workdir, str(task_id), "eval_result.json"),
-            os.path.join(workdir, f"task_{task_id}", "eval_result.json"),
         ]
+        if os.path.isdir(stage):
+            candidates += [os.path.join(stage, f) for f in sorted(os.listdir(stage))
+                           if f.endswith(".json") and "result" in f.lower()]
         for path in candidates:
             if os.path.exists(path):
                 try:
