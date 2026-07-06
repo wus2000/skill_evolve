@@ -128,16 +128,17 @@ def main() -> None:
         # Output
         out_root=out_root,
 
-        # OpenAI-compatible LLM backend. FOUR shared endpoints, client-side
-        # balancing by llmfleet (2026-07-06 endpoint restore: 162 dual arms +
-        # 127 local dual arms 8888/8889, per user). LITERAL string — bypasses
-        # the endpoint registry (BFCL mis-routing lesson, commit 5ed3f91).
+        # OpenAI-compatible LLM backend. TWO verified arms (162 dual), client-
+        # side balancing by llmfleet. The 127:8888/8889 ssh-tunnel arms
+        # (-> yaozhiming@183.174.61.200 -> 173.0.69.2) accept TCP but serve no
+        # HTTP as of 2026-07-06 16:00 — a HUNG arm black-holes requests for
+        # timeout_seconds (30 min), unlike a refusing arm, so they stay OUT of
+        # the pool until their backend answers /v1/models. LITERAL string —
+        # bypasses the endpoint registry (BFCL mis-routing lesson, 5ed3f91).
         extra={
             "llm_backend": "openai_compat",
             "base_url": ("http://10.77.110.162:8888/v1,"
-                         "http://10.77.110.162:8889/v1,"
-                         "http://127.0.0.1:8888/v1,"
-                         "http://127.0.0.1:8889/v1"),
+                         "http://10.77.110.162:8889/v1"),
             "api_key": "token-abc123",
             "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,
