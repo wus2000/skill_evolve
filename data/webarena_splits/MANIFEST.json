@@ -1,0 +1,57 @@
+{
+ "dataset_sha256": "d65275660814663375028e9017e1f929e3c38321041b125795e2713b52243d30",
+ "seed": 20260706,
+ "val_target": 68,
+ "scope": "684 = 812 minus map-touching (WebChoreArena->ReasoningBank chain)",
+ "split_unit": "intent_template_id groups within site category",
+ "report": {
+  "train": {
+   "n": 446,
+   "templates": 106,
+   "per_category": {
+    "shopping": 122,
+    "shopping_admin": 115,
+    "gitlab": 130,
+    "reddit": 65,
+    "multi": 14
+   },
+   "task_types": {
+    "retrieve": 162,
+    "mutate": 231,
+    "navigate": 53
+   }
+  },
+  "val": {
+   "n": 67,
+   "templates": 13,
+   "per_category": {
+    "shopping": 20,
+    "shopping_admin": 21,
+    "gitlab": 6,
+    "reddit": 15,
+    "multi": 5
+   },
+   "task_types": {
+    "retrieve": 26,
+    "mutate": 36,
+    "navigate": 5
+   }
+  },
+  "test": {
+   "n": 171,
+   "templates": 38,
+   "per_category": {
+    "shopping": 45,
+    "shopping_admin": 46,
+    "gitlab": 44,
+    "reddit": 26,
+    "multi": 10
+   },
+   "task_types": {
+    "retrieve": 43,
+    "mutate": 107,
+    "navigate": 21
+   }
+  }
+ }
+}

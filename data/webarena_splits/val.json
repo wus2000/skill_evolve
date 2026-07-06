@@ -1,0 +1,3138 @@
+[
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 587,
+  "intent_template_id": 194,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Rate my recently purchased PS3 accessory with 3 stars using my nickname GamingEmma, with the summary \"Ok I guess\" and review \"Does the job\"",
+  "intent_template": "Rate my recently purchased {{product}} with {{num_star}} stars using my nickname {{nickname}}, with the summary \"{{summary}}\" and review \"{{review}}\"",
+  "instantiation_dict": {
+   "product": "PS3 accessory",
+   "num_star": 3,
+   "nickname": "GamingEmma",
+   "summary": "Ok I guess",
+   "review": "Does the job"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/review/product/post/id/101441/",
+     "http_method": "POST",
+     "post_data": {
+      "ratings[4]": "18",
+      "nickname": "GamingEmma",
+      "title": "Ok I guess",
+      "detail": "Does the job"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0587"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 217,
+  "intent_template_id": 249,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the title and rating for all reviews with 3 stars or below for Pursuit Tone Band. Return a list of objects with keys \"title\" and \"rating\".",
+  "intent_template": "Get the title and rating for all reviews with 3 stars or below for {{product}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "product": "Pursuit Tone Band",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"title\" and \"rating\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       },
+       "rating": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "title": "Agreed. More resistance",
+       "rating": "3"
+      },
+      {
+       "title": "Want more resistance",
+       "rating": "3"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0217"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 30,
+  "intent_template_id": 33,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "In the space forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. Return a list of objects with keys \"username\", \"post_title\", and \"count\".",
+  "intent_template": "In the {{forum}} forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "forum": "space",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"username\", \"post_title\", and \"count\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "username": {
+        "type": "string"
+       },
+       "post_title": {
+        "type": "string"
+       },
+       "count": {
+        "type": "number"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "username": "Dhghomon",
+       "post_title": "Scientists erupt at NASA gutting funding for crucial Venus mission",
+       "count": 0
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0030"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 31,
+  "intent_template_id": 33,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "In the photoshopbattles forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. Return a list of objects with keys \"username\", \"post_title\", and \"count\".",
+  "intent_template": "In the {{forum}} forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "forum": "photoshopbattles",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"username\", \"post_title\", and \"count\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "username": {
+        "type": "string"
+       },
+       "post_title": {
+        "type": "string"
+       },
+       "count": {
+        "type": "number"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "username": "Proud_Idiot",
+       "post_title": "UK Prime Minister Rishi Sunak looking at a pothole",
+       "count": 0
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0031"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 187,
+  "intent_template_id": 368,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Give me the SKU of the products that have 1-3 units left",
+  "intent_template": "Give me the {{Attribute}} of the products that have {{N}} units left{{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "Attribute": "SKU",
+   "N": "1-3",
+   "retrieved_data_format_spec": ""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      "WH11-S-Blue",
+      "WS08-XS-Blue"
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0187"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 463,
+  "intent_template_id": 247,
+  "start_urls": [
+   "__SHOPPING_ADMIN__/catalog/product/edit/id/996/"
+  ],
+  "intent": "Increase the price of the product on the current page by 15%",
+  "intent_template": "{{action}} the price of the product on the current page by {{amount}}",
+  "instantiation_dict": {
+   "amount": "15%",
+   "action": "Increase"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING_ADMIN__/catalog/product/save/id/996/type/(simple|configurable)/store/0/set/\\d+/back/edit$",
+     "http_method": "POST",
+     "post_data": {
+      "product[price]": "36.80"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0463"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 213,
+  "intent_template_id": 249,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the title and rating for all reviews with 3 stars or below for Antonia Racer Tank. Return a list of objects with keys \"title\" and \"rating\".",
+  "intent_template": "Get the title and rating for all reviews with 3 stars or below for {{product}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "product": "Antonia Racer Tank",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"title\" and \"rating\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       },
+       "rating": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "title": "Zero support/modesty",
+       "rating": "2"
+      },
+      {
+       "title": "Not for high impact",
+       "rating": "3"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0213"
+ },
+ {
+  "sites": [
+   "gitlab",
+   "reddit"
+  ],
+  "task_id": 564,
+  "intent_template_id": 88,
+  "start_urls": [
+   "__GITLAB__",
+   "__REDDIT__"
+  ],
+  "intent": "Create a private repository named live_a_life with a README file containing links to the 3 most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "intent_template": "Create a private repository named {{name}} with a README file containing links to the {{num}} most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "instantiation_dict": {
+   "name": "live_a_life",
+   "num": 3
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/projects",
+     "http_method": "POST",
+     "post_data": {
+      "project[template_name]": null,
+      "project[name]": "live_a_life",
+      "project[path]": "live_a_life",
+      "project[namespace_id]": "2505",
+      "project[visibility_level]": "0"
+     },
+     "response_status": 302
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "post_data_schema": {
+     "type": "object",
+     "properties": {
+      "$.actions[0].content": {
+       "type": "string",
+       "format": "markdown"
+      }
+     }
+    },
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/byteblaze%2Flive_a_life/repository/commits",
+     "http_method": "POST",
+     "post_data": {
+      "branch": "main",
+      "$.actions[0].action": "^(update|create)$",
+      "$.actions[0].file_path": "README.md",
+      "$.actions[0].content": "# live_a_life\n\n## Most Active DIY Threads\n\n- [Separate glued plastic parts](__REDDIT__/f/DIY/118903/separate-glued-plastic-parts)\n- [How would you fix this dryer vent mess?](__REDDIT__/f/DIY/118923/how-would-you-fix-this-dryer-vent-mess)\n- [Basement Bulkhead/Soffit + Wall Framing](__REDDIT__/f/DIY/118935/basement-bulkhead-soffit-wall-framing)",
+      "$.actions[1].action": null
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0564"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 436,
+  "intent_template_id": 156,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "I previously ordered a mattress foundation around Feb or March 2023 and later cancelled. Can you reorder it for me?",
+  "intent_template": "I previously ordered {{product}} {{time}} and later cancelled. Can you reorder it for me?",
+  "instantiation_dict": {
+   "product": "a mattress foundation",
+   "time": "around Feb or March 2023"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING__/checkout/cart/add/uenc/.*/product/14854$",
+     "http_method": "POST",
+     "post_data": {
+      "qty": "1",
+      "item": "14854"
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0436"
+ },
+ {
+  "sites": [
+   "gitlab",
+   "reddit"
+  ],
+  "task_id": 562,
+  "intent_template_id": 88,
+  "start_urls": [
+   "__GITLAB__",
+   "__REDDIT__"
+  ],
+  "intent": "Create a private repository named Awesome_DIY_ideas with a README file containing links to the 6 most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "intent_template": "Create a private repository named {{name}} with a README file containing links to the {{num}} most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "instantiation_dict": {
+   "name": "Awesome_DIY_ideas",
+   "num": 6
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/projects",
+     "http_method": "POST",
+     "post_data": {
+      "project[template_name]": null,
+      "project[name]": "Awesome_DIY_ideas",
+      "project[path]": "awesome_diy_ideas",
+      "project[namespace_id]": "2505",
+      "project[visibility_level]": "0"
+     },
+     "response_status": 302
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "post_data_schema": {
+     "type": "object",
+     "properties": {
+      "$.actions[0].content": {
+       "type": "string",
+       "format": "markdown"
+      }
+     }
+    },
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/byteblaze%2FAwesome_DIY_ideas/repository/commits",
+     "http_method": "POST",
+     "post_data": {
+      "branch": "main",
+      "$.actions[0].action": "^(update|create)$",
+      "$.actions[0].file_path": "README.md",
+      "$.actions[0].content": "# Awesome_DIY_ideas\n\n## Most Active DIY Threads\n\n- [Separate glued plastic parts](__REDDIT__/f/DIY/118903/separate-glued-plastic-parts)\n- [How would you fix this dryer vent mess?](__REDDIT__/f/DIY/118923/how-would-you-fix-this-dryer-vent-mess)\n- [Basement Bulkhead/Soffit + Wall Framing](__REDDIT__/f/DIY/118935/basement-bulkhead-soffit-wall-framing)\n- [GE Water Heater Pilot Light Won't Stay Lit](__REDDIT__/f/DIY/118904/ge-water-heater-pilot-light-won-t-stay-lit)\n- [Attempting to move a wall outlet in my basement a few inches to the left and am totally stumped. Any help GREATLY appreciated!!](__REDDIT__/f/DIY/118960/attempting-to-move-a-wall-outlet-in-my-basement-a-few-inches)\n- [AFCI Outlet Question](__REDDIT__/f/DIY/118931/afci-outlet-question)",
+      "$.actions[1].action": null
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0562"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 214,
+  "intent_template_id": 249,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the title and rating for all reviews with 3 stars or below for Erica Sports Bra. Return a list of objects with keys \"title\" and \"rating\".",
+  "intent_template": "Get the title and rating for all reviews with 3 stars or below for {{product}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "product": "Erica Sports Bra",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"title\" and \"rating\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       },
+       "rating": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "title": "Doesn't fit me. Luma fail.",
+       "rating": "2"
+      },
+      {
+       "title": "does not fit. worthless.",
+       "rating": "1"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0214"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 354,
+  "intent_template_id": 137,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Go to the page showing living room furniture products sorted by descending price",
+  "intent_template": "Go to the page showing {{product_category}} products sorted by {{order}} price",
+  "instantiation_dict": {
+   "product_category": "living room furniture",
+   "order": "descending"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "navigate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/home-kitchen/furniture/living-room-furniture.html",
+     "query_params": {
+      "product_list_order": [
+       "price"
+      ],
+      "product_list_dir": [
+       "desc"
+      ]
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0354"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 438,
+  "intent_template_id": 156,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "I previously ordered a TV stand sometime around sep 2022 and later cancelled. Can you reorder it for me?",
+  "intent_template": "I previously ordered {{product}} {{time}} and later cancelled. Can you reorder it for me?",
+  "instantiation_dict": {
+   "product": "a TV stand",
+   "time": "sometime around sep 2022"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING__/checkout/cart/add/uenc/.*/product/35837$",
+     "http_method": "POST",
+     "post_data": {
+      "qty": "1",
+      "item": "35837"
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0438"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 589,
+  "intent_template_id": 194,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Rate my recently purchased Mini Wireless Bluetooth Speaker with 2 stars using my nickname SimpleEmma, with the summary \"Very bad\" and review \"I hated it\"",
+  "intent_template": "Rate my recently purchased {{product}} with {{num_star}} stars using my nickname {{nickname}}, with the summary \"{{summary}}\" and review \"{{review}}\"",
+  "instantiation_dict": {
+   "product": "Mini Wireless Bluetooth Speaker",
+   "num_star": 2,
+   "nickname": "SimpleEmma",
+   "summary": "Very bad",
+   "review": "I hated it"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/review/product/post/id/76228/",
+     "http_method": "POST",
+     "post_data": {
+      "ratings[4]": "17",
+      "nickname": "SimpleEmma",
+      "title": "Very bad",
+      "detail": "I hated it"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0589"
+ },
+ {
+  "sites": [
+   "gitlab"
+  ],
+  "task_id": 662,
+  "intent_template_id": 328,
+  "start_urls": [
+   "__GITLAB__"
+  ],
+  "intent": "Open an issue with title \"OSError: [Errno 98] Address already in use\" to discuss the OS error in the respository aem-hacker.",
+  "intent_template": "Open an issue with title \"{{title}}\" to {{issue}} in the respository {{repo}}.",
+  "instantiation_dict": {
+   "title": "OSError: [Errno 98] Address already in use",
+   "issue": "discuss the OS error",
+   "repo": "aem-hacker"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/138/issues",
+     "http_method": "POST",
+     "post_data": {
+      "title": "OSError: [Errno 98] Address already in use"
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0662"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 633,
+  "intent_template_id": 15,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Create a post in f/sports. Title it \"running pants recommendations?\" and in post details ask \"Hey, looking for good running pants under $500, any suggestions?\"",
+  "intent_template": "Create a post in {{forum}}. Title it \"{{category}} recommendations?\" and in post details ask \"Hey, looking for good {{category}} under {{price}}, any suggestions?\"",
+  "instantiation_dict": {
+   "category": "running pants",
+   "price": "$500",
+   "forum": "f/sports"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/sports"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "running pants recommendations?",
+      "submission[body]": "Hey, looking for good running pants under $500, any suggestions?",
+      "submission[forum]": "10080"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0633"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 209,
+  "intent_template_id": 364,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the customer name and email with phone number 2137418080. Return a list of objects with keys \"name\" and \"email\".",
+  "intent_template": "Get the customer name and email with phone number {{PhoneNum}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "PhoneNum": "2137418080",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"name\" and \"email\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "email": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "name": "Jennifer White",
+       "email": "jennifer.white@yahoo.com"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0209"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 29,
+  "intent_template_id": 33,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "In the DIY forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. Return a list of objects with keys \"username\", \"post_title\", and \"count\".",
+  "intent_template": "In the {{forum}} forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "forum": "DIY",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"username\", \"post_title\", and \"count\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "username": {
+        "type": "string"
+       },
+       "post_title": {
+        "type": "string"
+       },
+       "count": {
+        "type": "number"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "username": "ziostraccette",
+       "post_title": "How can I bring an HDMI cable from my pc downstairs to my TV upstairs?",
+       "count": 0
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0029"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 459,
+  "intent_template_id": 247,
+  "start_urls": [
+   "__SHOPPING_ADMIN__/catalog/product/edit/id/237/"
+  ],
+  "intent": "Reduce the price of the product on the current page by 10%",
+  "intent_template": "{{action}} the price of the product on the current page by {{amount}}",
+  "instantiation_dict": {
+   "amount": "10%",
+   "action": "Reduce"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING_ADMIN__/catalog/product/save/id/237/type/(simple|configurable)/store/0/set/\\d+/back/edit$",
+     "http_method": "POST",
+     "post_data": {
+      "product[price]": "62.10"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0459"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 27,
+  "intent_template_id": 33,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "In the personal finances forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. Return a list of objects with keys \"username\", \"post_title\", and \"count\".",
+  "intent_template": "In the {{forum}} forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "forum": "personal finances",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"username\", \"post_title\", and \"count\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "username": {
+        "type": "string"
+       },
+       "post_title": {
+        "type": "string"
+       },
+       "count": {
+        "type": "number"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "username": "Hammer94",
+       "post_title": "56 year old mom has no retirement. Where do I even start on her behalf?",
+       "count": 0
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0027"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 642,
+  "intent_template_id": 16,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Post a notice in books forum titled \"Big little lies Meet up!\". Set post details to \"virtual meetup for Big little lies on Sep 10th\"",
+  "intent_template": "Post a notice in {{forum}} titled \"{{interest}} Meet up!\". Set post details to \"virtual meetup for {{interest}} on {{date}}\"",
+  "instantiation_dict": {
+   "interest": "Big little lies",
+   "date": "Sep 10th",
+   "forum": "books forum"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/books"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "Big little lies Meet up!",
+      "submission[body]": "virtual meetup for Big little lies on Sep 10th",
+      "submission[forum]": "10037"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0642"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 641,
+  "intent_template_id": 16,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Post a notice in books forum titled \"Harry Potter Meet up!\". Set post details to \"virtual meetup for Harry Potter on July 8th\"",
+  "intent_template": "Post a notice in {{forum}} titled \"{{interest}} Meet up!\". Set post details to \"virtual meetup for {{interest}} on {{date}}\"",
+  "instantiation_dict": {
+   "interest": "Harry Potter",
+   "date": "July 8th",
+   "forum": "books forum"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/books"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "Harry Potter Meet up!",
+      "submission[body]": "virtual meetup for Harry Potter on July 8th",
+      "submission[forum]": "10037"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0641"
+ },
+ {
+  "sites": [
+   "gitlab"
+  ],
+  "task_id": 663,
+  "intent_template_id": 328,
+  "start_urls": [
+   "__GITLAB__"
+  ],
+  "intent": "Open an issue with title \"Llama model support timeline\" to ask the team\"s plan on supporting Llama and other llama family models in the respository metaseq.",
+  "intent_template": "Open an issue with title \"{{title}}\" to {{issue}} in the respository {{repo}}.",
+  "instantiation_dict": {
+   "title": "Llama model support timeline",
+   "issue": "ask the team\"s plan on supporting Llama and other llama family models",
+   "repo": "metaseq"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/33/issues",
+     "http_method": "POST",
+     "post_data": {
+      "title": "Llama model support timeline"
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0663"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 460,
+  "intent_template_id": 247,
+  "start_urls": [
+   "__SHOPPING_ADMIN__/catalog/product/edit/id/418/"
+  ],
+  "intent": "Reduce the price of the product on the current page by 15%",
+  "intent_template": "{{action}} the price of the product on the current page by {{amount}}",
+  "instantiation_dict": {
+   "amount": "15%",
+   "action": "Reduce"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING_ADMIN__/catalog/product/save/id/418/type/(simple|configurable)/store/0/set/\\d+/back/edit$",
+     "http_method": "POST",
+     "post_data": {
+      "product[price]": "38.25"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0460"
+ },
+ {
+  "sites": [
+   "gitlab"
+  ],
+  "task_id": 789,
+  "intent_template_id": 328,
+  "start_urls": [
+   "__GITLAB__"
+  ],
+  "intent": "Open an issue with title \"WebAgent Support Plan\" to ask the team if they have any plan on supporting Webagent in the next quater in the respository huggingface dataset.",
+  "intent_template": "Open an issue with title \"{{title}}\" to {{issue}} in the respository {{repo}}.",
+  "instantiation_dict": {
+   "title": "WebAgent Support Plan",
+   "issue": "ask the team if they have any plan on supporting Webagent in the next quater",
+   "repo": "huggingface dataset"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "NOT_FOUND_ERROR",
+     "retrieved_data": null
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0789"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 28,
+  "intent_template_id": 33,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "In the Worcester forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. Return a list of objects with keys \"username\", \"post_title\", and \"count\".",
+  "intent_template": "In the {{forum}} forum, get the username and post title of the most recent post, and count the number of comments on that post that are not from the author and have more downvotes than upvotes. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "forum": "Worcester",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"username\", \"post_title\", and \"count\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "username": {
+        "type": "string"
+       },
+       "post_title": {
+        "type": "string"
+       },
+       "count": {
+        "type": "number"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "username": "mineinhusdson",
+       "post_title": "Best place for a foot rub?",
+       "count": 0
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0028"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 144,
+  "intent_template_id": 162,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Return how much I spent on food shopping from January 15 to January 31 2023 without considering shipping and handling fee. ",
+  "intent_template": "Return how much I spent on {{category}} shopping {{time}} without considering shipping and handling fee. {{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "category": "food",
+   "time": "from January 15 to January 31 2023",
+   "retrieved_data_format_spec": ""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      0
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0144"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 437,
+  "intent_template_id": 156,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "I previously ordered a table lamp in May 2023 and later cancelled. Can you reorder it for me?",
+  "intent_template": "I previously ordered {{product}} {{time}} and later cancelled. Can you reorder it for me?",
+  "instantiation_dict": {
+   "product": "a table lamp",
+   "time": "in May 2023"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING__/checkout/cart/add/uenc/.*/product/15033$",
+     "http_method": "POST",
+     "post_data": {
+      "qty": "1",
+      "item": "15033"
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0437"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 212,
+  "intent_template_id": 364,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the customer name and email with phone number 555-229-3326. Return a list of objects with keys \"name\" and \"email\".",
+  "intent_template": "Get the customer name and email with phone number {{PhoneNum}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "PhoneNum": "555-229-3326",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"name\" and \"email\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "email": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "name": "Veronica Costello",
+       "email": "roni_cost@example.com"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0212"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 211,
+  "intent_template_id": 364,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the customer name and email with phone number 8015551212. Return a list of objects with keys \"name\" and \"email\".",
+  "intent_template": "Get the customer name and email with phone number {{PhoneNum}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "PhoneNum": "8015551212",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"name\" and \"email\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "email": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "name": "Sean Miller",
+       "email": "sean.miller@gmail.com"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0211"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 458,
+  "intent_template_id": 247,
+  "start_urls": [
+   "__SHOPPING_ADMIN__/catalog/product/edit/id/1481/"
+  ],
+  "intent": "Reduce the price of the product on the current page by $5",
+  "intent_template": "{{action}} the price of the product on the current page by {{amount}}",
+  "instantiation_dict": {
+   "amount": "$5",
+   "action": "Reduce"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING_ADMIN__/catalog/product/save/id/1481/type/(simple|configurable)/store/0/set/\\d+/back/edit$",
+     "http_method": "POST",
+     "post_data": {
+      "product[price]": "27.00"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0458"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 439,
+  "intent_template_id": 156,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "I previously ordered a cat t-shirt during 2022 and later cancelled. Can you reorder it for me?",
+  "intent_template": "I previously ordered {{product}} {{time}} and later cancelled. Can you reorder it for me?",
+  "instantiation_dict": {
+   "product": "a cat t-shirt",
+   "time": "during 2022"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING__/checkout/cart/add/uenc/.*/product/24493$",
+     "http_method": "POST",
+     "post_data": {
+      "qty": "1",
+      "item": "24493"
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0439"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 183,
+  "intent_template_id": 368,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Give me the SKU of the products that have 10 units left",
+  "intent_template": "Give me the {{Attribute}} of the products that have {{N}} units left{{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "Attribute": "SKU",
+   "N": "10",
+   "retrieved_data_format_spec": ""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "NOT_FOUND_ERROR",
+     "retrieved_data": null
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0183"
+ },
+ {
+  "sites": [
+   "gitlab",
+   "reddit"
+  ],
+  "task_id": 566,
+  "intent_template_id": 88,
+  "start_urls": [
+   "__GITLAB__",
+   "__REDDIT__"
+  ],
+  "intent": "Create a private repository named Do it myself with a README file containing links to the 8 most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "intent_template": "Create a private repository named {{name}} with a README file containing links to the {{num}} most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "instantiation_dict": {
+   "name": "Do it myself",
+   "num": 8
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/projects",
+     "http_method": "POST",
+     "post_data": {
+      "project[template_name]": null,
+      "project[name]": "Do it myself",
+      "project[path]": "do-it-myself",
+      "project[namespace_id]": "2505",
+      "project[visibility_level]": "0"
+     },
+     "response_status": 302
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "post_data_schema": {
+     "type": "object",
+     "properties": {
+      "$.actions[0].content": {
+       "type": "string",
+       "format": "markdown"
+      }
+     }
+    },
+    "expected": {
+     "url": "__GITLAB__//api/v4/projects/byteblaze%2Fdo-it-myself-with/repository/commits",
+     "http_method": "POST",
+     "post_data": {
+      "branch": "main",
+      "$.actions[0].action": "^(update|create)$",
+      "$.actions[0].file_path": "README.md",
+      "$.actions[0].content": "# Do it myself\n\n## Most Active DIY Threads\n\n- [Separate glued plastic parts](__REDDIT__/f/DIY/118903/separate-glued-plastic-parts)\n- [How would you fix this dryer vent mess?](__REDDIT__/f/DIY/118923/how-would-you-fix-this-dryer-vent-mess)\n- [Basement Bulkhead/Soffit + Wall Framing](__REDDIT__/f/DIY/118935/basement-bulkhead-soffit-wall-framing)\n- [GE Water Heater Pilot Light Won't Stay Lit](__REDDIT__/f/DIY/118904/ge-water-heater-pilot-light-won-t-stay-lit)\n- [Attempting to move a wall outlet in my basement a few inches to the left and am totally stumped. Any help GREATLY appreciated!!](__REDDIT__/f/DIY/118960/attempting-to-move-a-wall-outlet-in-my-basement-a-few-inches)\n- [AFCI Outlet Question](__REDDIT__/f/DIY/118931/afci-outlet-question)\n- [Teflon tape to attach washing machine drain hose to pipe?](__REDDIT__/f/DIY/118824/teflon-tape-to-attach-washing-machine-drain-hose-to-pipe)\n- [Paver base for shed?](__REDDIT__/f/DIY/118866/paver-base-for-shed)",
+      "$.actions[1].action": null
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0566"
+ },
+ {
+  "sites": [
+   "gitlab",
+   "reddit"
+  ],
+  "task_id": 565,
+  "intent_template_id": 88,
+  "start_urls": [
+   "__GITLAB__",
+   "__REDDIT__"
+  ],
+  "intent": "Create a private repository named TODO with a README file containing links to the 10 most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "intent_template": "Create a private repository named {{name}} with a README file containing links to the {{num}} most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "instantiation_dict": {
+   "name": "TODO",
+   "num": 10
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/projects",
+     "http_method": "POST",
+     "post_data": {
+      "project[template_name]": null,
+      "project[name]": "TODO",
+      "project[path]": "todo",
+      "project[namespace_id]": "2505",
+      "project[visibility_level]": "0"
+     },
+     "response_status": 302
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "post_data_schema": {
+     "type": "object",
+     "properties": {
+      "$.actions[0].content": {
+       "type": "string",
+       "format": "markdown"
+      }
+     }
+    },
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/byteblaze%2FTODO/repository/commits",
+     "http_method": "POST",
+     "post_data": {
+      "branch": "main",
+      "$.actions[0].action": "^(update|create)$",
+      "$.actions[0].file_path": "README.md",
+      "$.actions[0].content": "# TODO\n\n## Most Active DIY Threads\n\n- [Separate glued plastic parts](__REDDIT__/f/DIY/118903/separate-glued-plastic-parts)\n- [How would you fix this dryer vent mess?](__REDDIT__/f/DIY/118923/how-would-you-fix-this-dryer-vent-mess)\n- [Basement Bulkhead/Soffit + Wall Framing](__REDDIT__/f/DIY/118935/basement-bulkhead-soffit-wall-framing)\n- [GE Water Heater Pilot Light Won't Stay Lit](__REDDIT__/f/DIY/118904/ge-water-heater-pilot-light-won-t-stay-lit)\n- [Attempting to move a wall outlet in my basement a few inches to the left and am totally stumped. Any help GREATLY appreciated!!](__REDDIT__/f/DIY/118960/attempting-to-move-a-wall-outlet-in-my-basement-a-few-inches)\n- [AFCI Outlet Question](__REDDIT__/f/DIY/118931/afci-outlet-question)\n- [Teflon tape to attach washing machine drain hose to pipe?](__REDDIT__/f/DIY/118824/teflon-tape-to-attach-washing-machine-drain-hose-to-pipe)\n- [Paver base for shed?](__REDDIT__/f/DIY/118866/paver-base-for-shed)\n- [Ways to locate our buried electrical service?](__REDDIT__/f/DIY/118820/ways-to-locate-our-buried-electrical-service)\n- [How to eliminate transitions for disability/mobility reasons](__REDDIT__/f/DIY/118836/how-to-eliminate-transitions-for-disability-mobility-reasons)",
+      "$.actions[1].action": null
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0565"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 586,
+  "intent_template_id": 194,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Rate my recently purchased Jiffy Mix with 4 stars using my nickname ShoppingEmma, with the summary \"Good purchase\" and review \"I like it\"",
+  "intent_template": "Rate my recently purchased {{product}} with {{num_star}} stars using my nickname {{nickname}}, with the summary \"{{summary}}\" and review \"{{review}}\"",
+  "instantiation_dict": {
+   "product": "Jiffy Mix",
+   "num_star": 4,
+   "nickname": "ShoppingEmma",
+   "summary": "Good purchase",
+   "review": "I like it"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/review/product/post/id/102586/",
+     "http_method": "POST",
+     "post_data": {
+      "ratings[4]": "19",
+      "nickname": "ShoppingEmma",
+      "title": "Good purchase",
+      "detail": "I like it"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0586"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 461,
+  "intent_template_id": 247,
+  "start_urls": [
+   "__SHOPPING_ADMIN__/catalog/product/edit/id/721/"
+  ],
+  "intent": "Increase the price of the product on the current page by $11.5",
+  "intent_template": "{{action}} the price of the product on the current page by {{amount}}",
+  "instantiation_dict": {
+   "amount": "$11.5",
+   "action": "Increase"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING_ADMIN__/catalog/product/save/id/721/type/(simple|configurable)/store/0/set/\\d+/back/edit$",
+     "http_method": "POST",
+     "post_data": {
+      "product[price]": "29.50"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0461"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 643,
+  "intent_template_id": 16,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Post a notice in nyc forum titled \"racing cars Meet up!\". Set post details to \"virtual meetup for racing cars on Oct 21st\"",
+  "intent_template": "Post a notice in {{forum}} titled \"{{interest}} Meet up!\". Set post details to \"virtual meetup for {{interest}} on {{date}}\"",
+  "instantiation_dict": {
+   "interest": "racing cars",
+   "date": "Oct 21st",
+   "forum": "nyc forum"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/nyc"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "racing cars Meet up!",
+      "submission[body]": "virtual meetup for racing cars on Oct 21st",
+      "submission[forum]": "10067"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0643"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 640,
+  "intent_template_id": 16,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Post a notice in f/books titled \"book reading Meet up!\". Set post details to \"virtual meetup for book reading on March 15th\"",
+  "intent_template": "Post a notice in {{forum}} titled \"{{interest}} Meet up!\". Set post details to \"virtual meetup for {{interest}} on {{date}}\"",
+  "instantiation_dict": {
+   "interest": "book reading",
+   "date": "March 15th",
+   "forum": "f/books"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/books"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "book reading Meet up!",
+      "submission[body]": "virtual meetup for book reading on March 15th",
+      "submission[forum]": "10037"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0640"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 353,
+  "intent_template_id": 137,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Go to the page showing competitive swimwear products sorted by ascending price",
+  "intent_template": "Go to the page showing {{product_category}} products sorted by {{order}} price",
+  "instantiation_dict": {
+   "product_category": "competitive swimwear",
+   "order": "ascending"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "navigate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/clothing-shoes-jewelry/sport-specific-clothing/competitive-swimwear.html",
+     "query_params": {
+      "product_list_order": [
+       "price"
+      ]
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0353"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 351,
+  "intent_template_id": 137,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Go to the page showing PS4 accessories products sorted by ascending price",
+  "intent_template": "Go to the page showing {{product_category}} products sorted by {{order}} price",
+  "instantiation_dict": {
+   "product_category": "PS4 accessories",
+   "order": "ascending"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "navigate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/video-games/playstation-4/accessories.html",
+     "query_params": {
+      "product_list_order": [
+       "price"
+      ]
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0351"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 208,
+  "intent_template_id": 364,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the customer name and email with phone number +1 2058812302. Return a list of objects with keys \"name\" and \"email\".",
+  "intent_template": "Get the customer name and email with phone number {{PhoneNum}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "PhoneNum": "+1 2058812302",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"name\" and \"email\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "email": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "name": "John Smith",
+       "email": "john.smith.xyz@gmail.com"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0208"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 352,
+  "intent_template_id": 137,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Go to the page showing nutrition bars and drinks products sorted by ascending price",
+  "intent_template": "Go to the page showing {{product_category}} products sorted by {{order}} price",
+  "instantiation_dict": {
+   "product_category": "nutrition bars and drinks",
+   "order": "ascending"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "navigate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/health-household/diet-sports-nutrition/nutrition-bars-drinks.html",
+     "query_params": {
+      "product_list_order": [
+       "price"
+      ]
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0352"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 355,
+  "intent_template_id": 137,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Go to the page showing kids\" bedding products sorted by descending price",
+  "intent_template": "Go to the page showing {{product_category}} products sorted by {{order}} price",
+  "instantiation_dict": {
+   "product_category": "kids\" bedding",
+   "order": "descending"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "navigate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/home-kitchen/bedding/kids-bedding.html",
+     "query_params": {
+      "product_list_dir": [
+       "desc"
+      ]
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0355"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 588,
+  "intent_template_id": 194,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Rate my recently purchased Foundation For Mattress With Frame Set with 1 stars using my nickname ShoppingEmma, with the summary \"Very bad\" and review \"I hated it\"",
+  "intent_template": "Rate my recently purchased {{product}} with {{num_star}} stars using my nickname {{nickname}}, with the summary \"{{summary}}\" and review \"{{review}}\"",
+  "instantiation_dict": {
+   "product": "Foundation For Mattress With Frame Set",
+   "num_star": 1,
+   "nickname": "ShoppingEmma",
+   "summary": "Very bad",
+   "review": "I hated it"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/review/product/post/id/14854/",
+     "http_method": "POST",
+     "post_data": {
+      "ratings[4]": "16",
+      "nickname": "ShoppingEmma",
+      "title": "Very bad",
+      "detail": "I hated it"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0588"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 216,
+  "intent_template_id": 249,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the title and rating for all reviews with 3 stars or below for Electra Bra Top. Return a list of objects with keys \"title\" and \"rating\".",
+  "intent_template": "Get the title and rating for all reviews with 3 stars or below for {{product}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "product": "Electra Bra Top",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"title\" and \"rating\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       },
+       "rating": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "title": "Not exactly true to size",
+       "rating": "3"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0216"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 440,
+  "intent_template_id": 156,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "I previously ordered a make up removal kit during summer 2022 and later cancelled. Can you reorder it for me?",
+  "intent_template": "I previously ordered {{product}} {{time}} and later cancelled. Can you reorder it for me?",
+  "instantiation_dict": {
+   "product": "a make up removal kit",
+   "time": "during summer 2022"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING__/checkout/cart/add/uenc/.*/product/51958$",
+     "http_method": "POST",
+     "post_data": {
+      "qty": "1",
+      "item": "51958"
+     }
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0440"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 141,
+  "intent_template_id": 162,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Return how much I spent on food-related shopping during March 2023 without considering shipping and handling fee. Return the value as a number (e.g., 10.99) only, without any additional details",
+  "intent_template": "Return how much I spent on {{category}} shopping {{time}} without considering shipping and handling fee. {{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "category": "food-related",
+   "time": "during March 2023",
+   "retrieved_data_format_spec": "Return the value as a number (e.g., 10.99) only, without any additional details"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "number",
+      "format": "currency"
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      32.41
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0141"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 585,
+  "intent_template_id": 194,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Rate my recently purchased floor lamp with 5 stars using my nickname Emma Lopez, with the summary \"Good purchase\" and review \"I like it\"",
+  "intent_template": "Rate my recently purchased {{product}} with {{num_star}} stars using my nickname {{nickname}}, with the summary \"{{summary}}\" and review \"{{review}}\"",
+  "instantiation_dict": {
+   "product": "floor lamp",
+   "num_star": 5,
+   "nickname": "Emma Lopez",
+   "summary": "Good purchase",
+   "review": "I like it"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__SHOPPING__/review/product/post/id/73063/",
+     "http_method": "POST",
+     "post_data": {
+      "ratings[4]": "20",
+      "nickname": "Emma Lopez",
+      "title": "Good purchase",
+      "detail": "I like it"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0585"
+ },
+ {
+  "sites": [
+   "gitlab"
+  ],
+  "task_id": 664,
+  "intent_template_id": 328,
+  "start_urls": [
+   "__GITLAB__"
+  ],
+  "intent": "Open an issue with title \"Question on future usage of Python 3.11\" to ask the team\"s plans on adding Python 3.11 related resources in the respository awesome-python.",
+  "intent_template": "Open an issue with title \"{{title}}\" to {{issue}} in the respository {{repo}}.",
+  "instantiation_dict": {
+   "title": "Question on future usage of Python 3.11",
+   "issue": "ask the team\"s plans on adding Python 3.11 related resources",
+   "repo": "awesome-python"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/84/issues",
+     "http_method": "POST",
+     "post_data": {
+      "title": "Question on future usage of Python 3.11"
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0664"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 630,
+  "intent_template_id": 15,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Create a post in f/headphones. Title it \"noise-cancelling headphones recommendations?\" and in post details ask \"Hey, looking for good noise-cancelling headphones under $200, any suggestions?\"",
+  "intent_template": "Create a post in {{forum}}. Title it \"{{category}} recommendations?\" and in post details ask \"Hey, looking for good {{category}} under {{price}}, any suggestions?\"",
+  "instantiation_dict": {
+   "category": "noise-cancelling headphones",
+   "price": "$200",
+   "forum": "f/headphones"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/headphones"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "noise-cancelling headphones recommendations?",
+      "submission[body]": "Hey, looking for good noise-cancelling headphones under $200, any suggestions?",
+      "submission[forum]": "10050"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0630"
+ },
+ {
+  "sites": [
+   "gitlab"
+  ],
+  "task_id": 661,
+  "intent_template_id": 328,
+  "start_urls": [
+   "__GITLAB__"
+  ],
+  "intent": "Open an issue with title \"Connection refused\" to discuss the connection refused exception in the respository ChatGPT.",
+  "intent_template": "Open an issue with title \"{{title}}\" to {{issue}} in the respository {{repo}}.",
+  "instantiation_dict": {
+   "title": "Connection refused",
+   "issue": "discuss the connection refused exception",
+   "repo": "ChatGPT"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/175/issues",
+     "http_method": "POST",
+     "post_data": {
+      "title": "Connection refused"
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0661"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 462,
+  "intent_template_id": 247,
+  "start_urls": [
+   "__SHOPPING_ADMIN__/catalog/product/edit/id/710/"
+  ],
+  "intent": "Increase the price of the product on the current page by 10%",
+  "intent_template": "{{action}} the price of the product on the current page by {{amount}}",
+  "instantiation_dict": {
+   "amount": "10%",
+   "action": "Increase"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "^__SHOPPING_ADMIN__/catalog/product/save/id/710/type/(simple|configurable)/store/0/set/\\d+/back/edit$",
+     "http_method": "POST",
+     "post_data": {
+      "product[price]": "19.80"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0462"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 632,
+  "intent_template_id": 15,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Create a post in f/sports. Title it \"running shoes recommendations?\" and in post details ask \"Hey, looking for good running shoes under $500, any suggestions?\"",
+  "intent_template": "Create a post in {{forum}}. Title it \"{{category}} recommendations?\" and in post details ask \"Hey, looking for good {{category}} under {{price}}, any suggestions?\"",
+  "instantiation_dict": {
+   "category": "running shoes",
+   "price": "$500",
+   "forum": "f/sports"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/sports"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "running shoes recommendations?",
+      "submission[body]": "Hey, looking for good running shoes under $500, any suggestions?",
+      "submission[forum]": "10080"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0632"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 186,
+  "intent_template_id": 368,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Give me the product names and the sizes of the products that have 2-3 units left. Return a list of objects with keys \"name\" and \"size\".",
+  "intent_template": "Give me the {{Attribute}} of the products that have {{N}} units left{{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "Attribute": "product names and the sizes",
+   "N": "2-3",
+   "retrieved_data_format_spec": ". Return a list of objects with keys \"name\" and \"size\"."
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "size": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "name": "Eos V-Neck Hoodie-S-Blue",
+       "size": "S"
+      },
+      {
+       "name": "Minerva LumaTech\u2122 V-Tee-XS-Blue",
+       "size": "XS"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0186"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 185,
+  "intent_template_id": 368,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Give me the material of the products that have 3 units left",
+  "intent_template": "Give me the {{Attribute}} of the products that have {{N}} units left{{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "Attribute": "material",
+   "N": "3",
+   "retrieved_data_format_spec": ""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      "Cotton",
+      "Fleece"
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0185"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 631,
+  "intent_template_id": 15,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Create a post in f/sports. Title it \"running shoes recommendations?\" and in post details ask \"Hey, looking for good running shoes under $100, any suggestions?\"",
+  "intent_template": "Create a post in {{forum}}. Title it \"{{category}} recommendations?\" and in post details ask \"Hey, looking for good {{category}} under {{price}}, any suggestions?\"",
+  "instantiation_dict": {
+   "category": "running shoes",
+   "price": "$100",
+   "forum": "f/sports"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/sports"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "running shoes recommendations?",
+      "submission[body]": "Hey, looking for good running shoes under $100, any suggestions?",
+      "submission[forum]": "10080"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0631"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 215,
+  "intent_template_id": 249,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the title and rating for all reviews with 3 stars or below for Circe ice fleece. Return a list of objects with keys \"title\" and \"rating\".",
+  "intent_template": "Get the title and rating for all reviews with 3 stars or below for {{product}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "product": "Circe ice fleece",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"title\" and \"rating\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       },
+       "rating": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "title": "Bad!",
+       "rating": "1"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0215"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 644,
+  "intent_template_id": 16,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Post a notice in games forum titled \"Tears of Kingdom Meet up!\". Set post details to \"virtual meetup for Tears of Kingdom on Dec 15th\"",
+  "intent_template": "Post a notice in {{forum}} titled \"{{interest}} Meet up!\". Set post details to \"virtual meetup for {{interest}} on {{date}}\"",
+  "instantiation_dict": {
+   "interest": "Tears of Kingdom",
+   "date": "Dec 15th",
+   "forum": "games forum"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/gaming"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "Tears of Kingdom Meet up!",
+      "submission[body]": "virtual meetup for Tears of Kingdom on Dec 15th",
+      "submission[forum]": "10048"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0644"
+ },
+ {
+  "sites": [
+   "gitlab"
+  ],
+  "task_id": 665,
+  "intent_template_id": 328,
+  "start_urls": [
+   "__GITLAB__"
+  ],
+  "intent": "Open an issue with title \"Feature Request: MT support\" to request adding support for MT theme editor in the respository a11y-syntax-highlighting.",
+  "intent_template": "Open an issue with title \"{{title}}\" to {{issue}} in the respository {{repo}}.",
+  "instantiation_dict": {
+   "title": "Feature Request: MT support",
+   "issue": "request adding support for MT theme editor",
+   "repo": "a11y-syntax-highlighting"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/186/issues",
+     "http_method": "POST",
+     "post_data": {
+      "title": "Feature Request: MT support"
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0665"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 143,
+  "intent_template_id": 162,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Return how much I spent on home decoration shopping during January 29, 2023 without considering shipping and handling fee. Return the value as a number (e.g., 10.99) only, without any additional details",
+  "intent_template": "Return how much I spent on {{category}} shopping {{time}} without considering shipping and handling fee. {{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "category": "home decoration",
+   "time": "during January 29, 2023",
+   "retrieved_data_format_spec": "Return the value as a number (e.g., 10.99) only, without any additional details"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "number",
+      "format": "currency"
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      260.69
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0143"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 142,
+  "intent_template_id": 162,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Return how much I spent on hair care and hair style shopping during Jan 2023 without considering shipping and handling fee. Return the value as a number (e.g., 10.99) only, without any additional details",
+  "intent_template": "Return how much I spent on {{category}} shopping {{time}} without considering shipping and handling fee. {{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "category": "hair care and hair style",
+   "time": "during Jan 2023",
+   "retrieved_data_format_spec": "Return the value as a number (e.g., 10.99) only, without any additional details"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "number",
+      "format": "currency"
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      68.51
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0142"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 184,
+  "intent_template_id": 368,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Give me the name and color of the products that have 0 units left. Return a list of objects with keys \"name\" and \"color\".",
+  "intent_template": "Give me the {{Attribute}} of the products that have {{N}} units left{{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "Attribute": "name and color",
+   "N": "0",
+   "retrieved_data_format_spec": ". Return a list of objects with keys \"name\" and \"color\"."
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "color": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "name": "Cronus Yoga Pant -33-Blue",
+       "color": "Blue"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0184"
+ },
+ {
+  "sites": [
+   "shopping"
+  ],
+  "task_id": 145,
+  "intent_template_id": 162,
+  "start_urls": [
+   "__SHOPPING__"
+  ],
+  "intent": "Return how much I spent on cooking and food shopping during March 2022 without considering shipping and handling fee. Return the value as a number (e.g., 10.99) only, without any additional details",
+  "intent_template": "Return how much I spent on {{category}} shopping {{time}} without considering shipping and handling fee. {{retrieved_data_format_spec}}",
+  "instantiation_dict": {
+   "category": "cooking and food",
+   "time": "during March 2022",
+   "retrieved_data_format_spec": "Return the value as a number (e.g., 10.99) only, without any additional details"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "number",
+      "format": "currency"
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      42.35
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0145"
+ },
+ {
+  "sites": [
+   "shopping_admin"
+  ],
+  "task_id": 210,
+  "intent_template_id": 364,
+  "start_urls": [
+   "__SHOPPING_ADMIN__"
+  ],
+  "intent": "Get the customer name and email with phone number 2065555555. Return a list of objects with keys \"name\" and \"email\".",
+  "intent_template": "Get the customer name and email with phone number {{PhoneNum}}. {{retrieved_data_format_spec}}.",
+  "instantiation_dict": {
+   "PhoneNum": "2065555555",
+   "retrieved_data_format_spec": "Return a list of objects with keys \"name\" and \"email\""
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "email": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "expected": {
+     "task_type": "retrieve",
+     "status": "SUCCESS",
+     "retrieved_data": [
+      {
+       "name": "Adam Garcia",
+       "email": "gamingpro456@gmail.com"
+      }
+     ]
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0210"
+ },
+ {
+  "sites": [
+   "gitlab",
+   "reddit"
+  ],
+  "task_id": 563,
+  "intent_template_id": 88,
+  "start_urls": [
+   "__GITLAB__",
+   "__REDDIT__"
+  ],
+  "intent": "Create a private repository named fun_thing_to_do with a README file containing links to the 5 most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "intent_template": "Create a private repository named {{name}} with a README file containing links to the {{num}} most active DIY posts from the DIY forum. Use the Web IDE to create the README. Structure it with the repository name as the main heading, \"Most Active DIY Threads\" as a subheading, and a bulleted list of the posts as markdown links (using their titles as link text) in the same order they appear on the forum. Commit to the default branch.",
+  "instantiation_dict": {
+   "name": "fun_thing_to_do",
+   "num": 5
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": "__GITLAB__/projects",
+     "http_method": "POST",
+     "post_data": {
+      "project[template_name]": null,
+      "project[name]": "fun_thing_to_do",
+      "project[path]": "fun_thing_to_do",
+      "project[namespace_id]": "2505",
+      "project[visibility_level]": "0"
+     },
+     "response_status": 302
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "post_data_schema": {
+     "type": "object",
+     "properties": {
+      "$.actions[0].content": {
+       "type": "string",
+       "format": "markdown"
+      }
+     }
+    },
+    "expected": {
+     "url": "__GITLAB__/api/v4/projects/byteblaze%2Ffun_thing_to_do/repository/commits",
+     "http_method": "POST",
+     "post_data": {
+      "branch": "main",
+      "$.actions[0].action": "^(update|create)$",
+      "$.actions[0].file_path": "README.md",
+      "$.actions[0].content": "# fun_thing_to_do\n\n## Most Active DIY Threads\n\n- [Separate glued plastic parts](__REDDIT__/f/DIY/118903/separate-glued-plastic-parts)\n- [How would you fix this dryer vent mess?](__REDDIT__/f/DIY/118923/how-would-you-fix-this-dryer-vent-mess)\n- [Basement Bulkhead/Soffit + Wall Framing](__REDDIT__/f/DIY/118935/basement-bulkhead-soffit-wall-framing)\n- [GE Water Heater Pilot Light Won't Stay Lit](__REDDIT__/f/DIY/118904/ge-water-heater-pilot-light-won-t-stay-lit)\n- [Attempting to move a wall outlet in my basement a few inches to the left and am totally stumped. Any help GREATLY appreciated!!](__REDDIT__/f/DIY/118960/attempting-to-move-a-wall-outlet-in-my-basement-a-few-inches)",
+      "$.actions[1].action": null
+     },
+     "response_status": 201
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0563"
+ },
+ {
+  "sites": [
+   "reddit"
+  ],
+  "task_id": 634,
+  "intent_template_id": 15,
+  "start_urls": [
+   "__REDDIT__"
+  ],
+  "intent": "Create a post in f/iphone. Title it \"used iphone recommendations?\" and in post details ask \"Hey, looking for good used iphone under $1000, any suggestions?\"",
+  "intent_template": "Create a post in {{forum}}. Title it \"{{category}} recommendations?\" and in post details ask \"Hey, looking for good {{category}} under {{price}}, any suggestions?\"",
+  "instantiation_dict": {
+   "category": "used iphone",
+   "price": "$1000",
+   "forum": "f/iphone"
+  },
+  "eval": [
+   {
+    "evaluator": "AgentResponseEvaluator",
+    "results_schema": {
+     "type": "null"
+    },
+    "expected": {
+     "task_type": "mutate",
+     "status": "SUCCESS",
+     "retrieved_data": null
+    }
+   },
+   {
+    "evaluator": "NetworkEventEvaluator",
+    "expected": {
+     "url": [
+      "__REDDIT__/submit",
+      "__REDDIT__/submit/iphone"
+     ],
+     "http_method": "POST",
+     "post_data": {
+      "submission[title]": "used iphone recommendations?",
+      "submission[body]": "Hey, looking for good used iphone under $1000, any suggestions?",
+      "submission[forum]": "10052"
+     },
+     "response_status": 302
+    }
+   }
+  ],
+  "revision": 2,
+  "id": "wa_0634"
+ }
+]
