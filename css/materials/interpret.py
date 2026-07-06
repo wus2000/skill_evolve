@@ -24,6 +24,27 @@ _log = logging.getLogger("css.materials")
 
 
 
+_KEY_ALIASES = {
+    # Measured 2026-07-06: qwen3.6 in json_object mode deterministically emits
+    # the first long key as "narr" (2025/2025 interp calls) — every call then
+    # paid one LLM repair round that merely renamed the key. Normalize
+    # mechanically instead.
+    "narr": "narrative",
+    "narrativ": "narrative",
+    "causality": "outcome_causality",
+    "signature": "behavior_signature",
+}
+
+
+def _parse_interp(text: str) -> Any:
+    obj = common.parse_object(text)
+    if isinstance(obj, dict):
+        for bad, good in _KEY_ALIASES.items():
+            if good not in obj and bad in obj:
+                obj[good] = obj.pop(bad)
+    return obj
+
+
 def _interp_required(obj: Any) -> list:
     """Missing mandatory narrative fields (feeds the json_repair schema hook)."""
     if not isinstance(obj, dict):
@@ -60,7 +81,7 @@ def _interpret_one(
     user = prompts.build_interpret_user(strategy, render, _outcome_line(traj))
     interp = common.run_json_stage(
         optimizer_client, prompts.INTERPRET_SYSTEM, user,
-        parse=common.parse_object, stage="interp", cfg=cfg,
+        parse=_parse_interp, stage="interp", cfg=cfg,
         required=_interp_required,
         ok=lambda r: isinstance(r, dict) and bool(r),
     )
