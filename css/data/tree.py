@@ -125,6 +125,15 @@ class TreeNode:
     # and reset to the winning candidate's measurements on accept.
     val_ledger: dict = field(default_factory=dict)
 
+    # Spawn-failure cooldown (2026-07-06 spin fix): a saturated node whose
+    # spawn produced no child (e.g. novelty-duplicate children) re-enters the
+    # selection pool only after the GLOBAL burst count advances past
+    # spawn_block_T — with unchanged materials a retry just regenerates the
+    # same duplicate, and the AW run burned one decision/minute reselecting
+    # its saturated root. spawn_fail_count trips terminal at the cap (3).
+    spawn_fail_count: int = 0
+    spawn_block_T: int = -1
+
     # ── Convenience ────────────────────────────────────────────────────────
     @property
     def n_steps(self) -> int:
@@ -178,6 +187,8 @@ class TreeNode:
             n_bursts=int(d.get("n_bursts", 0)),
             burst_rewards=[float(x) for x in d.get("burst_rewards", [])],
             burst_accepts=[int(x) for x in d.get("burst_accepts", [])],
+            spawn_fail_count=int(d.get("spawn_fail_count", 0)),
+            spawn_block_T=int(d.get("spawn_block_T", -1)),
         )
 
     def to_dict(self, include_embeddings: bool = False) -> dict:
@@ -206,6 +217,8 @@ class TreeNode:
             "n_bursts": self.n_bursts,
             "burst_rewards": self.burst_rewards,
             "burst_accepts": self.burst_accepts,
+            "spawn_fail_count": self.spawn_fail_count,
+            "spawn_block_T": self.spawn_block_T,
         }
 
 
@@ -271,9 +284,17 @@ class SearchTree:
 
         TERMINAL / pruned nodes are excluded. Degree exhaustion is handled by
         the loop at transition time (a saturated strategy node whose quota is
-        spent is flipped to terminal before the next selection).
+        spent is flipped to terminal before the next selection). A saturated
+        node under spawn-failure cooldown (spawn_block_T >= current global
+        bursts) sits out until any burst lands somewhere — retrying a spawn on
+        unchanged materials only regenerates the duplicate child.
         """
-        return [n for n in self.nodes.values() if n.status in ("active", "saturated")]
+        total_t = sum(n.n_bursts for n in self.nodes.values())
+        return [
+            n for n in self.nodes.values()
+            if n.status == "active"
+            or (n.status == "saturated" and n.spawn_block_T < total_t)
+        ]
 
     def best_node(self, metric: str = "val_score") -> TreeNode | None:
         if not self.nodes:

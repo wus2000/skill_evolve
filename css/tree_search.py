@@ -542,9 +542,29 @@ def run_css_tree(
                     _log.info("Node %s TERMINAL — REFINE declined: %s",
                               node.node_id, outcome.reason)
                 else:
-                    _log.warning("Spawn produced no child (%s) — node %s stays "
-                                 "saturated", outcome.reason, node.node_id)
+                    # Cooldown, not a free retry: with unchanged materials the
+                    # generator reproduces the same duplicate child, and UCB
+                    # reselects the highest-val saturated node every decision
+                    # (observed: AW burned decisions 6-10 in a spin). Block
+                    # until any burst lands somewhere; 3 strikes -> terminal.
+                    node.spawn_fail_count += 1
+                    node.spawn_block_T = total_bursts(tree)
+                    if node.spawn_fail_count >= 3:
+                        node.status = "terminal"
+                        _log.info("Node %s TERMINAL — %d spawns produced no "
+                                  "child (last: %s)", node.node_id,
+                                  node.spawn_fail_count, outcome.reason)
+                        log_event("node_terminal", node_id=node.node_id,
+                                  reason="spawn_exhausted",
+                                  decision_index=decision_index)
+                    else:
+                        _log.warning(
+                            "Spawn produced no child (%s) — node %s blocked "
+                            "from selection until the next burst lands "
+                            "(fail %d/3)", outcome.reason, node.node_id,
+                            node.spawn_fail_count)
             else:
+                node.spawn_fail_count = 0     # fresh evidence: cooldown resets
                 child = outcome.child
                 child.created_epoch = decision_index
                 if mode == "NEW":

@@ -252,3 +252,34 @@ def test_global_best_snapshot_survives_node_regression(tmp_path, monkeypatch):
     assert summary["global_best"]["val"] == pytest.approx(0.8)
     assert (tmp_path / "global_best" / "strategy.md").exists()
     assert (tmp_path / "global_best" / "rules.md").exists()
+
+
+# ── spawn-failure cooldown (2026-07-06 spin fix) ────────────────────────────
+def test_spawn_blocked_saturated_node_leaves_pool_until_next_burst():
+    tree = SearchTree()
+    root = TreeNode(node_id="n0000", status="saturated", n_bursts=3)
+    tree.add_root(root)
+    child = TreeNode(node_id="n0002", branch_type="REFINE", status="active",
+                     n_bursts=3)
+    tree.add_child("n0000", child)
+
+    # spawn failed at T=6: root sits out while T stays 6
+    root.spawn_fail_count = 1
+    root.spawn_block_T = 6
+    assert [n.node_id for n in tree.selectable_nodes()] == ["n0002"]
+
+    # any burst landing anywhere advances T -> root re-enters the pool
+    child.n_bursts += 1
+    ids = {n.node_id for n in tree.selectable_nodes()}
+    assert ids == {"n0000", "n0002"}
+
+
+def test_spawn_cooldown_fields_roundtrip_and_default():
+    node = TreeNode(node_id="n0001", spawn_fail_count=2, spawn_block_T=9)
+    back = TreeNode.from_dict(node.to_dict())
+    assert back.spawn_fail_count == 2
+    assert back.spawn_block_T == 9
+    # old checkpoints (no fields) load with the cooldown disabled
+    legacy = TreeNode.from_dict({"node_id": "n0009"})
+    assert legacy.spawn_fail_count == 0
+    assert legacy.spawn_block_T == -1
