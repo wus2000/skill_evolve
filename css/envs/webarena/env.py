@@ -50,7 +50,11 @@ def _build_refresh_fn(extra: dict):
             raise RuntimeError(
                 f"refresh {stack}/{site} rc={proc.returncode}: "
                 f"{(proc.stderr or proc.stdout)[-300:]}")
-        _log.info("webarena/refresh — %s/%s done", stack, site)
+        # farm.sh prints readiness telemetry ("ready <site> after Ns");
+        # surface it so refresh cost stays visible in the run log.
+        tail = (proc.stdout or "").strip().splitlines()
+        _log.info("webarena/refresh — %s/%s done (%s)", stack, site,
+                  tail[-1] if tail else "no output")
     return refresh
 
 
