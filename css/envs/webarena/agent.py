@@ -74,7 +74,10 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
 
     os.makedirs(workdir, exist_ok=True)
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # channel="chromium" = run the full chromium binary in new-headless
+        # mode — avoids the separate chromium-headless-shell download, whose
+        # installer no-opped on the harness host (playwright 1.61, 2026-07-06).
+        browser = p.chromium.launch(headless=True, channel="chromium")
         ctx = browser.new_context(
             viewport=VIEWPORT, device_scale_factor=1,
             record_har_path=os.path.join(workdir, "network.har"),
