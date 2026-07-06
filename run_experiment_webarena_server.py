@@ -140,11 +140,15 @@ def main() -> None:
             "webarena_verified_cli":
                 "/home/wushang/miniconda3/envs/webarena/bin/webarena-verified",
             "webarena_env_config": env_config,
-            # Lane refresh: recreate ONE site container from its golden image
+            # Lane refresh: recreate ONE site container from its source image
             # (reddit/gitlab init API is broken upstream — issue #39; recreate
-            # is the universal reset).
+            # is the universal reset). farm.sh refresh BLOCKS until the site
+            # serves again (readiness gate, READY_TIMEOUT=1200 on the farm) —
+            # gitlab boots from the original image and needs multiple minutes
+            # (502 for 4+ min observed in the 2026-07-06 smoke), so the
+            # subprocess ceiling must exceed the farm-side gate.
             "webarena_refresh_cmd": FARM_SSH + " refresh {stack} {site}",
-            "webarena_refresh_timeout_s": 300,
+            "webarena_refresh_timeout_s": 1500,
             "webarena_har_content": "omit",  # URLs+status suffice for evaluator
             "webarena_nav_timeout_ms": 30000,
         },

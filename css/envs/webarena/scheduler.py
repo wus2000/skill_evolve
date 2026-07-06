@@ -1,12 +1,23 @@
 """Mutation-aware (stack, site) lease scheduler for the WebArena farm.
 
 Concurrency contract (design in docs/env_prep/webarena_PREP.md §5):
-- ``retrieve``/``navigate`` tasks share any stack freely (read-only pool).
+- ``retrieve``/``navigate`` tasks share any stack freely (read-only pool) but
+  AVOID stacks where a site they need is mid-refresh: a container recreate
+  leaves the site unreachable for its whole boot window (minutes for gitlab),
+  and an episode landing there would record a fake failure. Residual mutations
+  from earlier tasks are tolerated by design — official WebArena runs the
+  whole benchmark on one un-reset instance, so read-only-on-dirty matches
+  upstream semantics; read-only-on-booting does not.
 - ``mutate`` tasks hold an EXCLUSIVE lease on one (stack, site) lane for the
-  whole episode; on release the lane is marked dirty and refreshed (container
-  recreate from the warmed golden snapshot) before the next mutating episode.
-  Every rollout of the same task therefore starts from clean site state — the
-  paired gate's K repeats never observe each other's mutations.
+  whole episode (multisite mutate tasks pin all their sites together). On
+  release the lane is marked dirty and refreshed EAGERLY in the background
+  (container recreate from the golden image; refresh_fn blocks until the site
+  serves again), so the boot window overlaps other work instead of stalling
+  the next mutating lease. A dirty lane that escaped the eager pass (refresh
+  failure, or a mutating acquire winning the lock race) is refreshed
+  synchronously before the next mutating lease is granted. Every rollout of
+  the same task therefore starts from clean site state — the paired gate's K
+  repeats never observe each other's mutations.
 
 This module is deliberately transport-agnostic: the farm topology arrives as
 plain dicts (``stacks``: name -> {site -> base_url}) and refreshing is a
@@ -18,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -37,16 +49,19 @@ class Lease:
 @dataclass
 class _Lane:
     lock: threading.Lock = field(default_factory=threading.Lock)
-    dirty: bool = False
+    dirty: bool = False        # mutated since last refresh (guarded by _mu)
+    refreshing: bool = False   # container recreate in flight (guarded by _mu)
 
 
 class SiteLeaseManager:
     """Hands out per-episode leases over N site stacks.
 
     refresh_fn(stack_name, site) -> None restores one site container to its
-    golden state; it runs BEFORE a mutating lease is granted on a dirty lane
-    (lazy refresh: pay the cost only when the lane is actually needed again,
-    so back-to-back read-only traffic never waits on container recreates).
+    golden state and MUST block until the site actually serves again (the
+    farm-side readiness gate) — the scheduler treats its return as "lane
+    usable". It runs eagerly in a background thread right after a mutating
+    release, with a synchronous fallback before granting a mutating lease on
+    a lane that is still dirty.
     """
 
     def __init__(self, stacks: "dict[str, dict[str, str]]",
@@ -59,29 +74,68 @@ class SiteLeaseManager:
                        for s, urls in self._stacks.items() for site in urls}
         self._rr = 0
         self._rr_lock = threading.Lock()
+        self._mu = threading.Lock()   # guards lane.dirty / lane.refreshing
 
-    # -- read-only pool ----------------------------------------------------
-    def _next_stack(self) -> str:
-        names = sorted(self._stacks)
-        with self._rr_lock:
-            self._rr = (self._rr + 1) % len(names)
-            return names[self._rr]
+    # -- refresh -------------------------------------------------------------
+    def _refresh_locked(self, stack: str, site: str, lane: _Lane) -> None:
+        """Refresh a lane if dirty. Caller MUST hold lane.lock; the
+        ``refreshing`` flag steers read-only traffic away for the duration."""
+        with self._mu:
+            if not lane.dirty:
+                return
+            lane.refreshing = True
+        try:
+            self._refresh(stack, site)
+            with self._mu:
+                lane.dirty = False
+        except Exception:
+            _log.exception(
+                "webarena/scheduler — refresh failed (stack=%s site=%s); "
+                "lane stays dirty", stack, site)
+        finally:
+            with self._mu:
+                lane.refreshing = False
+
+    def _eager_refresh(self, stack: str, site: str) -> None:
+        lane = self._lanes[(stack, site)]
+        if not lane.lock.acquire(blocking=False):
+            return  # a mutating acquire won the race; it refreshes synchronously
+        try:
+            self._refresh_locked(stack, site, lane)
+        finally:
+            lane.lock.release()
 
     # -- public API ---------------------------------------------------------
     def acquire(self, sites: "list[str]", task_type: str,
                 timeout_s: float = 1800.0) -> Lease:
         """Block until a suitable stack is free; return the lease.
 
-        Read-only episodes round-robin across stacks without locking.
-        Mutating episodes lock EVERY site they touch on one stack (multisite
-        mutate tasks pin all their sites together to keep cross-site state
-        consistent), refreshing dirty lanes first.
+        Read-only episodes round-robin across stacks, skipping stacks where a
+        needed site is mid-refresh. Mutating episodes lock EVERY site they
+        touch on one stack, refreshing still-dirty lanes first.
         """
         wanted = [s for s in sites if s in next(iter(self._stacks.values()))]
+        names = sorted(self._stacks)
+
         if task_type != MUTATING_TASK_TYPE:
-            stack = self._next_stack()
-            return Lease(stack=stack, urls=self._stacks[stack],
-                         sites=(), exclusive=False)
+            deadline_ts = time.monotonic() + timeout_s
+            while True:
+                with self._rr_lock:
+                    self._rr = (self._rr + 1) % len(names)
+                    start = self._rr
+                for i in range(len(names)):
+                    stack = names[(start + i) % len(names)]
+                    with self._mu:
+                        busy = any(self._lanes[(stack, s)].refreshing
+                                   for s in wanted)
+                    if not busy:
+                        return Lease(stack=stack, urls=self._stacks[stack],
+                                     sites=(), exclusive=False)
+                if time.monotonic() >= deadline_ts:
+                    break
+                time.sleep(0.5)
+            raise TimeoutError(
+                f"all stacks mid-refresh for sites={wanted} within {timeout_s}s")
 
         deadline = threading.Event()
         timer = threading.Timer(timeout_s, deadline.set)
@@ -89,7 +143,7 @@ class SiteLeaseManager:
         timer.start()
         try:
             while not deadline.is_set():
-                for stack in sorted(self._stacks):
+                for stack in names:
                     lanes = [self._lanes[(stack, s)] for s in wanted]
                     acquired = []
                     ok = True
@@ -101,15 +155,7 @@ class SiteLeaseManager:
                             break
                     if ok:
                         for site, lane in zip(wanted, lanes):
-                            if lane.dirty:
-                                try:
-                                    self._refresh(stack, site)
-                                except Exception:
-                                    _log.exception(
-                                        "webarena/scheduler — refresh failed "
-                                        "(stack=%s site=%s); granting lease on "
-                                        "possibly-dirty lane", stack, site)
-                                lane.dirty = False
+                            self._refresh_locked(stack, site, lane)
                         return Lease(stack=stack, urls=self._stacks[stack],
                                      sites=tuple(wanted), exclusive=True)
                     for lane in acquired:
@@ -125,5 +171,11 @@ class SiteLeaseManager:
             return
         for site in lease.sites:
             lane = self._lanes[(lease.stack, site)]
-            lane.dirty = True   # mutation assumed; next mutating lease refreshes
+            with self._mu:
+                lane.dirty = True   # mutation assumed
             lane.lock.release()
+        for site in lease.sites:
+            threading.Thread(
+                target=self._eager_refresh, args=(lease.stack, site),
+                daemon=True,
+                name=f"wa-refresh-{lease.stack}-{site}").start()

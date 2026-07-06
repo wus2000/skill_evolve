@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 
 from css.config import CSSConfig
@@ -129,7 +130,7 @@ class TestWebArenaEnv(unittest.TestCase):
                         rollout_index=0, epoch=0, node_id="n")
         self.assertEqual(seen[-1], (3, ("gitlab", "reddit")))
 
-    def test_lease_exclusive_and_lazy_refresh(self):
+    def test_lease_exclusive_and_refresh_before_next_mutate(self):
         refreshed = []
         mgr = SiteLeaseManager({"s1": {"reddit": "http://h:9999"}},
                                refresh_fn=lambda st, si: refreshed.append((st, si)))
@@ -145,8 +146,20 @@ class TestWebArenaEnv(unittest.TestCase):
         mgr.release(l1)
         t.join(10)
         self.assertFalse(t.is_alive())
-        self.assertEqual(refreshed, [("s1", "reddit")])  # dirty -> refreshed
+        # exactly-once refresh between the two leases (eager thread and the
+        # contender's sync fallback race for the lock; loser must no-op)
+        self.assertEqual(refreshed, [("s1", "reddit")])
         mgr.release(blocked["l"])
+
+    def test_release_triggers_eager_refresh(self):
+        refreshed = []
+        mgr = SiteLeaseManager({"s1": {"reddit": "http://h:9999"}},
+                               refresh_fn=lambda st, si: refreshed.append((st, si)))
+        mgr.release(mgr.acquire(["reddit"], "mutate"))
+        deadline = time.monotonic() + 5
+        while not refreshed and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(refreshed, [("s1", "reddit")])  # no acquire needed
 
     def test_readonly_needs_no_lock(self):
         mgr = SiteLeaseManager({"s1": {"reddit": "http://h:9999"}})
@@ -154,6 +167,66 @@ class TestWebArenaEnv(unittest.TestCase):
         ro = mgr.acquire(["reddit"], "retrieve", timeout_s=1)
         self.assertFalse(ro.exclusive)           # read-only never blocks
         mgr.release(l1); mgr.release(ro)
+
+    def test_readonly_avoids_refreshing_stack(self):
+        gate = threading.Event()
+
+        def slow_refresh(st, si):
+            gate.wait(10)
+        mgr = SiteLeaseManager({"s1": {"reddit": "http://h:9999"},
+                                "s2": {"reddit": "http://h:19999"}},
+                               refresh_fn=slow_refresh)
+        mgr.release(mgr.acquire(["reddit"], "mutate"))   # dirty one stack
+        lane_keys = [k for k, ln in mgr._lanes.items()]
+        deadline = time.monotonic() + 5
+        refreshing = None
+        while refreshing is None and time.monotonic() < deadline:
+            hot = [k for k in lane_keys if mgr._lanes[k].refreshing]
+            refreshing = hot[0] if hot else None
+            time.sleep(0.02)
+        self.assertIsNotNone(refreshing)         # eager refresh in flight
+        for _ in range(6):                       # RR must never land on it
+            ro = mgr.acquire(["reddit"], "retrieve", timeout_s=2)
+            self.assertNotEqual(ro.stack, refreshing[0])
+        # unrelated sites are unaffected by the busy lane
+        gate.set()
+
+    def test_readonly_single_stack_waits_out_refresh(self):
+        gate = threading.Event()
+
+        def slow_refresh(st, si):
+            gate.wait(10)
+        mgr = SiteLeaseManager({"s1": {"reddit": "http://h:9999"}},
+                               refresh_fn=slow_refresh)
+        mgr.release(mgr.acquire(["reddit"], "mutate"))
+        deadline = time.monotonic() + 5
+        while not mgr._lanes[("s1", "reddit")].refreshing \
+                and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(mgr._lanes[("s1", "reddit")].refreshing)
+        with self.assertRaises(TimeoutError):    # no healthy stack available
+            mgr.acquire(["reddit"], "retrieve", timeout_s=1)
+        gate.set()
+        ro = mgr.acquire(["reddit"], "retrieve", timeout_s=10)
+        self.assertFalse(ro.exclusive)
+
+    def test_failed_refresh_leaves_lane_dirty_then_retries(self):
+        calls = []
+
+        def flaky(st, si):
+            calls.append((st, si))
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+        mgr = SiteLeaseManager({"s1": {"reddit": "http://h:9999"}},
+                               refresh_fn=flaky)
+        mgr.release(mgr.acquire(["reddit"], "mutate"))
+        deadline = time.monotonic() + 5
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(len(calls), 1)          # eager attempt failed
+        l2 = mgr.acquire(["reddit"], "mutate", timeout_s=10)
+        self.assertEqual(len(calls), 2)          # sync fallback re-refreshed
+        mgr.release(l2)
 
     def test_stop_contract_and_action_extraction(self):
         s = parse_stop_payload('{"task_type": "mutate", "status": "SUCCESS", '
