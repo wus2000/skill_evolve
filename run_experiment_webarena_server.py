@@ -70,6 +70,7 @@ def _latest_run_dir() -> "str | None":
 def main() -> None:
     resume = False
     resume_dir = None
+    smoke = "--smoke" in sys.argv[1:]
     if len(sys.argv) > 1 and sys.argv[1] == "--resume":
         resume = True
         resume_dir = sys.argv[2] if len(sys.argv) > 2 else _latest_run_dir()
@@ -78,7 +79,8 @@ def main() -> None:
             sys.exit(1)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_root = resume_dir if resume else f"runs/webarena_{timestamp}"
+    prefix = "webarena_smoke" if smoke else "webarena"
+    out_root = resume_dir if resume else f"runs/{prefix}_{timestamp}"
     env_config = _write_verified_env_config(
         os.path.join(out_root, "wa_env_config.json"))
 
@@ -147,6 +149,16 @@ def main() -> None:
             "webarena_nav_timeout_ms": 30000,
         },
     )
+
+    if smoke:
+        # End-to-end machinery validation, not science: tiny slices, single
+        # rollout, one tree decision, few browsers.
+        cfg.n_train, cfg.n_val, cfg.n_test = 8, 4, 4
+        cfg.k_rollouts = 1
+        cfg.gate_screen_k = 1
+        cfg.max_decisions = 1
+        cfg.batch_size = 8
+        cfg.extra["webarena_max_browsers"] = 6
 
     os.makedirs(out_root, exist_ok=True)
     logging.basicConfig(
