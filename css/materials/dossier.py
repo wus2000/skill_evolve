@@ -25,8 +25,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_INTEGRATE_MAX_TOKENS = 12288
-_AUDIT_MAX_TOKENS = 8192
 
 
 # ── reusable living-document integration + no-silent-loss audit ──────────────
@@ -37,7 +35,6 @@ def _integrate(integrate_system: str, build_user: Callable[[str, str], str],
         client, integrate_system, build_user(old_doc, feedback),
         parse=common.parse_object, stage=f"{stage}_integrate", cfg=cfg,
         ok=lambda r: isinstance(r, dict) and bool(str(r.get("document_md", "")).strip()),
-        max_tokens=_INTEGRATE_MAX_TOKENS,
     )
     doc = str((obj or {}).get("document_md", "")).strip()
     # Never lose the document: an unusable integration keeps the prior text.
@@ -52,7 +49,6 @@ def _audit(old_doc: str, new_doc: str, client: Any, cfg: "CSSConfig", stage: str
         client, prompts.NO_SILENT_LOSS_SYSTEM, prompts.build_audit_user(old_doc, new_doc),
         parse=common.parse_object, stage=f"{stage}_audit", cfg=cfg,
         ok=lambda r: isinstance(r, dict),
-        max_tokens=_AUDIT_MAX_TOKENS,
     )
     obj = obj if isinstance(obj, dict) else {}
     ledger = obj.get("ledger", [])

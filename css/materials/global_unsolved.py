@@ -28,8 +28,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_GROUP_MAX_TOKENS = 8192
-_READING_MAX_TOKENS = 10240
 
 
 def _node_latest_residuals(out_dir: str, node_id: str) -> set[str] | None:
@@ -144,7 +142,6 @@ def synthesize_global(
         prompts.build_global_group_user(global_hard, _attributions_touching(tree, out_dir, hard_set)),
         parse=common.parse_object, stage="global_group", cfg=cfg,
         ok=lambda r: isinstance(r, dict) and isinstance(r.get("groups"), list),
-        max_tokens=_GROUP_MAX_TOKENS,
     )
     groups = _normalize_global_groups((raw or {}).get("groups", []), hard_set)
 
@@ -156,7 +153,6 @@ def synthesize_global(
             prompts.build_global_reading_user(g["group_key"], g["task_ids"], node_narratives),
             parse=common.parse_object, stage="global_reading", cfg=cfg,
             ok=lambda r: isinstance(r, dict) and bool(str(r.get("narrative_md", "")).strip()),
-            max_tokens=_READING_MAX_TOKENS,
         )
         reading = reading if isinstance(reading, dict) else {}
         try:

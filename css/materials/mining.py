@@ -20,10 +20,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_GROUP_MAX_TOKENS = 10240
-_MERGE_MAX_TOKENS = 10240
-_ADHERENCE_MAX_TOKENS = 6144
-_SUMMARY_MAX_TOKENS = 6144
 _ADHERENCE_NOTE_CAP = 12
 _ADHERENCE_EVIDENCE_CAP = 40
 
@@ -94,7 +90,6 @@ def _group_two_pass(records: list[dict], by_id: dict, path: str,
         client, prompts.GROUP_PASS1_SYSTEM, prompts.build_group_pass1_user(signatures),
         parse=common.parse_object, stage="group_pass1", cfg=cfg,
         ok=lambda r: isinstance(r, dict) and isinstance(r.get("groups"), list),
-        max_tokens=_GROUP_MAX_TOKENS,
     )
     groups = _normalize_groups((raw or {}).get("groups", []), all_ids)
 
@@ -111,7 +106,6 @@ def _group_two_pass(records: list[dict], by_id: dict, path: str,
             prompts.build_group_pass2_user(groups, boundary_narratives),
             parse=common.parse_list_field("assignments"), stage="group_pass2", cfg=cfg,
             ok=lambda r: isinstance(r, list),
-            max_tokens=_GROUP_MAX_TOKENS,
         )
         groups, reassigns = _apply_reassignments(groups, p2 or [])
 
@@ -148,7 +142,6 @@ def _analyze_group(group: dict, by_id: dict, gpath: str,
             prompts.build_group_analysis_user(key, group.get("rationale", ""), narratives),
             parse=common.parse_object, stage="group_analysis", cfg=cfg,
             ok=lambda r: isinstance(r, dict) and bool(str(r.get("analysis_narrative", "")).strip()),
-            max_tokens=_GROUP_MAX_TOKENS,
         ) or {}
     else:
         subs = []
@@ -159,7 +152,6 @@ def _analyze_group(group: dict, by_id: dict, gpath: str,
                                                   narratives[start:start + chunk]),
                 parse=common.parse_object, stage="group_analysis", cfg=cfg,
                 ok=lambda r: isinstance(r, dict) and bool(str(r.get("analysis_narrative", "")).strip()),
-                max_tokens=_GROUP_MAX_TOKENS,
             )
             if isinstance(sub, dict):
                 subs.append(sub)
@@ -168,7 +160,6 @@ def _analyze_group(group: dict, by_id: dict, gpath: str,
             prompts.build_group_merge_user(key, subs),
             parse=common.parse_object, stage="group_merge", cfg=cfg,
             ok=lambda r: isinstance(r, dict) and bool(str(r.get("analysis_narrative", "")).strip()),
-            max_tokens=_MERGE_MAX_TOKENS,
         ) or {}
         # Preserve distilled claims from the sub-analyses if the merge dropped them.
         if not analysis.get("distilled_claims"):
@@ -226,7 +217,6 @@ def _adherence_ledger(records: list[dict], path: str,
             prompts.build_adherence_reading_user(sections),
             parse=common.parse_object, stage="adherence_reading", cfg=cfg,
             ok=lambda r: isinstance(r, dict) and bool(str(r.get("reading", "")).strip()),
-            max_tokens=_ADHERENCE_MAX_TOKENS,
         )
         if isinstance(obj, dict):
             reading = str(obj.get("reading", ""))
@@ -246,7 +236,6 @@ def _burst_summary(group_analyses: list[dict], adherence_reading: str,
         prompts.build_burst_summary_user(group_analyses, adherence_reading, stats),
         parse=common.parse_object, stage="burst_summary", cfg=cfg,
         ok=lambda r: isinstance(r, dict) and bool(str(r.get("summary_md", "")).strip()),
-        max_tokens=_SUMMARY_MAX_TOKENS,
     )
     md = str((obj or {}).get("summary_md", "")).strip() or "(burst summary unavailable)"
     common.write_text_atomic(path, md)

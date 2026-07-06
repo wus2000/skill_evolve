@@ -21,8 +21,6 @@ from css.materials import common, prompts
 
 _log = logging.getLogger("css.materials")
 
-_SCREEN_MAX_TOKENS = 6144
-_REVISE_MAX_TOKENS = 4096
 
 
 def _normalize_verdict(v: Any, index: int, item: str) -> dict:
@@ -50,7 +48,6 @@ def _judge_batch(chunk: list[str], client: Any, cfg: Any, stage: str) -> list[di
         client, prompts.SCREEN_SYSTEM, user,
         parse=common.parse_list_field("verdicts"), stage=f"{stage}_screen", cfg=cfg,
         ok=lambda r: isinstance(r, list) and bool(r),
-        max_tokens=_SCREEN_MAX_TOKENS,
     )
     raw = raw if isinstance(raw, list) else []
     # Prefer the model's 1-based "index" field; fall back to positional order.
@@ -85,7 +82,6 @@ def _revise_item(item: str, feedback: str, client: Any, cfg: Any, stage: str) ->
         prompts.build_screen_revise_user(item, feedback),
         parse=common.parse_object, stage=f"{stage}_revise", cfg=cfg,
         ok=lambda r: isinstance(r, dict) and bool(str(r.get("revised", "")).strip()),
-        max_tokens=_REVISE_MAX_TOKENS,
     )
     if isinstance(obj, dict) and str(obj.get("revised", "")).strip():
         return str(obj["revised"])

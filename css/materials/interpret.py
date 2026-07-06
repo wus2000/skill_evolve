@@ -22,7 +22,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_INTERP_MAX_TOKENS = 8192
 
 
 def _interp_required(obj: Any) -> list:
@@ -64,7 +63,6 @@ def _interpret_one(
         parse=common.parse_object, stage="interp", cfg=cfg,
         required=_interp_required,
         ok=lambda r: isinstance(r, dict) and bool(r),
-        max_tokens=_INTERP_MAX_TOKENS,
     )
     if not isinstance(interp, dict):
         interp = {"narrative": "", "outcome_causality": "",

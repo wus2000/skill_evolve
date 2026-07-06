@@ -32,7 +32,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_FRONTIER_MAX_TOKENS = 10240
 
 
 def _node_stalled(node: "TreeNode", cfg: "CSSConfig") -> bool:
@@ -151,7 +150,6 @@ def update_frontier(
         prompts.build_frontier_group_user(failing_for_grouping, sorted(prior_groups.keys())),
         parse=common.parse_object, stage="frontier_group", cfg=cfg,
         ok=lambda r: isinstance(r, dict) and isinstance(r.get("groups"), list),
-        max_tokens=_FRONTIER_MAX_TOKENS,
     )
     groups = _normalize_frontier_groups((raw or {}).get("groups", []), set(residual_ids))
     common.write_json_atomic(f"{bdir}/frontier_grouping.json", {"groups": groups})
@@ -172,7 +170,6 @@ def update_frontier(
                 adherence_reading, stalled, prior_attr),
             parse=common.parse_object, stage="frontier_narrative", cfg=cfg,
             ok=lambda r: isinstance(r, dict) and bool(str(r.get("narrative", "")).strip()),
-            max_tokens=_FRONTIER_MAX_TOKENS,
         )
         obj = obj if isinstance(obj, dict) else {}
         attr = str(obj.get("attribution", "U")).strip().upper()

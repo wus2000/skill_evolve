@@ -280,6 +280,9 @@ def parse_list_field(field: str) -> Callable[[str], list | None]:
     return _p
 
 
+MATERIALS_MAX_TOKENS = 16384  # unified stage-output cap (user ruling 2026-07-06)
+
+
 def run_json_stage(
     client: Any,
     system: str,
@@ -290,14 +293,23 @@ def run_json_stage(
     cfg: "CSSConfig | None" = None,
     required: Callable[[Any], list] | None = None,
     ok: Callable[[Any], bool] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: "int | None" = None,
 ) -> Any:
     """The one optimizer-JSON call every materials stage funnels through.
+
+    ``max_tokens=None`` (the norm) resolves to the ONE unified materials cap:
+    ``cfg.materials_max_tokens`` if set, else ``MATERIALS_MAX_TOKENS`` (16384;
+    user ruling 2026-07-06 — per-stage hardcoded caps are gone). Input sizes
+    are bounded upstream (interpret: tool_trunc per observation; mining:
+    materials_group_chunk=12 narratives per call), so 16K output keeps every
+    stage well inside the 256K context window.
 
     A thin pass-through to :func:`css.model.json_repair.complete_optimizer_json`
     (so production keeps context-aware repair). Tests monkeypatch THIS function
     and route on ``stage`` to script the whole pipeline without a network.
     """
+    if max_tokens is None:
+        max_tokens = int(getattr(cfg, "materials_max_tokens", 0) or MATERIALS_MAX_TOKENS)
     del cfg  # accepted for a uniform call shape / future budget hooks
     return complete_optimizer_json(
         client, system, user, parse=parse, ok=ok, required=required,
