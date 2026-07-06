@@ -44,6 +44,10 @@ VLLM_BIN="${VLLM_BIN:-vllm}"
 RUN_DIR="${VLLM_CLUSTER_HOME:-$HOME/vllm_cluster}"   # pidfiles + logs
 HEALTH_TIMEOUT=900            # first start loads ~70GB weights; be patient
 STOP_TIMEOUT=60
+# Watchdog (auto-restart dead replicas; started by `start`, stopped by `stop`)
+WATCH_INTERVAL=30             # seconds between health sweeps
+WATCH_MAX_RESTARTS=3          # flap breaker: max auto-restarts per port ...
+WATCH_FLAP_WINDOW=1800        # ... within this many seconds; then hold off
 # Extra args every replica gets. Tool parser is REQUIRED by the Bird
 # function-calling agent. Prefix caching MUST be explicit: the deployed vLLM
 # defaulted it OFF (measured 0.1% hit rate vs 42% on the old deployment),
@@ -147,7 +151,77 @@ stop_one() {  # stop_one <port>
     say "replica :$port stopped"
 }
 
+# ── Watchdog: self-healing for crashed replicas ────────────────────────────
+wd_pidfile() { echo "$RUN_DIR/watchdog.pid"; }
+wd_logfile() { echo "$RUN_DIR/watchdog.log"; }
+
+wd_alive() {
+    [[ -f "$(wd_pidfile)" ]] && kill -0 "$(cat "$(wd_pidfile)")" 2>/dev/null
+}
+
+wd_restart_budget_ok() {  # wd_restart_budget_ok <port> — flap breaker
+    local f="$RUN_DIR/restarts_$1.log" now cutoff n
+    now=$(date +%s); cutoff=$((now - WATCH_FLAP_WINDOW))
+    [[ -f "$f" ]] || return 0
+    n=$(awk -v c="$cutoff" '$1 >= c' "$f" | wc -l)
+    (( n < WATCH_MAX_RESTARTS ))
+}
+
+watchdog_loop() {  # internal: runs in its own process group
+    declare -A grace_until
+    local now port
+    echo "===== $(date -Is) watchdog up (interval=${WATCH_INTERVAL}s) =====" >> "$(wd_logfile)"
+    while true; do
+        for i in "${!REPLICA_PORTS[@]}"; do
+            port="${REPLICA_PORTS[$i]}"; now=$(date +%s)
+            if healthy "$port"; then
+                grace_until[$port]=0
+                continue
+            fi
+            if alive "$port"; then
+                # Alive but unhealthy: loading or wedged. Allow HEALTH_TIMEOUT
+                # of grace from first observation before declaring it wedged.
+                if [[ "${grace_until[$port]:-0}" == "0" ]]; then
+                    grace_until[$port]=$((now + HEALTH_TIMEOUT))
+                    echo "$(date -Is) :$port alive-but-unhealthy; grace ${HEALTH_TIMEOUT}s" >> "$(wd_logfile)"
+                    continue
+                fi
+                (( now < grace_until[$port] )) && continue
+                echo "$(date -Is) :$port WEDGED past grace — force restart" >> "$(wd_logfile)"
+                stop_one "$port" >> "$(wd_logfile)" 2>&1
+            else
+                echo "$(date -Is) :$port DEAD (no process)" >> "$(wd_logfile)"
+            fi
+            if wd_restart_budget_ok "$port"; then
+                date +%s >> "$RUN_DIR/restarts_$port.log"
+                echo "$(date -Is) :$port auto-restarting" >> "$(wd_logfile)"
+                start_one "$i" >> "$(wd_logfile)" 2>&1
+                grace_until[$port]=$(( $(date +%s) + HEALTH_TIMEOUT ))
+            else
+                echo "$(date -Is) :$port FLAPPING (>=${WATCH_MAX_RESTARTS} restarts in ${WATCH_FLAP_WINDOW}s) — holding off; investigate $(logfile "$port")" >> "$(wd_logfile)"
+            fi
+        done
+        sleep "$WATCH_INTERVAL"
+    done
+}
+
+watchdog_start() {
+    if wd_alive; then say "watchdog already running (pid $(cat "$(wd_pidfile)"))"; return 0; fi
+    setsid nohup "$0" __watchdog >> "$(wd_logfile)" 2>&1 &
+    echo $! > "$(wd_pidfile)"
+    say "watchdog started (pid $!, interval ${WATCH_INTERVAL}s, flap breaker ${WATCH_MAX_RESTARTS}/${WATCH_FLAP_WINDOW}s)"
+}
+
+watchdog_stop() {
+    if wd_alive; then
+        kill -TERM -- "-$(cat "$(wd_pidfile)")" 2>/dev/null || kill -TERM "$(cat "$(wd_pidfile)")" 2>/dev/null
+        say "watchdog stopped"
+    fi
+    rm -f "$(wd_pidfile)"
+}
+
 status() {
+    if wd_alive; then say "watchdog: RUNNING (pid $(cat "$(wd_pidfile)"))"; else say "watchdog: not running"; fi
     printf "%-8s %-8s %-8s %-9s %s\n" PORT GPUS PID ALIVE HEALTH
     for i in "${!REPLICA_PORTS[@]}"; do
         local port="${REPLICA_PORTS[$i]}" pid="-" al="no" he="down"
@@ -176,12 +250,17 @@ case "${1:-}" in
         for i in "${!REPLICA_PORTS[@]}"; do start_one "$i"; done
         rc=0
         for port in "${REPLICA_PORTS[@]}"; do wait_healthy "$port" || rc=1; done
+        watchdog_start
         status
         exit "$rc"
         ;;
     stop)
+        watchdog_stop   # first — or it would resurrect what we stop below
         for port in "${REPLICA_PORTS[@]}"; do stop_one "$port"; done
         ;;
+    __watchdog) watchdog_loop ;;
+    watchdog-start) watchdog_start ;;
+    watchdog-stop)  watchdog_stop ;;
     restart)
         "$0" stop && sleep 3 && exec "$0" start
         ;;
@@ -192,7 +271,7 @@ case "${1:-}" in
         exec tail -f "$(logfile "$2")"
         ;;
     *)
-        echo "usage: $0 {start|stop|restart|status|probe|logs <port>}"
+        echo "usage: $0 {start|stop|restart|status|probe|logs <port>|watchdog-start|watchdog-stop}"
         exit 1
         ;;
 esac
