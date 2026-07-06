@@ -149,6 +149,10 @@ def main() -> None:
             # subprocess ceiling must exceed the farm-side gate.
             "webarena_refresh_cmd": FARM_SSH + " refresh {stack} {site}",
             "webarena_refresh_timeout_s": 1500,
+            # Refresh-storm cap: concurrent recreates on the farm host degrade
+            # each other (gitlab 81s idle -> 4-7 min under storm, measured
+            # 2026-07-06); eager refresh hides the queueing.
+            "webarena_refresh_concurrency": 3,
             "webarena_har_content": "omit",  # URLs+status suffice for evaluator
             "webarena_nav_timeout_ms": 30000,
         },

@@ -90,7 +90,9 @@ class WebArenaEnv:
                     "cfg.extra['webarena_stacks'] required: "
                     "{stack_name: {site: base_url}}")
             self.leases = SiteLeaseManager(
-                stacks, refresh_fn=_build_refresh_fn(extra))
+                stacks, refresh_fn=_build_refresh_fn(extra),
+                refresh_concurrency=int(
+                    extra.get("webarena_refresh_concurrency", 3)))
 
         if scorer is not None:
             self.scorer = scorer

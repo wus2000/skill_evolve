@@ -65,7 +65,8 @@ class SiteLeaseManager:
     """
 
     def __init__(self, stacks: "dict[str, dict[str, str]]",
-                 refresh_fn: "Callable[[str, str], None] | None" = None):
+                 refresh_fn: "Callable[[str, str], None] | None" = None,
+                 refresh_concurrency: int = 3):
         if not stacks:
             raise ValueError("SiteLeaseManager needs at least one stack")
         self._stacks = dict(stacks)
@@ -75,6 +76,13 @@ class SiteLeaseManager:
         self._rr = 0
         self._rr_lock = threading.Lock()
         self._mu = threading.Lock()   # guards lane.dirty / lane.refreshing
+        # Refresh-storm cap: batch boundaries release many mutating lanes at
+        # once and eager refresh would recreate them all concurrently — on the
+        # farm host that contention degraded gitlab recreate 81s -> 4-7 min
+        # (2026-07-06 smoke). Serializing to a few concurrent recreates keeps
+        # each near its nominal cost; the queue delay is hidden by eagerness.
+        self._refresh_gate = threading.BoundedSemaphore(
+            max(1, int(refresh_concurrency)))
 
     @staticmethod
     def _log_wait(t0: float, wanted: "list[str]", task_type: str) -> None:
@@ -94,7 +102,8 @@ class SiteLeaseManager:
                 return
             lane.refreshing = True
         try:
-            self._refresh(stack, site)
+            with self._refresh_gate:
+                self._refresh(stack, site)
             with self._mu:
                 lane.dirty = False
         except Exception:

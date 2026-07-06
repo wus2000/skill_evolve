@@ -210,6 +210,34 @@ class TestWebArenaEnv(unittest.TestCase):
         ro = mgr.acquire(["reddit"], "retrieve", timeout_s=10)
         self.assertFalse(ro.exclusive)
 
+    def test_refresh_storm_capped(self):
+        active = {"n": 0, "peak": 0}
+        mu = threading.Lock()
+
+        def slow_refresh(st, si):
+            with mu:
+                active["n"] += 1
+                active["peak"] = max(active["peak"], active["n"])
+            time.sleep(0.15)
+            with mu:
+                active["n"] -= 1
+        stacks = {f"s{i}": {"reddit": f"http://h:{i}9999"} for i in range(6)}
+        mgr = SiteLeaseManager(stacks, refresh_fn=slow_refresh,
+                               refresh_concurrency=2)
+        leases = [mgr.acquire(["reddit"], "mutate", timeout_s=5)
+                  for _ in range(6)]
+        for l in leases:          # release all at once -> eager refresh storm
+            mgr.release(l)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with mgr._mu:
+                if not any(ln.dirty or ln.refreshing
+                           for ln in mgr._lanes.values()):
+                    break
+            time.sleep(0.02)
+        self.assertLessEqual(active["peak"], 2)   # cap honoured
+        self.assertEqual(active["n"], 0)          # all refreshes drained
+
     def test_failed_refresh_leaves_lane_dirty_then_retries(self):
         calls = []
 
