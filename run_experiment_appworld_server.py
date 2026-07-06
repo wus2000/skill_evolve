@@ -145,12 +145,14 @@ def main() -> None:
 
         extra={
             "llm_backend": "openai_compat",
-            # THREE shared endpoints, client-side balancing by llmfleet
-            # (agreed 2026-07-06). LITERAL string — bypasses the endpoint
-            # registry (BFCL mis-routing lesson, commit 5ed3f91).
+            # FOUR shared endpoints, client-side balancing by llmfleet
+            # (2026-07-06 endpoint restore: 162 dual arms + 127 local dual
+            # arms 8888/8889, per user). LITERAL string — bypasses the
+            # endpoint registry (BFCL mis-routing lesson, commit 5ed3f91).
             "base_url": ("http://10.77.110.162:8888/v1,"
                          "http://10.77.110.162:8889/v1,"
-                         "http://127.0.0.1:8888/v1"),
+                         "http://127.0.0.1:8888/v1,"
+                         "http://127.0.0.1:8889/v1"),
             "api_key": "token-abc123",
             "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
             "temperature": 0.7,
