@@ -44,12 +44,12 @@ outcome.
 Write the narrative as the body of your answer; the other fields exist to serve
 a specific downstream reader and must be consistent with the narrative.
 
-Output — ONE JSON object, no fences, no prose outside it:
+Output — ONE JSON object, no fences, no prose outside it. It MUST contain
+EXACTLY these eight keys, each spelled EXACTLY as written (no abbreviations,
+no renames): "narrative", "outcome_causality", "behavior_signature",
+"adherence", "strategy_signals", "anomalies", "task_group_hint", "key_steps".
 {
-  "narrative": "<multiple paragraphs: the overall way this agent approached the
-    task; which pieces of the strategy visibly shaped its choices at which
-    junctures, and which it ignored or could not act on; how that way of
-    behaving led, step by step at the BEHAVIORAL level, to the outcome>",
+  "narrative": "<multiple paragraphs (\\n\\n-separated, inside this ONE string): the overall way this agent approached the task; which pieces of the strategy visibly shaped its choices at which junctures, and which it ignored or could not act on; how that way of behaving led, step by step at the BEHAVIORAL level, to the outcome>",
   "outcome_causality": "<one paragraph: the mechanistic chain from behavior
     pattern to success or failure>",
   "behavior_signature": "<one line naming this trajectory's behavior pattern>",
