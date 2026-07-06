@@ -86,26 +86,39 @@ def _spawner(strategy="## Mechanism A\ndo things differently", decline_ids=()):
     return fn
 
 
-# ── consecutive-dry-burst saturation semantics (user ruling 2026-07-05) ─────
+# ── no-new-best saturation semantics (user ruling 2026-07-06) ───────────────
+def _push_steps(node, actions):
+    for a in actions:
+        node.step_buffer.append(StepBufferEntry(
+            step=node.n_steps, action=a, score_before=0, score_after=0))
+
+
 def test_single_dry_burst_does_not_saturate():
     cfg = _cfg()
     node = TreeNode(node_id="n0000")
-    node.n_bursts = 1
-    node.burst_accepts = [0]            # one all-reject burst
-    assert not node_stalled(node, cfg)  # 1 dry burst is NOT evidence enough
-    node.n_bursts = 2
-    node.burst_accepts = [0, 0]         # two consecutive dry bursts
+    _push_steps(node, ["reject"] * 5)          # one burst, no new best
+    assert not node_stalled(node, cfg)         # 5 < 10: not evidence enough
+    _push_steps(node, ["reject"] * 5)          # second dry burst
     assert node_stalled(node, cfg)
 
 
-def test_any_accept_resets_dry_streak():
+def test_plain_accept_does_not_reset_the_streak():
+    # Content churn without height gain is NOT basin yield: a plain `accept`
+    # (item-win, not a new best) must not postpone saturation.
     cfg = _cfg()
     node = TreeNode(node_id="n0000")
-    node.n_bursts = 3
-    node.burst_accepts = [0, 1, 0]      # accept in the middle burst
-    assert not node_stalled(node, cfg)  # streak is 1, not 2
-    node.burst_accepts = [1, 0, 0]
+    _push_steps(node, ["reject", "accept", "reject", "reject", "reject"])
+    _push_steps(node, ["reject", "reject", "accept", "reject", "reject"])
+    assert node.step_buffer.steps_since_new_best() >= 10
     assert node_stalled(node, cfg)
+
+
+def test_new_best_resets_the_streak():
+    cfg = _cfg()
+    node = TreeNode(node_id="n0000")
+    _push_steps(node, ["reject"] * 5)
+    _push_steps(node, ["reject", "reject", "accept_new_best", "reject", "reject"])
+    assert not node_stalled(node, cfg)         # streak is 2, not >= 10
 
 
 def test_dry_streak_judged_across_bursts_in_loop(tmp_path, monkeypatch):

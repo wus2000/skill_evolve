@@ -316,20 +316,25 @@ def _unwired_spawner(ctx: SpawnContext) -> SpawnOutcome:  # pragma: no cover
 
 
 def node_stalled(node: "TreeNode", cfg: "CSSConfig") -> bool:
-    """Saturation judgement at the burst boundary — CONSECUTIVE DRY BURSTS.
+    """Saturation judgement at the burst boundary — NO NEW BEST for the last
+    ``saturation_dry_bursts`` bursts' worth of steps.
 
-    User ruling 2026-07-05 (supersedes the cross-burst stall counter): the
-    node is saturated when its last ``cfg.saturation_dry_bursts`` (default 2)
-    bursts ALL had zero gate accepts. One dry burst is deliberately NOT enough
-    (~17% false saturation at typical accept rates; two dry bursts ~3%). Any
-    accept — best or not — is basin yield and resets the dry streak. Judged on
-    per-burst accept counts (robust to bursts cut short by hard errors).
+    User ruling 2026-07-06 (supersedes the zero-ACCEPT-burst rule of
+    2026-07-05): a noise-limited paired gate keeps producing small item-win
+    ACCEPTS indefinitely at a basin's flat top (measured live: AppWorld
+    bursts [3,1,2] accepts while best sat unmoved for 10+ steps — under the
+    zero-accept rule, P(two consecutive dry bursts) ~1-2%/pair, so the root
+    would burn the whole decision budget without ever spawning). Content
+    churn without height gain is NOT basin yield; only ``accept_new_best``
+    resets the streak. Implemented on the persistent cross-burst
+    ``steps_since_new_best`` counter (no new state; resume-safe; bursts cut
+    short by hard errors count their actual steps). False-saturation odds
+    stay ~3% (a 2-burst window, same as the superseded rule).
+    ``burst_accepts`` remains as telemetry.
     """
     k = max(1, getattr(cfg, "saturation_dry_bursts", 2))
-    accepts = node.burst_accepts
-    if len(accepts) < k:
-        return False
-    return all(a == 0 for a in accepts[-k:])
+    window = k * max(1, getattr(cfg, "burst_steps", 5))
+    return node.step_buffer.steps_since_new_best() >= window
 
 
 # ──────────────────────────────────────────────────────────────────────────

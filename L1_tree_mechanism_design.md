@@ -81,7 +81,16 @@
   bare burst 开局,root 饱和后的历次被选中逐个产出 NEW 子。css/coldstart.py
   的单发 design+critique 机制退役。
 
-### 1.3 饱和判据(用户终裁 2026-07-05:连续干涸 burst,取代方案 A)
+### 1.3 饱和判据(终裁修订 2026-07-06:连续两 burst 无新 best)
+
+**现行判据:`steps_since_new_best ≥ saturation_dry_bursts × burst_steps`(=10)**。
+实测修订依据:harm-veto 之下,噪声受限的配对 gate 在盆地平顶会无限产出小边际
+项胜 accept(AppWorld 实测 burst 账 [3,1,2] 而 best 十步未动),"连续两 burst
+零 accept"的触发概率仅 ~1-2%/对——root 会烧光预算不产子。换内容不涨高度不算
+盆地产出;只有 accept_new_best 重置计数。假饱和率仍 ~3%(两 burst 窗口不变);
+`burst_accepts` 降为遥测。
+
+(设计史第一版 2026-07-05:连续干涸 burst[零 accept],取代方案 A——保留如下)
 
 **判据:节点最近 `saturation_dry_bursts`(=2)个 burst 的 gate accept 数全为 0
 → 饱和**。实现记账在 `TreeNode.burst_accepts`(每 burst 一个 accept 计数,

@@ -99,6 +99,16 @@ def main() -> None:
         gate_screen_k=1,
         gate_escalation_k=3,
 
+        # ── L1 TREE SEARCH (mechanism default since 2026-07-06; design:
+        #    L1_tree_mechanism_design.md — run_css delegates to the
+        #    burst-granular tree loop; legacy L0-budget/L1-cycle knobs are
+        #    fingerprint-inert under burst mode) ─────────────────────────
+        burst_steps=5,              # one tree visit = 5 L0 steps (agreed)
+        saturation_dry_bursts=2,    # saturated when no NEW BEST for 2 bursts' steps (user ruling 2026-07-06)
+        node_degree=3,              # REFINE children per strategy node; root unlimited (user ruling)
+        max_decisions=40,           # decision budget; NOT fingerprinted — resume may extend
+        verify_mode="harm_veto",    # per-edit probe only vetoes measured net harm (fix 2026-07-05)
+
         # Dataset-size subsets for the full split (0 = use all):
         coldstart_train_size=500,    # cold-start bare rollout
         exploitation_val_size=0,     # 0 = use FULL val set for gate (1100 items)
