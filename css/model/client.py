@@ -24,6 +24,7 @@ not from backend-global state.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import logging
 import time
@@ -614,7 +615,12 @@ class OpenAICompatLLMClient:
                 )
                 if 400 <= e.code < 500:
                     raise last_err
-            except (urllib.error.URLError, OSError) as e:
+            except (urllib.error.URLError, OSError,
+                    http.client.HTTPException) as e:
+                # HTTPException adds IncompleteRead/BadStatusLine — a replica
+                # dying mid-response-transfer (ms-scale window; 2026-07-06
+                # audit). Same retry-on-another-arm semantics as
+                # connection-level errors.
                 router.mark_unhealthy(index)
                 last_err = RuntimeError(f"OpenAI-compat API request failed: {e}")
             finally:
