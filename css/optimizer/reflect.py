@@ -62,33 +62,55 @@ _PROPOSER_MAX_TOKENS = 12288
 # shorter than this, so D7's "never clip reasoning/action" holds in practice
 # even at the floor; only oversized observations keep shrinking.
 _TRUNC_FLOOR = 600
-# Conservative chars-per-token for budget math (AXTree-dense text runs ~3.5-4).
-_CHARS_PER_TOKEN = 3.0
+# Fallback chars-per-token when no tokenizer is reachable. MEASURED via vLLM
+# /tokenize on real WebArena trajectories (2026-07-06): AXTree transcripts run
+# 2.23-2.55 chars/token — far denser than prose. 2.0 overestimates the token
+# count, keeping the fallback strictly conservative.
+_FALLBACK_CHARS_PER_TOKEN = 2.0
 
 
-def _fit_render_to_budget(render, tool_trunc: int, char_budget: int) -> "tuple[str, bool]":
+def _count_tokens(client: Any, text: str) -> int:
+    """Token count for budget math: EXACT via the client's tokenizer endpoint
+    when available, conservative chars-based estimate otherwise. All budget
+    decisions run on tokens (user ruling 2026-07-06) — chars-per-token guesses
+    mislead by 2x across content types."""
+    fn = getattr(client, "count_tokens", None)
+    if fn is not None:
+        try:
+            count = fn(text)
+            if isinstance(count, int) and count > 0:
+                return count
+        except Exception:  # noqa: BLE001 — fall back to the estimate
+            pass
+    return int(len(text) / _FALLBACK_CHARS_PER_TOKEN) + 1
+
+
+def _fit_render_to_budget(render, tool_trunc: int, token_budget: int,
+                          count) -> "tuple[str, int, bool]":
     """Render a trajectory block, decaying the per-message elision cap until it
-    fits ``char_budget``. Returns ``(text, fitted)``.
+    fits ``token_budget``. Returns ``(text, tokens, fitted)``.
 
     Long-observation envs break the fixed-cap arithmetic: a WebArena minibatch
-    (8 traj x ~30 turns x tool_trunc=8k) rendered ~250k TOKENS and the proposer
-    call died with HTTP 400 context overflow (2026-07-06 smoke). The cap halves
-    down to ``_TRUNC_FLOOR``; the caller decides what to do if even the floor
-    render does not fit (e.g. drop whole trajectories, loudly).
+    (8 traj x ~30 turns of AXTree at tool_trunc=8k) rendered ~250k tokens and
+    the proposer call died with HTTP 400 context overflow (2026-07-06 smoke).
+    The cap halves down to ``_TRUNC_FLOOR``; the caller decides what to do if
+    even the floor render does not fit (e.g. drop trajectories, loudly).
     """
     text = render(tool_trunc)
-    if char_budget <= 0 or len(text) <= char_budget:
-        return text, True
+    tokens = count(text)
+    if token_budget <= 0 or tokens <= token_budget:
+        return text, tokens, True
     cap = tool_trunc if tool_trunc > 0 else 8_000
     while cap > _TRUNC_FLOOR:
         cap = max(_TRUNC_FLOOR, cap // 2)
         text = render(cap)
-        if len(text) <= char_budget:
+        tokens = count(text)
+        if tokens <= token_budget:
             _log.info(
                 "reflect: trajectory block fit at per-message cap %d "
-                "(%d/%d chars)", cap, len(text), char_budget)
-            return text, True
-    return text, False
+                "(%d/%d tokens)", cap, tokens, token_budget)
+            return text, tokens, True
+    return text, tokens, False
 
 
 def _render_minibatch(minibatch: list["TaskResult"], tool_trunc: int) -> str:
@@ -511,41 +533,43 @@ def _run_minibatch_proposer(
         )
 
     # Trajectory block gets whatever context the fixed sections leave over
-    # (first real consumer of context_cap * context_use_frac). 2k chars of
-    # slack covers separators + the injected firewall clause.
-    fixed_chars = (len(system_prompt) + sum(len(s) for s in sections)
-                   + sum(len(s) for s in tail_sections) + 2_000)
+    # (first real consumer of context_cap * context_use_frac). All budget math
+    # runs on TOKENS — exact via the endpoint tokenizer when reachable,
+    # conservative estimate otherwise. 600 tokens of slack cover separators +
+    # the injected firewall clause.
+    count = lambda text: _count_tokens(client, text)  # noqa: E731
     threshold = int(getattr(cfg, "effective_context_threshold", 204_800))
-    char_budget = max(
-        40_000,
-        int((threshold - _PROPOSER_MAX_TOKENS) * _CHARS_PER_TOKEN) - fixed_chars)
+    fixed_tokens = count(
+        system_prompt + "\n\n".join(sections + tail_sections)) + 600
+    token_budget = max(
+        20_000, threshold - _PROPOSER_MAX_TOKENS - fixed_tokens)
 
     rolls = list(rollouts)
     if contrastive_group is not None:
-        traj, fitted = _fit_render_to_budget(
+        traj, traj_tokens, fitted = _fit_render_to_budget(
             lambda cap: _render_contrastive_group(contrastive_group, cap),
-            cfg.tool_trunc, char_budget)
+            cfg.tool_trunc, token_budget, count)
     else:
-        traj, fitted = _fit_render_to_budget(
+        traj, traj_tokens, fitted = _fit_render_to_budget(
             lambda cap: _render_minibatch(rolls, cap),
-            cfg.tool_trunc, char_budget)
+            cfg.tool_trunc, token_budget, count)
         while not fitted and len(rolls) > 1:
             # Even floor-capped messages overflow: shed whole trajectories,
             # loudly, rather than send a call that 400s into silence.
             rolls = rolls[: max(1, len(rolls) // 2)]
-            traj, fitted = _fit_render_to_budget(
+            traj, traj_tokens, fitted = _fit_render_to_budget(
                 lambda cap: _render_minibatch(rolls, cap),
-                cfg.tool_trunc, char_budget)
+                cfg.tool_trunc, token_budget, count)
         if len(rolls) < len(rollouts):
             _log.warning(
                 "reflect: dropped %d/%d trajectories to fit context budget "
-                "(%d chars)", len(rollouts) - len(rolls), len(rollouts),
-                char_budget)
+                "(%d tokens)", len(rollouts) - len(rolls), len(rollouts),
+                token_budget)
     if not fitted:
         _log.warning(
             "reflect: trajectory block still over budget at floor cap "
-            "(%d > %d chars); proposer call may overflow the context",
-            len(traj), char_budget)
+            "(%d > %d tokens); proposer call may overflow the context",
+            traj_tokens, token_budget)
 
     user = "\n\n".join(sections + ["## Trajectories\n" + traj] + tail_sections)
 

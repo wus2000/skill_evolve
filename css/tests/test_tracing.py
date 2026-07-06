@@ -178,6 +178,37 @@ class TestTracingLLMClient:
         ev = [e for e in events if e["event"] == "llm_call"][-1]
         assert ev["method"] == "complete_optimizer_messages"
 
+    def test_target_usage_propagated_from_inner_stash(self, tmp_path):
+        # Target calls return bare text; real token usage reaches the trace
+        # via the inner client's thread-local stash (user ruling 2026-07-06:
+        # stats in tokens, not chars).
+        init_trace(str(tmp_path))
+
+        class Inner:
+            target_model = "m"
+
+            def complete_target_messages(self, messages, *, max_tokens=4096,
+                                         temperature=0.0):
+                self._u = {"prompt_tokens": 1234, "completion_tokens": 56,
+                           "total_tokens": 1290}
+                return "ok"
+
+            def pop_last_usage(self):
+                u = getattr(self, "_u", None)
+                self._u = None
+                return u
+
+        client = TracingLLMClient(Inner(), role="target")
+        client.complete_target_messages([{"role": "user", "content": "q"}])
+
+        with open(tmp_path / "trace.jsonl") as f:
+            events = [json.loads(line) for line in f]
+        ev = [e for e in events if e["event"] == "llm_call"][-1]
+        assert ev["usage"]["prompt_tokens"] == 1234
+        with open(tmp_path / "llm_calls.jsonl") as f:
+            full = [json.loads(line) for line in f][-1]
+        assert full["usage"]["total_tokens"] == 1290
+
 
 class TestTruncation:
     def test_long_text_truncated(self):

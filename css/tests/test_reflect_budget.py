@@ -34,6 +34,10 @@ def _cfg(**kw) -> CSSConfig:
     return CSSConfig(**base)
 
 
+def _est(text: str) -> int:
+    return int(len(text) / R._FALLBACK_CHARS_PER_TOKEN) + 1
+
+
 class TestFitRenderToBudget(unittest.TestCase):
     def test_decays_until_fit(self):
         calls = []
@@ -42,20 +46,29 @@ class TestFitRenderToBudget(unittest.TestCase):
             calls.append(cap)
             return "x" * (cap * 100)
 
-        text, fitted = R._fit_render_to_budget(render, 8000, 150_000)
+        text, tokens, fitted = R._fit_render_to_budget(render, 8000, 75_000, _est)
         self.assertTrue(fitted)
-        self.assertLessEqual(len(text), 150_000)
+        self.assertLessEqual(tokens, 75_000)
         self.assertGreater(len(calls), 1)          # decay actually engaged
 
     def test_within_budget_untouched(self):
-        text, fitted = R._fit_render_to_budget(lambda cap: "y" * 100, 8000, 150_000)
+        text, tokens, fitted = R._fit_render_to_budget(
+            lambda cap: "y" * 100, 8000, 75_000, _est)
         self.assertTrue(fitted)
         self.assertEqual(text, "y" * 100)
 
     def test_floor_reached_reports_unfit(self):
-        text, fitted = R._fit_render_to_budget(
-            lambda cap: "z" * 1_000_000, 8000, 150_000)
+        text, tokens, fitted = R._fit_render_to_budget(
+            lambda cap: "z" * 1_000_000, 8000, 75_000, _est)
         self.assertFalse(fitted)
+
+    def test_exact_counter_preferred_over_estimate(self):
+        class Client:
+            def count_tokens(self, text):
+                return 7
+        self.assertEqual(R._count_tokens(Client(), "x" * 1000), 7)
+        # no counter -> conservative estimate
+        self.assertEqual(R._count_tokens(object(), "x" * 1000), _est("x" * 1000))
 
 
 class TestProposerBudget(unittest.TestCase):
@@ -74,13 +87,13 @@ class TestProposerBudget(unittest.TestCase):
 
     def test_webarena_scale_minibatch_fits_default_context(self):
         # 8 x 30-turn x 9k-char observations ~= 2.2M chars raw — the exact
-        # shape that 400'd in the smoke. Must fit the default 256k*0.8 budget.
+        # shape that 400'd in the smoke. Must fit the default 256k*0.8 budget
+        # (token math on the conservative fallback estimator here).
         rollouts = [_result(f"wa_{i:04d}") for i in range(8)]
         rp, cap = self._run(_cfg(), rollouts)
-        budget_chars = int(
-            (_cfg().effective_context_threshold - R._PROPOSER_MAX_TOKENS)
-            * R._CHARS_PER_TOKEN)
-        self.assertLess(len(cap["user"]), budget_chars)
+        budget_tokens = (_cfg().effective_context_threshold
+                         - R._PROPOSER_MAX_TOKENS)
+        self.assertLess(_est(cap["user"]), budget_tokens)
         self.assertIn("[truncated", cap["user"])   # elision, not omission
         self.assertEqual(cap["user"].count("### Trajectory"), 8)  # none dropped
 

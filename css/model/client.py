@@ -27,6 +27,7 @@ import hashlib
 import http.client
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -122,6 +123,13 @@ class RouterLLMClient:
         self.target_model = target_model
         self.optimizer_model = optimizer_model
         self.backend = backend
+        self._tls = threading.local()
+
+    def pop_last_usage(self) -> "dict | None":
+        """Take (and clear) this thread's most recent target-call usage."""
+        usage = getattr(self._tls, "last_usage", None)
+        self._tls.last_usage = None
+        return usage
 
     def _resolve_backend(self):
         """Lazily import and return the concrete SkillOpt backend module."""
@@ -143,12 +151,13 @@ class RouterLLMClient:
         backend = self._resolve_backend()
         if hasattr(backend, "set_target_deployment"):
             backend.set_target_deployment(self.target_model)
-        text, _usage = backend.chat_target(
+        text, usage = backend.chat_target(
             system=system,
             user=user,
             max_completion_tokens=max_tokens,
             stage="target",
         )
+        self._tls.last_usage = usage
         return text
 
     def complete_target_messages(
@@ -158,11 +167,12 @@ class RouterLLMClient:
         backend = self._resolve_backend()
         if hasattr(backend, "set_target_deployment"):
             backend.set_target_deployment(self.target_model)
-        text, _usage = backend.chat_target_messages(
+        text, usage = backend.chat_target_messages(
             messages=messages,
             max_completion_tokens=max_tokens,
             stage="target",
         )
+        self._tls.last_usage = usage
         return text
 
     def complete_target_tools(
@@ -322,6 +332,14 @@ class TargetOnlyClient:
             temperature=temperature,
         )
 
+    def pop_last_usage(self) -> "dict | None":
+        fn = getattr(self._inner, "pop_last_usage", None)
+        return fn() if fn is not None else None
+
+    def count_tokens(self, text: str, **kwargs) -> "int | None":
+        fn = getattr(self._inner, "count_tokens", None)
+        return fn(text, **kwargs) if fn is not None else None
+
     def complete_optimizer(self, *args, **kwargs) -> tuple[str, dict]:
         raise RuntimeError("target-only client cannot call optimizer")
 
@@ -451,6 +469,10 @@ class OptimizerOnlyClient:
             _inject_firewall_system(system), user, tool, max_tokens=max_tokens
         )
 
+    def count_tokens(self, text: str, **kwargs) -> "int | None":
+        fn = getattr(self._inner, "count_tokens", None)
+        return fn(text, **kwargs) if fn is not None else None
+
     def complete_target(self, *args, **kwargs) -> str:
         raise RuntimeError("optimizer-only client cannot call target")
 
@@ -503,6 +525,11 @@ class OpenAICompatLLMClient:
         # keeping most sessions pinned.
         self.route_load_factor = route_load_factor
         self.route_cooldown_s = route_cooldown_s
+        # Per-thread stash of the most recent TARGET call's usage: the target
+        # interface returns bare text (env agents never see usage), but the
+        # tracing wrapper needs real token stats — thread-local because one
+        # client serves 256+ rollout threads.
+        self._tls = threading.local()
         # When True, optimizer (NOT target) calls request a structured JSON
         # object via ``response_format`` — engine-level guarantee for backends
         # like Qwen/vLLM that honor it. Enable only when every optimizer prompt
@@ -678,17 +705,51 @@ class OpenAICompatLLMClient:
         }
         return text, usage_info
 
+    def pop_last_usage(self) -> "dict | None":
+        """Take (and clear) this thread's most recent target-call usage."""
+        usage = getattr(self._tls, "last_usage", None)
+        self._tls.last_usage = None
+        return usage
+
+    def count_tokens(self, text: str, *, model: str = "") -> "int | None":
+        """Exact token count via the endpoint's ``/tokenize``; None if no
+        replica answers. Token-based budget math must never trust
+        chars-per-token guesses (AXTree measured 2.23 chars/token vs ~4 for
+        prose, 2026-07-06)."""
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        body = json.dumps({"model": model or self.optimizer_model,
+                           "prompt": text}).encode("utf-8")
+        for node in self._fleet():
+            base = node["url"]
+            root = base.rsplit("/v1", 1)[0] if "/v1" in base else base
+            req = urllib.request.Request(
+                f"{root}/tokenize", data=body, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(
+                        req, timeout=min(60.0, self.timeout_seconds)) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                count = data.get("count")
+                if isinstance(count, int) and count >= 0:
+                    return count
+            except Exception:  # noqa: BLE001 — fall through to the next replica
+                continue
+        return None
+
     def complete_target(
         self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
     ) -> str:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        text, _ = self._call(messages, self.target_model, max_tokens, temperature)
+        text, usage = self._call(messages, self.target_model, max_tokens, temperature)
+        self._tls.last_usage = usage
         return text
 
     def complete_target_messages(
         self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
     ) -> str:
-        text, _ = self._call(list(messages), self.target_model, max_tokens, temperature)
+        text, usage = self._call(list(messages), self.target_model, max_tokens, temperature)
+        self._tls.last_usage = usage
         return text
 
     def complete_target_tools(
@@ -724,6 +785,12 @@ class OpenAICompatLLMClient:
         if not choices:
             raise RuntimeError(f"OpenAI-compat API returned no choices: {data}")
         message = choices[0].get("message") or {}
+        usage = data.get("usage") or {}
+        self._tls.last_usage = {
+            "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+            "completion_tokens": int(usage.get("completion_tokens", 0)),
+            "total_tokens": int(usage.get("total_tokens", 0)),
+        }
         content = message.get("content")
         tool_calls = message.get("tool_calls")
         if not tool_calls:

@@ -277,6 +277,17 @@ class TracingLLMClient:
         """Context manager that temporarily overrides the stage label for trace."""
         return _StageContext(self, stage)
 
+    def count_tokens(self, text: str, **kwargs):
+        fn = getattr(self._inner, "count_tokens", None)
+        return fn(text, **kwargs) if fn is not None else None
+
+    def _pop_inner_usage(self) -> "dict | None":
+        """Real token usage of the target call that just returned (the target
+        interface hands back bare text, so the inner client stashes usage
+        thread-locally; None on backends without the stash or on errors)."""
+        fn = getattr(self._inner, "pop_last_usage", None)
+        return fn() if fn is not None else None
+
     @property
     def _current_stage(self) -> str:
         return self._stage_stack[-1] if self._stage_stack else self._role
@@ -307,6 +318,7 @@ class TracingLLMClient:
             log_llm_call(
                 "target", "complete_target",
                 system=system, user=user, response=response,
+                usage=self._pop_inner_usage(),
                 duration_s=time.time() - t0,
                 model=self.target_model,
                 max_tokens=max_tokens, temperature=temperature,
@@ -331,6 +343,7 @@ class TracingLLMClient:
             log_llm_call(
                 "target", "complete_target_messages",
                 messages=messages, response=response,
+                usage=self._pop_inner_usage(),
                 duration_s=time.time() - t0,
                 model=self.target_model,
                 max_tokens=max_tokens, temperature=temperature,
@@ -362,6 +375,7 @@ class TracingLLMClient:
             log_llm_call(
                 "target", "complete_target_tools",
                 messages=messages, response=str(result),
+                usage=self._pop_inner_usage(),
                 duration_s=time.time() - t0,
                 model=self.target_model,
                 max_tokens=max_tokens, temperature=temperature,
