@@ -134,9 +134,10 @@ def main() -> None:
             # ── WebArena env knobs (PREP §7) ──
             "webarena_split_dir": "data/webarena_splits",
             "webarena_stacks": STACKS,
-            # 24 concurrent chromium instances: ~0.3-0.5GB each; harness host
-            # shares CPU with three other experiments. Raise after观察 only.
-            "webarena_max_browsers": 24,
+            # 40 concurrent chromium instances (user-agreed 2026-07-06):
+            # measured 127 at load 11/80 cores, 122GB RAM available with all
+            # four experiments live; 40 browsers ~= 15-20GB + moderate CPU.
+            "webarena_max_browsers": 40,
             "webarena_verified_cli":
                 "/home/wushang/miniconda3/envs/webarena/bin/webarena-verified",
             "webarena_env_config": env_config,
