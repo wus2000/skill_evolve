@@ -597,6 +597,14 @@ class OpenAICompatLLMClient:
             try:
                 with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
+                if not isinstance(data, dict):
+                    # Transient endpoint hiccup (measured 2026-07-06 right
+                    # after a vLLM restart): a 200 response whose body parses
+                    # to None/non-object. Treat as a retryable failure — the
+                    # bare value used to escape and AttributeError-crash the
+                    # calling pipeline stage.
+                    raise urllib.error.URLError(
+                        "response body parsed to %r (non-object)" % type(data).__name__)
                 ok = True
                 return data
             except urllib.error.HTTPError as e:
