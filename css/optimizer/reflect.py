@@ -399,14 +399,29 @@ exists, refine inside it with a refinement op.
   heading line in the body; the section heading is rendered from `subject`.
 
 ## Rules for every edit
+- AUDIENCE: your edits deploy into the playbook of the task-executing agent,
+  which at run time sees ONLY the task instruction and the environment. The
+  evaluation report at the end of a trajectory (verdicts, expected values,
+  how outputs are checked) is YOUR diagnostic material — it must never
+  become the condition, justification, or subject of a rule. Never write
+  "the evaluator/verifier/checker does X" or "if the evaluation checks Y";
+  express the same lesson through the task's own semantics (e.g. "write the
+  computed literal value — openpyxl stores formulas without evaluating
+  them, so the value must already be present when the file is read").
 - ONE edit = ONE theme. Never bundle multiple themes.
 - Gap-fill: add only what is missing, fix only what is wrong. Never restate
   guidance already in `rules.md`; if a section already covers the theme, improve
   it — do not add a duplicate.
 - Generalizable tactics only; never hardcode task-specific values (literal
-  values, identifiers, or paths specific to a single task).
+  values, identifiers, or paths specific to a single task). Worked examples
+  are welcome when they teach the pattern — write them SCHEMATIC (placeholder
+  sheet/column names, representative values), never verbatim from one
+  training task.
 - Direct and actionable: address the agent ("When you …, do …"), mechanically
   followable — not commentary.
+- If several trajectories teach the SAME lesson, produce ONE edit carrying
+  its strongest formulation (and every distinct detail) — never one edit per
+  trajectory for the same lesson.
 
 ## Budget
 Produce AT MOST L edits; fewer is better; emit an EMPTY list if `rules.md` already

@@ -49,7 +49,11 @@ patterns you mine, and above all the strategy.md / rules.md that result — is D
 at TEST time, where the agent has NO ground truth and sees only the task instruction \
 and the input. Therefore nothing you output may reference, depend on, compare against, \
 validate with, or instruct the agent to use expected / ground-truth / golden / \
-"Expected Results" values. Reason FROM ground truth privately if it helps your \
+"Expected Results" values. The same applies to the EVALUATION MACHINERY itself: \
+evaluators, verifiers, scoring scripts, and how outputs get checked are training-time \
+private information — never make them a condition, justification, or subject of what \
+you produce (no "if the evaluator checks X..."); state the behavior in terms of the \
+task's own semantics instead. Reason FROM ground truth privately if it helps your \
 diagnosis, but the agent can NEVER access it at run time, so any analysis, pattern, \
 strategy, or rule you emit that requires it is invalid by construction. State your \
 findings in terms of what the agent can observe from the task and input alone."""

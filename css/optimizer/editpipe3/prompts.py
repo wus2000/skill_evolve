@@ -119,6 +119,10 @@ document, synthesizing a group of raw edits that all serve that aspect.
 Operations available (handle-addressed):
   * add_section       {"op": "add_section", "section": "NEW: <title>", "content": ...}
   * append_to_section {"op": "append_to_section", "section": "S#k", "content": ...}
+  * amend_section     {"op": "amend_section", "section": "S#k", "content": "<the
+                       precise correction: name the existing guidance being
+                       fixed (quote or describe it), then give the corrected
+                       text — do NOT restate the rest of the section>"}
   * replace_section   {"op": "replace_section", "section": "S#k", "content": ...}
   * remove_section    {"op": "remove_section", "section": "S#k", "content": "<reason>"}
 
@@ -129,17 +133,32 @@ Drafting discipline:
     covers this aspect; open a NEW section only when none does. A NEW title
     must name the specific aspect — never a generic bucket ("Additional
     Rules", "Misc", "Other Notes").
-  * PREFER append (additive, non-destructive). Use replace only when
-    correcting or tightening EXISTING guidance is the aspect's very point;
-    when you replace, preserve the meaning and information of everything in
-    the section that this aspect does not target.
-  * Content is deployable rule text the executing agent reads: give each
-    rule its trigger condition, the concrete behavior, and a brief why.
-    Free-form markdown — worked examples, code snippets, and
-    correct-vs-wrong contrasts are ENCOURAGED where they teach better.
-  * Synthesize, do not concatenate: keep every source raw edit's distinct,
-    non-overlapping specifics — each source either contributes to an edit
+  * Choose the LIGHTEST sufficient operation: append for new guidance;
+    amend to fix or tighten a specific existing rule (the applier locates
+    it semantically — you never restate the whole section); replace ONLY
+    when the section as a whole is being restructured, and then preserve
+    the meaning and information of everything this aspect does not target.
+  * AUDIENCE: the content deploys to the task-executing agent, which at run
+    time sees only the task and the environment. Evaluation machinery
+    (evaluators, verifiers, expected values, how outputs are checked) is
+    training-time diagnostic material — never a condition, justification,
+    or subject of a rule ("if the evaluator checks X..." is invalid);
+    express the lesson through the task's own semantics. Optimization
+    bookkeeping (rationales, trajectory references) stays out of content.
+  * Content is deployable rule text: give each rule its trigger condition,
+    the concrete behavior, and a brief why. Free-form markdown — worked
+    examples, code snippets, and correct-vs-wrong contrasts are ENCOURAGED
+    where they teach better; write examples SCHEMATIC (placeholder
+    sheet/column names, representative values), never verbatim from one
+    training task.
+  * Synthesize, do not concatenate: the output carries ALL distinct
+    information from the sources in the FEWEST statements. When several
+    raws teach the same lesson, write its single strongest formulation and
+    fold each source's unique specifics into it — never keep parallel
+    restatements of one lesson. Every source either contributes to an edit
     (list it in that edit's source_ids) or is dropped with its reason.
+  * State each background fact (e.g. why a library behaves some way) at
+    most ONCE across all your edits.
   * Do not restate guidance the target section already contains.
 
 Output ONLY this JSON object:
@@ -205,20 +224,28 @@ an edit; your findings are routed back to the drafting stage.
 Review the drafts as one deployment:
   * ACROSS drafts — semantic_conflict: two edits command incompatible
     behavior in the same situation; duplicate: two edits teach the same
-    lesson twice.
+    lesson twice, OR restate the same background fact (e.g. why a library
+    behaves some way) in more than one place — it belongs where it is most
+    load-bearing, stated once.
   * PER draft — leakage: content contains task-specific answers, gold
     values, or references to specific training tasks (the deployed agent
-    has no ground truth; this is disqualifying); not_actionable: vague
-    slogans with no trigger condition or concrete behavior;
-    contradicts_existing: the edit contradicts guidance already in the
-    document that no edit in this set removes or replaces.
+    has no ground truth; this is disqualifying — the edit is removed);
+    audience_violation: content conditions on, justifies by, or describes
+    the evaluation machinery — evaluators, verifiers, scoring, how outputs
+    get checked ("if the evaluator checks X...") — or carries a worked
+    example copied verbatim from one training task; the lesson itself is
+    sound, so instruct a re-draft that expresses it through the task's own
+    semantics and schematic examples; not_actionable: vague slogans with
+    no trigger condition or concrete behavior; contradicts_existing: the
+    edit contradicts guidance already in the document that no edit in this
+    set removes or replaces.
 
 Output ONLY this JSON object:
 {
   "pass": true | false,
   "issues": [
     {"ids": ["D#2", "D#5"],
-     "type": "semantic_conflict" | "duplicate" | "leakage" | "not_actionable" | "contradicts_existing",
+     "type": "semantic_conflict" | "duplicate" | "leakage" | "audience_violation" | "not_actionable" | "contradicts_existing",
      "explanation": "<a full account of the problem and the evidence for it>",
      "instruction": "<full, concrete guidance for the re-draft: what to
        change, what to keep, and how the conflict or duplication should be
@@ -248,11 +275,21 @@ fuses with what is already there.
 
 Application discipline:
   * Weave each edit's content into the section where it belongs — merge
-    with related existing guidance, keep the section coherent and readable.
+    with related existing guidance rather than duplicating it, keep the
+    section coherent and readable.
+  * Honor each edit's operation: append_to_section adds guidance;
+    amend_section names a specific existing rule to fix — locate it by
+    meaning and correct it in place, leaving the rest untouched;
+    replace_section supplies the section's new overall content.
   * Preserve the meaning and information of existing content that no edit
     targets.
   * Multiple edits land in this same call: arrange them sensibly relative
-    to each other and to the existing text.
+    to each other and to the existing text; if two edits state the same
+    fact, keep it once.
+  * The section text is read by the task-executing agent at run time: an
+    edit's rationale is routing/bookkeeping context for YOU, never content
+    to copy in; evaluation machinery (evaluators, verifiers, expected
+    values) is never mentioned in section text.
   * An edit that does not belong in this section, or that contradicts it in
     a way you cannot reconcile, goes to "unapplied" with a full reason —
     NEVER force content in.

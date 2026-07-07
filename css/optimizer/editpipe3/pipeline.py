@@ -29,8 +29,8 @@ _APPLIER_MAX_TOKENS = 16384
 _REPAIR_MAX_TOKENS = 16384
 _MAX_GROUP_SIZE = 6
 
-_OPS = frozenset({"add_section", "append_to_section", "replace_section",
-                  "remove_section"})
+_OPS = frozenset({"add_section", "append_to_section", "amend_section",
+                  "replace_section", "remove_section"})
 
 
 @dataclass
@@ -333,6 +333,11 @@ def _check_draft(obj: Any, member_ids: "list[str]",
                 violations.append(
                     "edits[%d].section %r — a NEW section must be written "
                     "as 'NEW: <specific title>'" % (ei, section))
+            if op in _OPS and op != "add_section":
+                violations.append(
+                    "edits[%d]: op %r targets an EXISTING section — its "
+                    "section must be a handle from the catalog, not 'NEW:'"
+                    % (ei, op))
         elif section not in catalog:
             violations.append(
                 "edits[%d].section %r is neither a valid handle from the "

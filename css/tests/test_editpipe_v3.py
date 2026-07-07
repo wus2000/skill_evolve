@@ -492,3 +492,47 @@ def test_structure_call_failure_falls_back_to_self_healing_split():
     assert "Always page." in new_text, "content survives self-healing parse"
     titles = [s.title for s in RulesDocV3.parse(new_text).sections]
     assert "Extra Topic" in titles, "split by the parser, not dropped"
+
+
+def test_amend_section_op_accepted_and_new_combo_rejected():
+    from css.optimizer.editpipe3.pipeline import _check_draft
+    catalog = RulesDocV3.parse(BASE).handle_map()
+    ok = {"edits": [{"op": "amend_section", "section": "S#2",
+                     "content": "The retry rule: change 'once' to 'twice', "
+                                "keeping the transient-failure condition.",
+                     "source_ids": ["E#1"]}],
+          "dropped_ids": []}
+    assert _check_draft(ok, ["E#1"], catalog) == []
+    bad = {"edits": [{"op": "amend_section", "section": "NEW: Retries",
+                      "content": "x", "source_ids": ["E#1"]}],
+           "dropped_ids": []}
+    v = _check_draft(bad, ["E#1"], catalog)
+    assert any("targets an EXISTING section" in s for s in v)
+
+
+def test_amend_section_routes_to_applier_fusion():
+    from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
+    groups = [AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
+        DraftEdit(op="amend_section", section="S#2",
+                  content="Fix the retry rule: retry TWICE (not once) on "
+                          "transient failures.",
+                  source_ids=["E#1"])])]
+    seen = {}
+
+    def opt(system, user):
+        if "semantic applier" in system:
+            seen["user"] = user
+            return json.dumps({
+                "application_notes": "amended the retry count in place",
+                "unapplied": [],
+                "new_section_text": "Retry twice on transient failures."})
+        return "{}"
+
+    new_text, deferred = apply_groups(
+        StubLLMClient(optimizer_fn=opt), BASE, groups)
+    assert deferred == []
+    assert "op=amend_section" in seen["user"], "applier sees the amend intent"
+    doc = RulesDocV3.parse(new_text)
+    assert doc.sections[1].body == "Retry twice on transient failures."
+    assert doc.sections[0].body == "Always page through listing APIs.", \
+        "untouched section unchanged"
