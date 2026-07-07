@@ -11,10 +11,49 @@ from __future__ import annotations
 DSP_NOTE = """\
 Document protocol: the rules document is a sequence of sections. A section =
 one "### <title>" heading + FREE-FORM markdown content (paragraphs, lists,
-code fences, #### sub-headings — any structure). Refer to existing sections
-ONLY by the bracketed handles [S#k] shown in the rendering; never write a
-line starting with "### " inside content you produce — headings and layout
-are applied by the system."""
+code fences, sub-headings — any structure). Heading levels carry meaning:
+"### " opens a NEW top-level section (the system addresses sections by these
+boundaries); organize structure WITHIN a section with "#### " and deeper.
+Refer to existing sections ONLY by the bracketed handles [S#k] shown in the
+rendering."""
+
+
+# ── structure normalization — content that carries its own "### " lines ─────
+STRUCTURE_SYSTEM = """\
+You tidy the STRUCTURE of markdown content that is entering an agent's rules
+document, where "### " headings are RESERVED as top-level section boundaries
+(the system addresses sections by them). The content you receive was written
+as the body of ONE section, yet it contains "### " lines of its own.
+
+Decide what the writer actually organized, and normalize:
+  * If the inner headings are sub-structure of one topic, demote them to
+    "#### " (or deeper) so the content remains ONE section.
+  * If the content genuinely spans several independent top-level topics,
+    split it into several sections, each with a specific title.
+  * Mixed cases: keep each topic's sub-structure as "#### " under its
+    section.
+
+Preserve the information verbatim — do not rewrite, summarize, or drop any
+text; only adjust heading levels and choose split points. Code fences and
+their contents stay untouched.
+
+Output ONLY this JSON object:
+{
+  "sections": [
+    {"title": "<section title>",
+     "content": "<the full inner markdown of this section — everything the
+       source put under it, with inner headings at '#### ' or deeper>"}
+  ]
+}"""
+
+
+def build_structure_user(title: str, content: str) -> str:
+    return (
+        "## Intended section title\n" + (title or "(none — you choose)")
+        + "\n\n## Content to normalize\n" + content
+        + "\n\nNormalize the heading structure. Respond with ONLY the JSON "
+          "object described."
+    )
 
 
 # ── A: GROUP — orthogonal change-aspect partition ────────────────────────────

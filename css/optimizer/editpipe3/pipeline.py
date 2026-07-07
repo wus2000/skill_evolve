@@ -114,9 +114,10 @@ def _protocol_repair(client: Any, task_summary: str, protocol_text: str,
 def _bare_heading_lines(text: str) -> "list[str]":
     """###-level heading lines outside code fences in produced CONTENT.
 
-    Structure is system-owned (DSP): a "### " line inside content silently
-    splits the section on the next parse — an umbrella/empty-section artifact
-    observed live (SS step0: 7 empty shell sections out of 30). Fence-aware,
+    Trigger signal only (never a gate): models legitimately organize rich
+    content with headings; when a "### " line appears inside what was drafted
+    as ONE section's body, an LLM structure call decides whether to demote
+    it to "#### " sub-structure or split into real sections. Fence-aware,
     matching RulesDocV3.parse boundaries.
     """
     bad: "list[str]" = []
@@ -129,6 +130,48 @@ def _bare_heading_lines(text: str) -> "list[str]":
         if not in_fence and line.startswith("### "):
             bad.append(line.strip())
     return bad
+
+
+def _normalize_structure(client: Any, title: str, content: str,
+                         audit: "list[dict]") -> "list[tuple[str, str]]":
+    """LLM structure call: content carrying its own "### " lines -> sections.
+
+    The model decides (user ruling 2026-07-07: models may organize; the
+    system ensures the organization is CANONICAL via an LLM adjustment, not
+    via rule-side gates): demote inner headings to "#### " (one section) or
+    split into several sections. Verbatim-preserving by instruction. On any
+    failure the original content is returned as-is — the self-healing parse
+    then splits it losslessly.
+    """
+    obj = _call_json(
+        client, prompts.STRUCTURE_SYSTEM,
+        prompts.build_structure_user(title, content),
+        ok=lambda r: isinstance(r, dict)
+        and isinstance(r.get("sections"), list)
+        and all(isinstance(s, dict)
+                and str(s.get("content", "") or "").strip()
+                for s in r["sections"])
+        and len(r["sections"]) >= 1,
+        stage="ep3_structure", max_tokens=_APPLIER_MAX_TOKENS)
+    secs = obj.get("sections") if isinstance(obj, dict) else None
+    out: "list[tuple[str, str]]" = []
+    if isinstance(secs, list):
+        for s in secs:
+            if not isinstance(s, dict):
+                continue
+            s_content = str(s.get("content", "") or "")
+            if not s_content.strip():
+                continue
+            s_title = str(s.get("title", "") or "").strip() or title
+            out.append((s_title, s_content))
+    if not out:
+        audit.append({"stage": "structure", "action": "normalize_failed",
+                      "title": title})
+        return [(title, content)]
+    audit.append({"stage": "structure", "action": "normalized",
+                  "title": title,
+                  "result_titles": [t for t, _ in out]})
+    return out
 
 
 def _render_raw(rid: str, raw: dict) -> str:
@@ -296,13 +339,6 @@ def _check_draft(obj: Any, member_ids: "list[str]",
                 "catalog nor 'NEW: <title>'" % (ei, section))
         if not str(e.get("content", "") or "").strip():
             violations.append("edits[%d].content is empty" % ei)
-        if op != "remove_section":
-            bad = _bare_heading_lines(str(e.get("content", "") or ""))
-            if bad:
-                violations.append(
-                    "edits[%d].content contains '### ' heading line(s) (%s) — "
-                    "headings are system-owned; organize inner content with "
-                    "'#### ' or bold text instead" % (ei, "; ".join(bad[:3])))
         srcs = [str(s) for s in (e.get("source_ids") or [])]
         bad = [s for s in srcs if s not in members]
         if bad:
@@ -555,17 +591,30 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
                         "reason": "NEW section without a title (draft "
                                   "protocol violation survived repair)"})
                     continue
-                key = title.casefold()
-                if key in title_idx:
-                    by_section.setdefault(title_idx[key], []).append((aid, e))
-                    audit.append({"apply": aid,
-                                  "action": "new_fused_into_same_title",
-                                  "title": title, "gid": g.gid})
-                    continue
-                doc.add_section(title, e.content)
-                title_idx[key] = len(doc.sections) - 1
-                audit.append({"apply": aid, "action": "add_section",
-                              "title": title, "gid": g.gid})
+                # Content organized with its own "### " lines -> one LLM
+                # structure call decides: demote to "#### " sub-structure or
+                # split into real sections (models may organize; the system
+                # canonicalizes via LLM, not rule-side gates).
+                pieces = [(title, e.content)]
+                if _bare_heading_lines(e.content):
+                    pieces = _normalize_structure(client, title, e.content,
+                                                  audit)
+                for p_title, p_content in pieces:
+                    key = p_title.casefold()
+                    if key in title_idx:
+                        by_section.setdefault(title_idx[key], []).append(
+                            (aid, DraftEdit(op=e.op, section=e.section,
+                                            content=p_content,
+                                            source_ids=e.source_ids,
+                                            rationale=e.rationale)))
+                        audit.append({"apply": aid,
+                                      "action": "new_fused_into_same_title",
+                                      "title": p_title, "gid": g.gid})
+                        continue
+                    doc.add_section(p_title, p_content)
+                    title_idx[key] = len(doc.sections) - 1
+                    audit.append({"apply": aid, "action": "add_section",
+                                  "title": p_title, "gid": g.gid})
                 continue
             idx = doc.resolve(e.section) if e.section in catalog else None
             if idx is None:
@@ -587,11 +636,14 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
                              "reason": "removal conflicts with same-section "
                                        "edits this step; deferred"})
             continue
+        removed_key = doc.sections[idx].title.strip().casefold()
         audit.append({"apply": "remove_section", "title":
                       doc.sections[idx].title})
         doc.remove_section(idx)
         by_section = {(i - 1 if i > idx else i): v
                       for i, v in by_section.items()}
+        title_idx = {k: (i - 1 if i > idx else i)
+                     for k, i in title_idx.items() if k != removed_key}
 
     def _fuse(idx: int, entries: "list[tuple[str, DraftEdit]]"):
         section = doc.sections[idx]
@@ -626,30 +678,6 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
             audit.append({"apply": "section_fusion_failed",
                           "section": doc.sections[idx].title})
             continue
-        bad = _bare_heading_lines(str(obj.get("new_section_text", "")))
-        if bad:
-            repaired = _protocol_repair(
-                client, "Fuse edits into ONE section's inner content.",
-                "new_section_text: the section's full inner markdown; no "
-                "'### ' heading lines (headings are system-owned; use "
-                "'#### ' or bold text for inner structure).",
-                obj,
-                ["new_section_text contains '### ' heading line(s): %s"
-                 % "; ".join(bad[:3])],
-                ok=lambda r: isinstance(r, dict)
-                and str(r.get("new_section_text", "") or "").strip(),
-                stage="ep3_applier")
-            if repaired is not None and not _bare_heading_lines(
-                    str(repaired.get("new_section_text", ""))):
-                obj = repaired
-                audit.append({"apply": "bare_heading_repaired",
-                              "section": doc.sections[idx].title})
-            else:
-                # Keep the original text: the self-healing parse will split
-                # it into sections rather than lose content.
-                audit.append({"apply": "bare_heading_kept",
-                              "section": doc.sections[idx].title,
-                              "lines": bad[:5]})
         unapplied_ids = {str(u.get("id", "")) for u in
                          (obj.get("unapplied") or []) if isinstance(u, dict)}
         for aid, e in entries:
@@ -661,7 +689,31 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
                               "unapplied by the applier")
                 deferred.append({"id": aid, "edit": e.to_dict(),
                                  "reason": reason})
-        doc.replace_body(idx, str(obj["new_section_text"]))
+        fused_text = str(obj["new_section_text"])
+        if _bare_heading_lines(fused_text):
+            # The fusion organized content with its own "### " lines: the
+            # structure call decides demote-vs-split. The first piece stays
+            # in this section (its handle/title are stable within the step);
+            # split-out pieces land as sections of their own.
+            pieces = _normalize_structure(
+                client, doc.sections[idx].title, fused_text, audit)
+            fused_text = pieces[0][1]
+            for p_title, p_content in pieces[1:]:
+                key = p_title.casefold()
+                if key in title_idx:
+                    tgt = title_idx[key]
+                    joined = (doc.sections[tgt].body.rstrip() + "\n\n"
+                              + p_content.strip()).strip()
+                    doc.replace_body(tgt, joined)
+                    audit.append({"apply": "split_appended_to_same_title",
+                                  "title": p_title})
+                else:
+                    doc.add_section(p_title, p_content)
+                    title_idx[key] = len(doc.sections) - 1
+                    audit.append({"apply": "split_into_new_section",
+                                  "title": p_title,
+                                  "from": doc.sections[idx].title})
+        doc.replace_body(idx, fused_text)
         audit.append({"apply": "section_fused",
                       "section": doc.sections[idx].title,
                       "edits": [aid for aid, _ in entries],

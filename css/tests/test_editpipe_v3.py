@@ -411,66 +411,84 @@ def test_bare_heading_lines_fence_aware():
     assert _bare_heading_lines("plain\n#### deep\n**bold**") == []
 
 
-def test_check_draft_rejects_bare_heading_in_content():
-    from css.optimizer.editpipe3.pipeline import _check_draft
-    catalog = RulesDocV3.parse(BASE).handle_map()
-    obj = {"edits": [{"op": "append_to_section", "section": "S#1",
-                      "content": "### Umbrella\nbody text", "source_ids": ["E#1"]}],
-           "dropped_ids": []}
-    v = _check_draft(obj, ["E#1"], catalog)
-    assert any("system-owned" in s for s in v)
-    ok = {"edits": [{"op": "append_to_section", "section": "S#1",
-                     "content": "#### inner\nbody text", "source_ids": ["E#1"]}],
-          "dropped_ids": []}
-    assert _check_draft(ok, ["E#1"], catalog) == []
 
-
-def test_applier_bare_heading_routed_through_repair():
+def test_new_content_with_headings_normalized_by_llm_split():
+    """A NEW whose content carries '### ' topics: the structure call splits
+    it into real sections (the model organizes; the LLM canonicalizes)."""
     from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
+    content = ("### Formula Evaluation\nCompute in Python.\n"
+               "### Post-Write Verification\nRe-read the cells.")
     groups = [AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
-        DraftEdit(op="append_to_section", section="S#1", content="- x",
-                  source_ids=["E#1"])])]
-    dirty = {"application_notes": "", "unapplied": [],
-             "new_section_text": "### Umbrella\nAlways page.\n#### ok"}
-    clean = {"application_notes": "", "unapplied": [],
-             "new_section_text": "**Umbrella**\nAlways page.\n#### ok"}
-    n_repairs = []
+        DraftEdit(op="add_section", section="NEW: Umbrella Topic",
+                  content=content, source_ids=["E#1"])])]
+    split = {"sections": [
+        {"title": "Formula Evaluation", "content": "Compute in Python."},
+        {"title": "Post-Write Verification", "content": "Re-read the cells."}]}
 
     def opt(system, user):
-        if "semantic applier" in system:
-            return json.dumps(dirty)
-        if "violates its output protocol" in system:
-            n_repairs.append(1)
-            return json.dumps(clean)
+        if "tidy the STRUCTURE" in system:
+            return json.dumps(split)
         return "{}"
 
     aud = []
     new_text, deferred = apply_groups(
         StubLLMClient(optimizer_fn=opt), BASE, groups, audit=aud)
-    assert len(n_repairs) == 1 and deferred == []
-    doc = RulesDocV3.parse(new_text)
-    assert [s.title for s in doc.sections] == \
-        ["Data Retrieval", "Error Handling"], "no umbrella split"
-    assert "**Umbrella**" in doc.sections[0].body
-    assert any(a.get("apply") == "bare_heading_repaired" for a in aud)
+    assert deferred == []
+    titles = [s.title for s in RulesDocV3.parse(new_text).sections]
+    assert "Formula Evaluation" in titles
+    assert "Post-Write Verification" in titles
+    assert "Umbrella Topic" not in titles, "the LLM chose split, not umbrella"
+    assert any(a.get("action") == "normalized" for a in aud)
 
 
-def test_applier_bare_heading_kept_lossless_when_repair_fails():
+def test_fused_text_with_headings_demoted_to_one_section():
+    """Applier fusion output organized with '### ': the structure call keeps
+    it ONE section with '#### ' sub-structure."""
     from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
     groups = [AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
         DraftEdit(op="append_to_section", section="S#1", content="- x",
                   source_ids=["E#1"])])]
-    dirty = {"application_notes": "", "unapplied": [],
-             "new_section_text": "### Umbrella\nAlways page."}
+    fused = {"application_notes": "", "unapplied": [],
+             "new_section_text": "### Paging Basics\nAlways page fully."}
+    demoted = {"sections": [
+        {"title": "Data Retrieval",
+         "content": "#### Paging Basics\nAlways page fully."}]}
 
     def opt(system, user):
-        if "semantic applier" in system or \
-                "violates its output protocol" in system:
-            return json.dumps(dirty)
+        if "semantic applier" in system:
+            return json.dumps(fused)
+        if "tidy the STRUCTURE" in system:
+            return json.dumps(demoted)
         return "{}"
+
+    new_text, deferred = apply_groups(
+        StubLLMClient(optimizer_fn=opt), BASE, groups)
+    assert deferred == []
+    doc = RulesDocV3.parse(new_text)
+    assert [s.title for s in doc.sections] == \
+        ["Data Retrieval", "Error Handling"], "stays one section"
+    assert "#### Paging Basics" in doc.sections[0].body
+
+
+def test_structure_call_failure_falls_back_to_self_healing_split():
+    """If the structure call fails, the original text lands verbatim and the
+    self-healing parse splits it — content is never lost."""
+    from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
+    groups = [AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
+        DraftEdit(op="append_to_section", section="S#1", content="- x",
+                  source_ids=["E#1"])])]
+    fused = {"application_notes": "", "unapplied": [],
+             "new_section_text": "intro line\n### Extra Topic\nAlways page."}
+
+    def opt(system, user):
+        if "semantic applier" in system:
+            return json.dumps(fused)
+        return "{}"          # structure + repair calls all fail
 
     aud = []
     new_text, _ = apply_groups(
         StubLLMClient(optimizer_fn=opt), BASE, groups, audit=aud)
-    assert any(a.get("apply") == "bare_heading_kept" for a in aud)
-    assert "Always page." in new_text, "content survives via self-healing parse"
+    assert any(a.get("action") == "normalize_failed" for a in aud)
+    assert "Always page." in new_text, "content survives self-healing parse"
+    titles = [s.title for s in RulesDocV3.parse(new_text).sections]
+    assert "Extra Topic" in titles, "split by the parser, not dropped"
