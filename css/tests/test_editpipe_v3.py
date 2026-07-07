@@ -401,3 +401,76 @@ def test_oversize_split_keeps_aspect_and_placement():
     assert all(g.aspect == "shared aspect" for g in res.groups), \
         "splinter singletons keep the group's aspect"
     assert all(g.placement == "S#1" for g in res.groups)
+
+
+def test_bare_heading_lines_fence_aware():
+    from css.optimizer.editpipe3.pipeline import _bare_heading_lines
+    text = ("intro\n### Real Heading\n```\n### inside fence\n```\n"
+            "#### sub is fine\n### Another")
+    assert _bare_heading_lines(text) == ["### Real Heading", "### Another"]
+    assert _bare_heading_lines("plain\n#### deep\n**bold**") == []
+
+
+def test_check_draft_rejects_bare_heading_in_content():
+    from css.optimizer.editpipe3.pipeline import _check_draft
+    catalog = RulesDocV3.parse(BASE).handle_map()
+    obj = {"edits": [{"op": "append_to_section", "section": "S#1",
+                      "content": "### Umbrella\nbody text", "source_ids": ["E#1"]}],
+           "dropped_ids": []}
+    v = _check_draft(obj, ["E#1"], catalog)
+    assert any("system-owned" in s for s in v)
+    ok = {"edits": [{"op": "append_to_section", "section": "S#1",
+                     "content": "#### inner\nbody text", "source_ids": ["E#1"]}],
+          "dropped_ids": []}
+    assert _check_draft(ok, ["E#1"], catalog) == []
+
+
+def test_applier_bare_heading_routed_through_repair():
+    from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
+    groups = [AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
+        DraftEdit(op="append_to_section", section="S#1", content="- x",
+                  source_ids=["E#1"])])]
+    dirty = {"application_notes": "", "unapplied": [],
+             "new_section_text": "### Umbrella\nAlways page.\n#### ok"}
+    clean = {"application_notes": "", "unapplied": [],
+             "new_section_text": "**Umbrella**\nAlways page.\n#### ok"}
+    n_repairs = []
+
+    def opt(system, user):
+        if "semantic applier" in system:
+            return json.dumps(dirty)
+        if "violates its output protocol" in system:
+            n_repairs.append(1)
+            return json.dumps(clean)
+        return "{}"
+
+    aud = []
+    new_text, deferred = apply_groups(
+        StubLLMClient(optimizer_fn=opt), BASE, groups, audit=aud)
+    assert len(n_repairs) == 1 and deferred == []
+    doc = RulesDocV3.parse(new_text)
+    assert [s.title for s in doc.sections] == \
+        ["Data Retrieval", "Error Handling"], "no umbrella split"
+    assert "**Umbrella**" in doc.sections[0].body
+    assert any(a.get("apply") == "bare_heading_repaired" for a in aud)
+
+
+def test_applier_bare_heading_kept_lossless_when_repair_fails():
+    from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
+    groups = [AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
+        DraftEdit(op="append_to_section", section="S#1", content="- x",
+                  source_ids=["E#1"])])]
+    dirty = {"application_notes": "", "unapplied": [],
+             "new_section_text": "### Umbrella\nAlways page."}
+
+    def opt(system, user):
+        if "semantic applier" in system or \
+                "violates its output protocol" in system:
+            return json.dumps(dirty)
+        return "{}"
+
+    aud = []
+    new_text, _ = apply_groups(
+        StubLLMClient(optimizer_fn=opt), BASE, groups, audit=aud)
+    assert any(a.get("apply") == "bare_heading_kept" for a in aud)
+    assert "Always page." in new_text, "content survives via self-healing parse"

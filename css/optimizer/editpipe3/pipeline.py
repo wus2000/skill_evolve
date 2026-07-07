@@ -111,6 +111,26 @@ def _protocol_repair(client: Any, task_summary: str, protocol_text: str,
                       max_tokens=_REPAIR_MAX_TOKENS)
 
 
+def _bare_heading_lines(text: str) -> "list[str]":
+    """###-level heading lines outside code fences in produced CONTENT.
+
+    Structure is system-owned (DSP): a "### " line inside content silently
+    splits the section on the next parse — an umbrella/empty-section artifact
+    observed live (SS step0: 7 empty shell sections out of 30). Fence-aware,
+    matching RulesDocV3.parse boundaries.
+    """
+    bad: "list[str]" = []
+    in_fence = False
+    for line in (text or "").splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and line.startswith("### "):
+            bad.append(line.strip())
+    return bad
+
+
 def _render_raw(rid: str, raw: dict) -> str:
     """Full-content rendering of one raw edit (rich, never truncated)."""
     tasks = ", ".join(str(t) for t in (raw.get("target_tasks") or []))
@@ -276,6 +296,13 @@ def _check_draft(obj: Any, member_ids: "list[str]",
                 "catalog nor 'NEW: <title>'" % (ei, section))
         if not str(e.get("content", "") or "").strip():
             violations.append("edits[%d].content is empty" % ei)
+        if op != "remove_section":
+            bad = _bare_heading_lines(str(e.get("content", "") or ""))
+            if bad:
+                violations.append(
+                    "edits[%d].content contains '### ' heading line(s) (%s) — "
+                    "headings are system-owned; organize inner content with "
+                    "'#### ' or bold text instead" % (ei, "; ".join(bad[:3])))
         srcs = [str(s) for s in (e.get("source_ids") or [])]
         bad = [s for s in srcs if s not in members]
         if bad:
@@ -599,6 +626,30 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
             audit.append({"apply": "section_fusion_failed",
                           "section": doc.sections[idx].title})
             continue
+        bad = _bare_heading_lines(str(obj.get("new_section_text", "")))
+        if bad:
+            repaired = _protocol_repair(
+                client, "Fuse edits into ONE section's inner content.",
+                "new_section_text: the section's full inner markdown; no "
+                "'### ' heading lines (headings are system-owned; use "
+                "'#### ' or bold text for inner structure).",
+                obj,
+                ["new_section_text contains '### ' heading line(s): %s"
+                 % "; ".join(bad[:3])],
+                ok=lambda r: isinstance(r, dict)
+                and str(r.get("new_section_text", "") or "").strip(),
+                stage="ep3_applier")
+            if repaired is not None and not _bare_heading_lines(
+                    str(repaired.get("new_section_text", ""))):
+                obj = repaired
+                audit.append({"apply": "bare_heading_repaired",
+                              "section": doc.sections[idx].title})
+            else:
+                # Keep the original text: the self-healing parse will split
+                # it into sections rather than lose content.
+                audit.append({"apply": "bare_heading_kept",
+                              "section": doc.sections[idx].title,
+                              "lines": bad[:5]})
         unapplied_ids = {str(u.get("id", "")) for u in
                          (obj.get("unapplied") or []) if isinstance(u, dict)}
         for aid, e in entries:
