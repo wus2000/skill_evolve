@@ -203,12 +203,16 @@ def _select_rules_per_source(
 def _consolidate_rules(
     oc: Any, cfg: Any, fused_strategy: str,
     kept_by_source: "Dict[str, List]",
-) -> Tuple[str, List[dict], dict]:
+) -> Tuple[List[str], List[dict], dict]:
     """Consolidation call -> verbatim assembly from (source, section) picks.
 
     The LLM only CHOOSES and ORDERS; the final document is assembled from the
-    original section bytes here, so the no-rewrite fidelity constraint holds
-    by construction. Returns (rules_md, provenance, consolidation_record).
+    original section bytes, so the no-rewrite fidelity constraint holds by
+    construction. Returns (section_texts, provenance, consolidation_record) —
+    a STRUCTURED list, one entry per whole section, kept 1:1 with provenance
+    so any downstream size trim can only drop whole sections (code-review
+    finding 2026-07-07: a string round-trip through split("\n\n") desynced
+    on blank lines inside section bodies and cut mid-section).
     """
     candidates = []
     index: "Dict[Tuple[str, str], Any]" = {}
@@ -218,10 +222,10 @@ def _consolidate_rules(
             candidates.append("--- source=%s section=%s ---\n%s"
                               % (src, s.heading, s.content.rstrip()))
     if not index:
-        return "", [], {"sections": [], "dropped": [], "note": "no kept sections"}
+        return [], [], {"sections": [], "dropped": [], "note": "no kept sections"}
     if len(index) == 1:
         (src, heading), sec = next(iter(index.items()))
-        return (sec.content.rstrip() + "\n",
+        return ([sec.content.rstrip()],
                 [{"source": src, "section": heading}],
                 {"sections": [{"source": src, "section": heading}],
                  "dropped": [], "note": "single section: consolidation skipped"})
@@ -249,9 +253,75 @@ def _consolidate_rules(
         picks = {"sections": [{"source": s, "section": h} for s, h in chosen],
                  "dropped": [], "note": "fallback: consolidator unparseable"}
 
-    parts = [index[k].content.rstrip() for k in chosen]
+    section_texts = [index[k].content.rstrip() for k in chosen]
     provenance = [{"source": s, "section": h} for s, h in chosen]
-    return "\n\n".join(parts) + "\n", provenance, picks
+    return section_texts, provenance, picks
+
+
+def _confront_merge_novelty(
+    oc: Any, cfg: Any, tree: Any, out_dir: str,
+    matrix_text: str, sources_text: str, findings: str, novelty_path: str,
+):
+    """Conceive a fusion, then confront it against every PRIOR MERGE strategy.
+
+    Returns ``(concept, verdict, err)``. On a duplicate the conception is
+    regenerated with the critique appended, up to ``cfg.gen_novelty_retries``
+    times; the final verdict is always persisted for audit. The first MERGE
+    (no prior fusion) short-circuits novel.
+    """
+    prior_merge, n_prior = _prior_merge_strategies(tree, out_dir, cfg)
+    retries = int(getattr(cfg, "gen_novelty_retries", 2))
+    critique = ""
+    concept: dict = {}
+    verdict: dict = {}
+    history: "List[dict]" = []
+    for attempt in range(retries + 1):
+        critique_block = ("" if not critique else
+                          "\nPRIOR BLUEPRINT WAS JUDGED A DUPLICATE OF AN EARLIER "
+                          "FUSION — address this critique and differentiate:\n"
+                          + critique + "\n")
+        user = prompts.MERGE_CONCEPT_USER.format(
+            matrix=matrix_text, source_strategies=sources_text,
+            findings=findings, critique=critique_block)
+        concept = _llm.complete_optimizer_json(
+            oc, prompts.MERGE_CONCEPT_SYSTEM, user, parse=_llm.parse_json_object,
+            ok=lambda r: bool(r.get("contributions")) or bool(r.get("base_node")),
+            max_tokens=_CONCEPT_MAX, stage=_llm.STAGE_MERGE_CONCEPT)
+        if not (isinstance(concept, dict) and
+                (concept.get("contributions") or concept.get("base_node"))):
+            history.append({"attempt": attempt, "error": "empty_conception"})
+            _io.write_json_atomic(novelty_path, {"novel": False, "history": history})
+            return concept, {}, "merge.conception produced no blueprint"
+
+        if n_prior == 0:
+            verdict = {"novel": True, "verdict": {"novel": True},
+                       "note": "first MERGE: no prior fusion to duplicate",
+                       "history": history}
+            _io.write_json_atomic(novelty_path, verdict)
+            return concept, verdict, None
+
+        nu = prompts.NOVELTY_USER.format(
+            conception=json.dumps(concept, ensure_ascii=False, indent=2),
+            prior_strategies=prior_merge)
+        raw = _llm.complete_optimizer_json(
+            oc, prompts.NOVELTY_SYSTEM, nu, parse=_llm.parse_json_object,
+            ok=lambda r: ("novel" in r), max_tokens=_NOVELTY_MAX,
+            stage=_llm.STAGE_MERGE_NOVELTY)
+        is_novel = bool(raw.get("novel"))
+        history.append({"attempt": attempt, "novel": is_novel,
+                        "duplicates": raw.get("duplicates", ""),
+                        "reason": raw.get("reason", "")})
+        if is_novel:
+            verdict = {"novel": True, "verdict": raw, "history": history}
+            _io.write_json_atomic(novelty_path, verdict)
+            return concept, verdict, None
+        critique = str(raw.get("reason", "") or "duplicate of a prior fusion")
+
+    verdict = {"novel": False, "verdict": raw, "history": history}
+    _io.write_json_atomic(novelty_path, verdict)
+    return concept, verdict, (
+        "merge.novelty exhausted %d retries; last duplicate: %s"
+        % (retries, str(raw.get("duplicates", "") or "?")))
 
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
@@ -267,6 +337,20 @@ def run_merge_pipeline(ctx: SpawnContext) -> SpawnOutcome:
 
     ledger = load_coverage(out_dir, min_attempts=int(
         getattr(cfg, "ledger_min_attempts", 1)))
+
+    # Precondition self-check (code-review 2026-07-07): MERGE's viability is
+    # TRUE full coverage. root_spawn_mode gates on the live ledger, but any
+    # future caller (progressive widening, replay tooling) must not be able to
+    # fuse over a live unsolved frontier — that silently orphans those tasks.
+    pre_unsolved = ledger.global_unsolved()
+    pre_uncharted = ledger.uncharted()
+    if pre_unsolved or pre_uncharted:
+        return SpawnOutcome(
+            child=None, mode="MERGE", decline=True,
+            reason="merge.precondition: full coverage does not hold "
+                   "(%d unsolved, %d uncharted train tasks remain)"
+                   % (len(pre_unsolved), len(pre_uncharted)),
+            artifacts_dir=gd)
 
     # ── Step 0 — complementarity matrix ─────────────────────────────────────
     matrix_path = os.path.join(gd, "merge_matrix.json")
@@ -299,48 +383,22 @@ def run_merge_pipeline(ctx: SpawnContext) -> SpawnOutcome:
         _io.write_json_atomic(expl_path, exploration)
     findings = str(exploration.get("findings", "") or "") or "(no exploration findings)"
 
-    # ── Step 2 — fusion conception ───────────────────────────────────────────
+    # ── Steps 2+3 — conception + novelty confrontation (retry loop) ─────────
+    # Novelty scope: prior MERGE strategies only; a duplicate verdict feeds a
+    # critique back into re-conception (design §6 step 3 — same loop as NEW).
     concept_path = os.path.join(gd, "conception.json")
-    concept = _io.read_json(concept_path)
-    if concept is None:
-        user = prompts.MERGE_CONCEPT_USER.format(
-            matrix=matrix_text, source_strategies=sources_text, findings=findings)
-        concept = _llm.complete_optimizer_json(
-            oc, prompts.MERGE_CONCEPT_SYSTEM, user, parse=_llm.parse_json_object,
-            ok=lambda r: bool(r.get("contributions")) or bool(r.get("base_node")),
-            max_tokens=_CONCEPT_MAX, stage=_llm.STAGE_MERGE_CONCEPT)
-        if not (isinstance(concept, dict) and
-                (concept.get("contributions") or concept.get("base_node"))):
-            return SpawnOutcome(child=None, mode="MERGE", decline=False,
-                                reason="merge.conception produced no blueprint",
-                                artifacts_dir=gd)
-        _io.write_json_atomic(concept_path, concept)
-
-    # ── Step 3 — novelty vs prior MERGE strategies only ─────────────────────
     novelty_path = os.path.join(gd, "novelty_verdict.json")
-    verdict = _io.read_json(novelty_path)
-    if not (isinstance(verdict, dict) and verdict.get("novel")):
-        prior_merge, n_prior = _prior_merge_strategies(ctx.tree, out_dir, cfg)
-        if n_prior == 0:
-            verdict = {"novel": True, "verdict": {"novel": True},
-                       "note": "first MERGE: no prior fusion to duplicate"}
-        else:
-            nu = prompts.NOVELTY_USER.format(
-                conception=json.dumps(concept, ensure_ascii=False, indent=2),
-                prior_strategies=prior_merge)
-            raw = _llm.complete_optimizer_json(
-                oc, prompts.NOVELTY_SYSTEM, nu, parse=_llm.parse_json_object,
-                ok=lambda r: ("novel" in r), max_tokens=_NOVELTY_MAX,
-                stage=_llm.STAGE_MERGE_NOVELTY)
-            verdict = {"novel": bool(raw.get("novel")), "verdict": raw}
-            if not verdict["novel"]:
-                _io.write_json_atomic(novelty_path, verdict)
-                return SpawnOutcome(
-                    child=None, mode="MERGE", decline=False,
-                    reason="merge.novelty: duplicate of prior fusion %s"
-                           % str(raw.get("duplicates", "") or "?"),
-                    artifacts_dir=gd)
-        _io.write_json_atomic(novelty_path, verdict)
+    concept = _io.read_json(concept_path)
+    prior_verdict = _io.read_json(novelty_path)
+    if not (isinstance(concept, dict) and concept
+            and isinstance(prior_verdict, dict) and prior_verdict.get("novel")):
+        concept, _verdict, err = _confront_merge_novelty(
+            oc, cfg, ctx.tree, out_dir, matrix_text, sources_text, findings,
+            novelty_path)
+        if err is not None:
+            return SpawnOutcome(child=None, mode="MERGE", decline=False,
+                                reason=err, artifacts_dir=gd)
+        _io.write_json_atomic(concept_path, concept)
 
     # ── Step 4 — drafting ────────────────────────────────────────────────────
     draft_path = os.path.join(gd, "draft.json")
@@ -403,21 +461,25 @@ def run_merge_pipeline(ctx: SpawnContext) -> SpawnOutcome:
             if kept:
                 kept_by_source[nid] = kept
         _io.write_json_atomic(sel_path, selections)
-        rules_md, provenance, picks = _consolidate_rules(
+        section_texts, provenance, picks = _consolidate_rules(
             oc, cfg, final_text, kept_by_source)
         cap = int(getattr(cfg, "rules_max_chars", 0) or 0)
-        if cap > 0 and len(rules_md) > cap:
-            # Trim whole trailing sections until under the cap — never cut
-            # inside a section (that WOULD be a rewrite).
-            trimmed = list(provenance)
-            parts = rules_md.split("\n\n")
-            while trimmed and len("\n\n".join(parts)) > cap and len(parts) > 1:
-                parts.pop()
-                trimmed.pop()
-            rules_md = "\n\n".join(parts).rstrip() + "\n"
-            _log.warning("merge.rules: assembled rules exceeded rules_max_chars"
-                         " (%d); trimmed to %d sections", cap, len(trimmed))
-            provenance = trimmed
+        n_before = len(section_texts)
+        if cap > 0:
+            # Trim whole trailing sections until under the cap — the list is
+            # 1:1 with provenance by construction, so a pop drops exactly one
+            # section from BOTH; the joined text is derived only afterwards
+            # (never cut inside a section: that WOULD be a rewrite).
+            while (len(section_texts) > 1
+                   and len("\n\n".join(section_texts)) > cap):
+                section_texts.pop()
+                provenance.pop()
+            if len(section_texts) < n_before:
+                _log.warning(
+                    "merge.rules: assembled rules exceeded rules_max_chars "
+                    "(%d); trimmed %d -> %d whole sections",
+                    cap, n_before, len(section_texts))
+        rules_md = ("\n\n".join(section_texts) + "\n") if section_texts else ""
         consolidation = {"picks": picks, "rules_md": rules_md,
                          "provenance": provenance}
         _io.write_json_atomic(con_path, consolidation)
@@ -459,14 +521,17 @@ def merge_coverage_check(out_dir: str, child_id: str, cfg: Any) -> "Optional[dic
         return None
     ledger = load_coverage(out_dir, min_attempts=int(
         getattr(cfg, "ledger_min_attempts", 1)))
+    # m-consistent three-value classification (code-review 2026-07-07): the
+    # same solved/unsolved/unattempted partition every other consumer uses —
+    # a raw attempts>0 test disagreed with the ledger the moment m > 1.
     solved = ledger.solved_set(child_id)
-    attempted_cells = {t for t in expected
-                       if ledger.stats(child_id, t)["attempts"] > 0}
+    unsolved = ledger.unsolved_set(child_id)
     record = {
         "expected": expected,
         "kept": sorted(t for t in expected if t in solved),
-        "lost": sorted(t for t in attempted_cells if t not in solved),
-        "unattempted": sorted(t for t in expected if t not in attempted_cells),
+        "lost": sorted(t for t in expected if t in unsolved),
+        "unattempted": sorted(t for t in expected
+                              if t not in solved and t not in unsolved),
         "extra": sorted(t for t in solved if t not in set(expected)),
     }
     _io.write_json_atomic(os.path.join(dossier_dir(out_dir, child_id),

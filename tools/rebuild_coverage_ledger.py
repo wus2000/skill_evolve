@@ -6,15 +6,17 @@ outcome on disk but no ``global/coverage/ledger.json``. This tool rebuilds the
 book from the rollout artifacts so a resumed run starts with full evidence
 (docs/L1_actions_redesign.md §1.1).
 
-Sources scanned (node-real-configuration TRAIN rollouts only):
+Sources scanned (deployed-configuration TRAIN rollouts only):
   * ``nodes/<node>/burst_*/exploit/step*/rollout/predictions/<task>/r*/result.json``
-    -> kind ``l0``
-  * ``nodes/<node>/burst_*/exploit/step*/verify/edit_*/predictions/<task>/r*/result.json``
-    -> kind ``verify``
+    -> kind ``l0`` (the on-policy rollout under the node's CURRENT rules)
 
-Deliberately NOT scanned (the two-book separation): ``val_baseline`` /
-``test_baseline`` / any val-side artifacts (val stays aggregate-only) and
-``global/exploration`` probe rollouts (leads, never solved-state).
+Deliberately NOT scanned:
+  * ``.../verify/edit_*/...`` — verify rollouts run CANDIDATE rules (possibly
+    gate-rejected, never deployed); booking their passes as solved re-creates
+    the probe deadlock (code-review ruling 2026-07-07);
+  * ``val_baseline`` / ``test_baseline`` / any val-side artifacts (val stays
+    aggregate-only);
+  * ``global/exploration`` probe rollouts (leads, never solved-state).
 
 The registered task universe is the union of tasks seen in the scan plus any
 previously registered ids; tasks the run never touched will register on the
@@ -38,7 +40,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from css.coverage import CoverageLedger, coverage_path  # noqa: E402
 
 _L0_GLOB = "nodes/*/burst_*/exploit/step*/rollout/predictions/*/r*/result.json"
-_VERIFY_GLOB = "nodes/*/burst_*/exploit/step*/verify/edit_*/predictions/*/r*/result.json"
 _NODE_RE = re.compile(r"nodes/([^/]+)/burst_(\d+)/")
 _TASK_RE = re.compile(r"predictions/([^/]+)/r\d+/result\.json$")
 
@@ -61,8 +62,11 @@ def _scan(run_dir: str, pattern: str, kind: str, ledger: CoverageLedger) -> int:
             passed = int(d.get("hard", 0)) >= 1
         except (TypeError, ValueError):
             pass
+        # decision_index sentinel: artifacts carry only the node-local burst
+        # ordinal; mixing it with live global decision indices would corrupt
+        # the last_decision scale (code-review 2026-07-07).
         ledger.record(node_m.group(1), task_m.group(1), passed, kind=kind,
-                      decision_index=int(node_m.group(2)))
+                      decision_index=-1)
         n += 1
     return n
 
@@ -91,10 +95,10 @@ def main() -> int:
                           | prior.solved_anywhere())
 
     n_l0 = _scan(run_dir, _L0_GLOB, "l0", ledger)
-    n_verify = _scan(run_dir, _VERIFY_GLOB, "verify", ledger)
 
     unsolved = sorted(ledger.global_unsolved())
-    print("scanned: %d l0 rollouts, %d verify rollouts" % (n_l0, n_verify))
+    print("scanned: %d l0 rollouts (verify/candidate rollouts excluded by "
+          "design)" % n_l0)
     print("nodes: %s" % ", ".join(ledger.node_ids()))
     print("tasks seen: %d | global_unsolved: %d | paradigm_sensitive: %d | "
           "uncharted (lower bound): %d"

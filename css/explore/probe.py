@@ -77,12 +77,16 @@ def dispatch_probe(
     session_dir: str,
     probe_index: int,
     decision_index: int = 0,
+    leads_path: str = "",
 ) -> dict:
     """Execute one probe and return its archived record (never raises).
 
     ``spec`` = ``{behavior_prompt, task_id, k, purpose}``. An unknown ``task_id``
     (not in ``menu``) returns a graceful error record — no rollout — so the
     director learns to pick from the menu rather than crashing the session.
+    A passing probe is archived as a LEAD here (design §1.2: probe execution is
+    the leads boundary, so every dispatch_probe caller feeds the book, not just
+    the director loop) — signal for later conception, never coverage state.
     """
     import os
 
@@ -165,6 +169,22 @@ def dispatch_probe(
         narration=narration,
     )
     _archive(session_dir, probe_index, record)
+    if leads_path and record["n_pass"] > 0:
+        try:
+            from css.explore.leads import record_lead
+            record_lead(
+                leads_path,
+                task_id=task_id,
+                behavior_prompt=behavior_prompt,
+                n_pass=int(record["n_pass"]),
+                k=k,
+                session_ref="%s#probe_%d" % (os.path.basename(session_dir),
+                                             probe_index),
+                decision_index=decision_index,
+                cap=int(getattr(cfg, "leads_per_task", 3)),
+            )
+        except Exception:  # noqa: BLE001 — leads must never kill a probe
+            pass
     return record
 
 

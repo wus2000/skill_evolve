@@ -334,6 +334,10 @@ def root_spawn_mode(coverage, cfg: "CSSConfig") -> str:
     """
     if coverage is None or not coverage.has_data():
         return "NEW"
+    if not coverage.registered_count():
+        # Universe unknown (registration failed/skipped): TRUE full coverage
+        # can never be declared over a merely-sampled subset.
+        return "NEW"
     if coverage.global_unsolved() or coverage.uncharted():
         return "NEW"
     return "MERGE"
@@ -445,11 +449,20 @@ def run_css_tree(
         coverage_path(out_dir),
         min_attempts=int(getattr(cfg, "ledger_min_attempts", 1)))
     coverage.path = coverage_path(out_dir)
-    try:
-        coverage.register_tasks(
-            str(it.get("task_id", it.get("id", ""))) for it in env.train_items())
-    except Exception:  # noqa: BLE001 — envless harnesses (tests) skip registration
-        pass
+    # Register the FULL train universe (the uncharted domain). Silent failure
+    # here would collapse uncharted() to empty and let root_spawn_mode declare
+    # full coverage over a sampled subset (code-review finding 2026-07-07) —
+    # so only the envless harness case stays quiet; real errors are LOUD, and
+    # root_spawn_mode independently refuses MERGE while nothing is registered.
+    from css.explore._util import item_id as _item_id
+    if env is not None and hasattr(env, "train_items"):
+        try:
+            coverage.register_tasks(_item_id(it) for it in env.train_items())
+        except Exception:  # noqa: BLE001
+            _log.exception(
+                "coverage: train-universe registration FAILED — uncharted() "
+                "will under-report and MERGE stays disabled until registration "
+                "succeeds")
 
     if ckpt_path:
         ckpt = load_checkpoint(ckpt_path)

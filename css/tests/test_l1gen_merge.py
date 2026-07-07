@@ -112,6 +112,18 @@ _MERGE_HAPPY = {
 
 
 # ── root three-way dispatch ──────────────────────────────────────────────────
+def test_root_spawn_mode_never_merges_over_unknown_universe(tmp_path):
+    # Code-review regression (2026-07-07): if train-universe registration
+    # failed, uncharted() is empty BY CONSTRUCTION — full coverage must not be
+    # declared over a merely-sampled subset.
+    led = CoverageLedger([], min_attempts=1,
+                         path=coverage_path(str(tmp_path)))
+    led.record("nA", "t1", True)          # sampled task solved; universe unknown
+    led._registered.discard("t1")         # simulate failed registration
+    assert led.registered_count() == 0 and led.has_data()
+    assert root_spawn_mode(led, _cfg()) == "NEW"
+
+
 def test_root_spawn_mode_three_way(tmp_path):
     out = str(tmp_path)
     assert root_spawn_mode(None, _cfg()) == "NEW"
@@ -191,7 +203,10 @@ def test_merge_happy_path_verbatim_rules_and_provenance(tmp_path, monkeypatch):
     assert concept["expected_coverage"] == ["t1", "t2"]
 
 
-def test_merge_novelty_rejects_duplicate_fusion(tmp_path, monkeypatch):
+def test_merge_novelty_retries_with_critique_then_exhausts(tmp_path, monkeypatch):
+    # Design §6 step 3: a duplicate verdict feeds a critique back into
+    # re-conception (retry-with-critique, same loop as NEW) — a persistent
+    # duplicate exhausts the retries instead of failing on the first vote.
     _full_coverage_ledger(str(tmp_path))
     tree = _merge_tree()
     prior = TreeNode(node_id="n0002", branch_type="MERGE",
@@ -201,13 +216,33 @@ def test_merge_novelty_rejects_duplicate_fusion(tmp_path, monkeypatch):
     script = dict(_MERGE_HAPPY)
     script[_llm.STAGE_MERGE_NOVELTY] = {"novel": False, "duplicates": "n0002",
                                         "reason": "same routing fusion"}
+    seen_users: dict = {}
     monkeypatch.setattr("css.explore.api.get_or_explore",
                         lambda group_key, **kw: "f")
     monkeypatch.setattr("css.l1gen._llm.complete_optimizer_json",
-                        _fake_llm(script))
+                        _fake_llm(script, seen_users))
     out = run_merge_pipeline(_merge_ctx(tmp_path, tree=tree))
     assert out.child is None and out.decline is False
-    assert "duplicate of prior fusion n0002" in out.reason
+    assert "merge.novelty exhausted" in out.reason and "n0002" in out.reason
+    # gen_novelty_retries=2 -> 3 conception attempts, later ones carrying the
+    # duplicate critique.
+    concepts = seen_users[_llm.STAGE_MERGE_CONCEPT]
+    assert len(concepts) == 3
+    assert "JUDGED A DUPLICATE" in concepts[1]
+    assert "same routing fusion" in concepts[1]
+
+
+def test_merge_precondition_declines_when_frontier_open(tmp_path):
+    # Defensive self-check (code-review): a caller bypassing root_spawn_mode's
+    # gate must not be able to fuse over a live unsolved frontier.
+    led = CoverageLedger(["t1", "t2"], min_attempts=1,
+                         path=coverage_path(str(tmp_path)))
+    led.record("nA", "t1", True)
+    led.record("nA", "t2", False)     # t2 unsolved -> full coverage does NOT hold
+    led.save()
+    out = run_merge_pipeline(_merge_ctx(tmp_path))
+    assert out.child is None and out.decline is True
+    assert "merge.precondition" in out.reason
 
 
 def test_merge_conception_failure_is_a_plain_fail(tmp_path, monkeypatch):
@@ -221,6 +256,47 @@ def test_merge_conception_failure_is_a_plain_fail(tmp_path, monkeypatch):
     out = run_merge_pipeline(_merge_ctx(tmp_path))
     assert out.child is None and out.decline is False
     assert "conception" in out.reason
+
+
+def test_merge_rules_trim_drops_whole_sections_in_lockstep(tmp_path, monkeypatch):
+    # Code-review regression (2026-07-07): the trim used to round-trip through
+    # rules_md.split("\n\n"), which desynced from provenance whenever a section
+    # body contained a blank line — cutting MID-SECTION (a silent rewrite) and
+    # mis-attributing provenance. The trim must drop whole trailing sections,
+    # keeping text and provenance 1:1.
+    _full_coverage_ledger(str(tmp_path))
+    rules_a = ("### Alpha Retrieval\nparagraph one\n\nparagraph two after a "
+               "blank line\n")
+    rules_b = "### Beta Bridging\nresolve the bridge first\n"
+    tree = _merge_tree()
+    tree.get("nA").rules = rules_a
+    tree.get("nA").best_rules = rules_a
+    tree.get("nB").rules = rules_b
+    tree.get("nB").best_rules = rules_b
+
+    def select_by_source(system, user):
+        if "SOURCE NODE: nA" in user:
+            return [{"section": "### Alpha Retrieval", "verdict": "keep",
+                     "reason": "r"}]
+        return [{"section": "### Beta Bridging", "verdict": "keep",
+                 "reason": "r"}]
+
+    script = dict(_MERGE_HAPPY)
+    script[_llm.STAGE_MERGE_RULES_SELECT] = select_by_source
+    monkeypatch.setattr("css.explore.api.get_or_explore",
+                        lambda group_key, **kw: "f")
+    monkeypatch.setattr("css.l1gen._llm.complete_optimizer_json",
+                        _fake_llm(script))
+    ctx = _merge_ctx(tmp_path, tree=tree)
+    # Cap between |alpha| and |alpha + beta| -> exactly Beta must be trimmed.
+    ctx.cfg.rules_max_chars = len(rules_a.rstrip()) + 5
+    out = run_merge_pipeline(ctx)
+    assert out.child is not None
+    # Alpha survives INTACT — internal blank line untouched (no mid-section cut).
+    assert out.child.rules == rules_a.rstrip() + "\n"
+    prov = json.loads((tmp_path / "nodes" / "n0003" / "dossier" /
+                       "rules_provenance.json").read_text())
+    assert prov == [{"source": "nA", "section": "### Alpha Retrieval"}]
 
 
 def test_merge_all_rules_dropped_still_spawns(tmp_path, monkeypatch):

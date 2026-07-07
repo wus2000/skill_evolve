@@ -24,7 +24,7 @@ def _cfg() -> CSSConfig:
 
 def _fake_dispatch():
     def fn(spec, *, menu, env, target_client, optimizer_client, cfg,
-           session_dir, probe_index, decision_index=0):
+           session_dir, probe_index, decision_index=0, leads_path=""):
         tid = spec.get("task_id")
         return {"probe_index": probe_index, "task_id": tid, "k": 1,
                 "behavior_prompt": spec.get("behavior_prompt", ""),

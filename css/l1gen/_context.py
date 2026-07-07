@@ -261,10 +261,11 @@ def resolve_task_items(env: Any, ids_or_items: "List") -> "List[dict]":
         return []
     if all(isinstance(x, dict) for x in wanted):
         return wanted
+    from css.explore._util import item_id as _item_id
     lookup: "Dict[str, dict]" = {}
     try:
         for it in env.train_items():
-            tid = str(it.get("task_id", it.get("id", "")))
+            tid = _item_id(it)
             if tid:
                 lookup[tid] = it
     except Exception:  # noqa: BLE001 — envless harness: wrap ids minimally
@@ -305,31 +306,30 @@ def leads_block(out_dir: str, task_ids: "List[str]") -> str:
         return ""
 
 
-def shortfall_map(out_dir: str, cfg: Any, node_id: str) -> "Dict[str, List[str]]":
+def load_run_coverage(out_dir: str, cfg: Any):
+    """One-stop coverage load with the run's m (single owner of the kwarg)."""
+    from css.coverage import load_coverage
+    return load_coverage(out_dir, min_attempts=int(
+        getattr(cfg, "ledger_min_attempts", 1) or 1))
+
+
+def shortfall_map(ledger: Any, node_id: str) -> "Dict[str, List[str]]":
     """This node's shortfall (unsolved here, solved elsewhere) -> solver ids."""
     try:
-        from css.coverage import load_coverage
-        ledger = load_coverage(out_dir, min_attempts=int(
-            getattr(cfg, "ledger_min_attempts", 1)))
         return ledger.shortfall(node_id)
     except Exception:  # noqa: BLE001 — a missing ledger yields no shortfall
         return {}
 
 
-def solver_neighbor_ids(out_dir: str, cfg: Any, shortfall: "Dict[str, List[str]]") -> "List[str]":
+def solver_neighbor_ids(ledger: Any, cfg: Any, shortfall: "Dict[str, List[str]]") -> "List[str]":
     """Contrast menu: tasks the shortfall's solvers DO solve (design §5).
 
     Capped by ``cfg.explore_neighbor_tasks``; excludes the shortfall tasks
-    themselves (those are the targets).
+    themselves (those are the targets). Takes the ALREADY-LOADED ledger — the
+    back-to-back double parse per REFINE spawn was a review finding.
     """
     cap = max(0, int(getattr(cfg, "explore_neighbor_tasks", 3)))
-    if cap == 0 or not shortfall:
-        return []
-    try:
-        from css.coverage import load_coverage
-        ledger = load_coverage(out_dir, min_attempts=int(
-            getattr(cfg, "ledger_min_attempts", 1)))
-    except Exception:  # noqa: BLE001
+    if cap == 0 or not shortfall or ledger is None:
         return []
     targets = set(shortfall)
     out: "List[str]" = []

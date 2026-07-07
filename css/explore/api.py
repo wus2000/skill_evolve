@@ -48,17 +48,25 @@ def _findings_paths(out_dir: str, group_key: str) -> "tuple[str, str]":
     return os.path.join(gd, "findings.md"), os.path.join(gd, "findings.meta.json")
 
 
-def _ledger_signature(out_dir: str) -> str:
-    """Current coverage-ledger partition signature ('' when unavailable)."""
+def _ledger_signature(out_dir: str, cfg=None) -> str:
+    """Current coverage-ledger partition signature ('' when unavailable).
+
+    Uses cfg.ledger_min_attempts: the signature is m-sensitive (attempted
+    thresholds), and a default-m signature would track a DIFFERENT partition
+    than the one driving NEW targeting the moment m > 1 (code-review
+    2026-07-07).
+    """
     try:
         from css.coverage import load_coverage
-        led = load_coverage(out_dir)
+        led = load_coverage(out_dir, min_attempts=int(
+            getattr(cfg, "ledger_min_attempts", 1) or 1))
         return led.signature() if led.has_data() else ""
     except Exception:  # noqa: BLE001 — exploration must run without the ledger
         return ""
 
 
-def _cached_findings(out_dir: str, group_key: str) -> "str | None":
+def _cached_findings(out_dir: str, group_key: str,
+                     current_sig: str = "") -> "str | None":
     """Return fresh cached findings for a group, or ``None`` to (re)explore.
 
     Freshness = not marked stale AND the coverage partition is unchanged since
@@ -74,7 +82,7 @@ def _cached_findings(out_dir: str, group_key: str) -> "str | None":
         return None
     cached_sig = str(meta.get("ledger_signature", "") or "")
     if cached_sig:
-        current = _ledger_signature(out_dir)
+        current = current_sig
         if current and current != cached_sig:
             _log.info("[explore] findings for group=%r stale by ledger "
                       "signature (%s -> %s)", group_key, cached_sig, current)
@@ -142,7 +150,10 @@ def get_or_explore(
     raises; returns ``""`` on total failure.
     """
     try:
-        cached = _cached_findings(out_dir, group_key)
+        # One signature computation serves both the freshness check and the
+        # meta write below (it was recomputed twice per session before).
+        current_sig = _ledger_signature(out_dir, cfg)
+        cached = _cached_findings(out_dir, group_key, current_sig)
         if cached is not None:
             _log.info("[explore] cache hit for group=%r (%d chars)", group_key, len(cached))
             return cached
@@ -199,7 +210,7 @@ def get_or_explore(
             "created_ts": time.time(),
             "source_sessions": [name for name, _ in reports],
             "stale": False,
-            "ledger_signature": _ledger_signature(out_dir),
+            "ledger_signature": current_sig,
         })
         _log.info("[explore] cached findings for group=%r (%d chars, %d session(s))",
                   group_key, len(findings), len(reports))

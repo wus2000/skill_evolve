@@ -643,7 +643,7 @@ EXPLORATION REPORT (fusion hypotheses probed on real tasks):
 -------------------------------------------------------------
 {findings}
 -------------------------------------------------------------
-
+{critique}
 Design the fusion blueprint. Respond with ONLY the JSON object described."""
 
 

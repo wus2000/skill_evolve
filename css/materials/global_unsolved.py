@@ -115,17 +115,20 @@ def synthesize_global(
             "uncharted_task_ids": []})
         return {}
 
+    # Signature FIRST: the partition flips only on a genuine state change, so
+    # the common per-burst case short-circuits before paying the full set
+    # derivation + the O(unsolved x nodes) priority sort (code-review 2026-07-07).
+    signature = ledger.signature()
+    prior_meta = common.read_json(meta_path)
+    if isinstance(prior_meta, dict) and prior_meta.get("signature") == signature:
+        return common.read_json(groups_path) or {}
+
     # Union-of-evidence sets; priority-ordered by accumulated failed attempts.
     global_unsolved = sorted(
         ledger.global_unsolved(),
         key=lambda t: (-ledger.failure_weight(t), t))
     paradigm_sensitive = sorted(ledger.paradigm_sensitive())
     uncharted = sorted(ledger.uncharted())
-    signature = ledger.signature()
-
-    prior_meta = common.read_json(meta_path)
-    if isinstance(prior_meta, dict) and prior_meta.get("signature") == signature:
-        return common.read_json(groups_path) or {}
 
     if not global_unsolved:
         common.write_json_atomic(groups_path, {})

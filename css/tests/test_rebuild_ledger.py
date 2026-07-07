@@ -30,7 +30,7 @@ def _seed_run(root: Path) -> None:
     _result(root, "global/exploration/sessions/session_0001/probes/probe_000_rollouts/predictions/t1/r0/result.json", 1)
 
 
-def test_rebuild_scans_train_sources_and_ignores_val_and_probes(tmp_path):
+def test_rebuild_scans_l0_only_and_ignores_verify_val_probes(tmp_path):
     _seed_run(tmp_path)
     out = subprocess.run([sys.executable, _TOOL, str(tmp_path)],
                          capture_output=True, text=True, check=True)
@@ -40,14 +40,16 @@ def test_rebuild_scans_train_sources_and_ignores_val_and_probes(tmp_path):
     assert led.stats("n0000", "t1")["attempts"] == 2
     assert led.stats("n0000", "t1")["kinds"] == {"l0": 2}
     assert led.solved_set("n0001") == {"t1"}
-    # verify rollout recorded with its kind.
-    assert led.stats("n0000", "t3")["kinds"] == {"verify": 1}
-    assert led.global_unsolved() == {"t3"}
+    # verify rollouts run CANDIDATE (possibly gate-rejected) configurations —
+    # they must be ABSENT (code-review ruling 2026-07-07):
+    assert led.stats("n0000", "t3")["attempts"] == 0
+    assert led.global_unsolved() == set()
     assert led.paradigm_sensitive() == {"t1"}
     # val task t9 and the probe pass on t1 must be ABSENT from the book:
     assert led.stats("n0000", "t9")["attempts"] == 0
-    # (the probe would have added a third t1 attempt / a phantom node)
     assert set(led.node_ids()) == {"n0000", "n0001"}
+    # Artifact rebuilds have no global decision index -> sentinel -1.
+    assert led.stats("n0000", "t1")["last_decision"] == -1
 
 
 def test_rebuild_dry_run_writes_nothing(tmp_path):

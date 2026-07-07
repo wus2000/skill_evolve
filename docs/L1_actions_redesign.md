@@ -53,17 +53,23 @@ File: `global/coverage/ledger.json` (atomic writes). Model:
 plus the registered full train task-id list (needed for `uncharted`).
 
 **What is recorded** (the precise definition of "the node's real
-configuration"): every TRAIN rollout executed under the node's
-strategy + evolving rules — L0 minibatch rollouts (including mid-burst
-rules_s variants), screening rollouts, verify target/control rollouts
-(incumbent and candidate are both real configurations on the node's
-evolution path).
+configuration"): the L0 ON-POLICY train rollout — each step's minibatch
+under the node's CURRENT deployed rules (including mid-burst rules_s
+states, which are the deployed configuration at that step). This is the
+node's SOLE solved-evidence stream.
 
 **What is NOT recorded**:
 - probe rollouts (user ruling: a behavior prompt is not the node's actual
   strategy; probe reachability must never flip a task's solved status —
   otherwise a lucky probe can empty `global_unsolved`, trigger MERGE over
   strategies none of which solve the task, and permanently orphan it);
+- verify rollouts — REVISED 2026-07-07 (code-review ruling): every verify
+  rollout, target AND control alike, runs the CANDIDATE rules, and a
+  gate-rejected candidate is a discarded, never-deployed configuration.
+  Booking its passes as solved re-creates the probe deadlock through a
+  different door (a task leaves `global_unsolved` although no deployed
+  strategy solves it). Same principle as probes: reachability means the
+  ACTUAL deployed configuration;
 - any val/test rollout (val-boundary invariant: val crosses the boundary
   only as aggregate statistics — gate verdicts, node `val_score`; val task
   identities never reach generation-side inputs).
@@ -247,7 +253,9 @@ normal pool; can be REFINEd later; reuses the spawn-failure cooldown.
 - **Step 3 — novelty, scope narrowed**: confronted ONLY against prior MERGE
   strategies (a fusion necessarily resembles its parents; tree-wide novelty
   would false-kill every fusion; repeat-fusion must still be caught).
-  Reuses the retry-with-critique loop.
+  Retry-with-critique loop (``_confront_merge_novelty``, mirroring NEW): a
+  duplicate verdict re-conceives with the critique appended, up to
+  ``gen_novelty_retries``; the first MERGE short-circuits novel.
 - **Steps 4-5 — draft + altitude/purity**: same machinery as NEW.
 - **Step 6 — selective rules integration** (user ruling: LLM judges
   against the FUSED strategy; never wholesale copy):
@@ -318,3 +326,16 @@ session re-runs only after the ledger actually changes.
    User-set.
 10. MERGE matrix includes pruned/terminal nodes. Approved.
 11. Progressive widening deferred to an observation item. Approved.
+12. Verify rollouts (candidate configurations, gate-rejected included) are
+    EXCLUDED from the coverage ledger — the L0 on-policy rollout is the sole
+    solved-evidence stream. Code-review ruling 2026-07-07, extending ruling
+    4's principle (reachability = deployed configuration) from probes to
+    rejected candidates.
+13. Post-review hardening (2026-07-07): whole-section trim keeps rules text
+    and provenance 1:1; ``uncharted`` subtracts solved; root never declares
+    full coverage over an unregistered universe (loud registration + a
+    ``registered_count`` guard); MERGE self-checks its full-coverage
+    precondition and declines otherwise; ledger readers/writers share an
+    RLock and ``save()`` deep-copies under it; the exploration-findings
+    signature uses the run's ``ledger_min_attempts``; leads recording lives
+    at the ``dispatch_probe`` boundary (§1.2 as written).

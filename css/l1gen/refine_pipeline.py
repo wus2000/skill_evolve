@@ -240,13 +240,14 @@ def run_refine_pipeline(ctx: SpawnContext) -> SpawnOutcome:
     cause_path = os.path.join(gd, "cause_confirmation.json")
     cause = _io.read_json(cause_path)
     if cause is None:
-        shortfall = _context.shortfall_map(out_dir, cfg, pid)
+        _coverage = _context.load_run_coverage(out_dir, cfg)
+        shortfall = _context.shortfall_map(_coverage, pid)
         findings0 = ""
         if shortfall:
             expl0 = _context.run_exploration(
                 mode="REFINE", group_key="shortfall_%s" % pid,
                 group_tasks=sorted(shortfall),
-                neighbor_tasks=_context.solver_neighbor_ids(out_dir, cfg, shortfall),
+                neighbor_tasks=_context.solver_neighbor_ids(_coverage, cfg, shortfall),
                 briefing_md=_context.exploration_briefing_shortfall(
                     ctx.tree, out_dir, cfg, pid, shortfall),
                 cfg=cfg, env=ctx.env, target_client=ctx.target_client,

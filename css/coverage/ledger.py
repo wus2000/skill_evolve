@@ -38,6 +38,7 @@ only when a task's state actually flips, which gates downstream recomputation
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -58,7 +59,9 @@ def _atomic_write_json(path: str, obj: Any) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=1)
+        # default=str matches the repo's canonical atomic writers (a local copy
+        # is kept to avoid cross-layer imports, not to diverge in tolerance).
+        json.dump(obj, f, ensure_ascii=False, indent=1, default=str)
     os.replace(tmp, path)
 
 
@@ -69,7 +72,10 @@ class CoverageLedger:
                  path: str = "") -> None:
         self.min_attempts = max(1, int(min_attempts))
         self.path = path
-        self._lock = threading.Lock()
+        # RLock: public readers take the lock too (the verify-era fanout
+        # taught us reads can overlap worker writes), and derived-set
+        # methods call each other, so the lock must be re-entrant.
+        self._lock = threading.RLock()
         # node_id -> task_id -> {"attempts": int, "passes": int,
         #                        "kinds": {kind: n}, "last_decision": int}
         self._nodes: dict[str, dict[str, dict]] = {}
@@ -116,54 +122,75 @@ class CoverageLedger:
                 n += 1
         return n
 
-    # ── per-node reads ────────────────────────────────────────────────────
+    # ── per-node reads (all readers take the lock: record() runs on worker
+    # threads, and iterating a dict during a concurrent insert raises) ────
+    def registered_count(self) -> int:
+        """Size of the registered train universe (0 = never registered —
+        full coverage must NEVER be declared over an unknown universe)."""
+        with self._lock:
+            return len(self._registered)
+
     def stats(self, node_id: str, task_id: str) -> dict:
-        cell = self._nodes.get(str(node_id), {}).get(str(task_id))
-        return dict(cell) if cell else {"attempts": 0, "passes": 0,
-                                        "kinds": {}, "last_decision": -1}
+        with self._lock:
+            cell = self._nodes.get(str(node_id), {}).get(str(task_id))
+            return dict(cell) if cell else {"attempts": 0, "passes": 0,
+                                            "kinds": {}, "last_decision": -1}
 
     def solved_set(self, node_id: str) -> set[str]:
-        return {t for t, c in self._nodes.get(str(node_id), {}).items()
-                if c["passes"] >= 1}
+        with self._lock:
+            return {t for t, c in self._nodes.get(str(node_id), {}).items()
+                    if c["passes"] >= 1}
 
     def unsolved_set(self, node_id: str) -> set[str]:
-        m = self.min_attempts
-        return {t for t, c in self._nodes.get(str(node_id), {}).items()
-                if c["attempts"] >= m and c["passes"] == 0}
+        with self._lock:
+            m = self.min_attempts
+            return {t for t, c in self._nodes.get(str(node_id), {}).items()
+                    if c["attempts"] >= m and c["passes"] == 0}
 
     # ── global reads ──────────────────────────────────────────────────────
     def solved_anywhere(self) -> set[str]:
-        out: set[str] = set()
-        for cells in self._nodes.values():
-            out.update(t for t, c in cells.items() if c["passes"] >= 1)
-        return out
+        with self._lock:
+            out: set[str] = set()
+            for cells in self._nodes.values():
+                out.update(t for t, c in cells.items() if c["passes"] >= 1)
+            return out
 
     def attempted_anywhere(self) -> set[str]:
-        m = self.min_attempts
-        out: set[str] = set()
-        for cells in self._nodes.values():
-            out.update(t for t, c in cells.items() if c["attempts"] >= m)
-        return out
+        with self._lock:
+            m = self.min_attempts
+            out: set[str] = set()
+            for cells in self._nodes.values():
+                out.update(t for t, c in cells.items() if c["attempts"] >= m)
+            return out
 
     def global_unsolved(self) -> set[str]:
         """Attempted (>= m) by >= 1 node, solved by NO node."""
         return self.attempted_anywhere() - self.solved_anywhere()
 
     def uncharted(self) -> set[str]:
-        """Registered tasks no node has attempted >= m times."""
-        return self._registered - self.attempted_anywhere()
+        """Registered tasks neither sufficiently attempted NOR solved.
+
+        solved_anywhere is subtracted explicitly: with min_attempts > 1 a
+        task solved on its only attempt is not 'attempted' (1 < m) yet is
+        certainly not a blind spot — leaving it here would block the MERGE
+        phase transition forever (code-review finding, 2026-07-07)."""
+        with self._lock:
+            return (self._registered - self.attempted_anywhere()
+                    - self.solved_anywhere())
 
     def paradigm_sensitive(self) -> set[str]:
-        solved = self.solved_anywhere()
-        out: set[str] = set()
-        for nid in self._nodes:
-            out.update(self.unsolved_set(nid) & solved)
-        return out
+        with self._lock:
+            solved = self.solved_anywhere()
+            out: set[str] = set()
+            for nid in self._nodes:
+                out.update(self.unsolved_set(nid) & solved)
+            return out
 
     def solvers(self, task_id: str) -> list[str]:
-        tid = str(task_id)
-        return sorted(nid for nid, cells in self._nodes.items()
-                      if cells.get(tid, {}).get("passes", 0) >= 1)
+        with self._lock:
+            tid = str(task_id)
+            return sorted(nid for nid, cells in self._nodes.items()
+                          if cells.get(tid, {}).get("passes", 0) >= 1)
 
     def shortfall(self, node_id: str) -> dict[str, list[str]]:
         """Tasks this node has unsolved that OTHER nodes solved -> solvers."""
@@ -183,19 +210,22 @@ class CoverageLedger:
 
     def failure_weight(self, task_id: str) -> int:
         """Total failed attempts across nodes (priority signal for targeting)."""
-        tid = str(task_id)
-        total = 0
-        for cells in self._nodes.values():
-            c = cells.get(tid)
-            if c and c["passes"] == 0:
-                total += int(c["attempts"])
-        return total
+        with self._lock:
+            tid = str(task_id)
+            total = 0
+            for cells in self._nodes.values():
+                c = cells.get(tid)
+                if c and c["passes"] == 0:
+                    total += int(c["attempts"])
+            return total
 
     def node_ids(self) -> list[str]:
-        return sorted(self._nodes.keys())
+        with self._lock:
+            return sorted(self._nodes.keys())
 
     def has_data(self) -> bool:
-        return any(self._nodes.values())
+        with self._lock:
+            return any(self._nodes.values())
 
     # ── signature ─────────────────────────────────────────────────────────
     def signature(self) -> str:
@@ -206,10 +236,12 @@ class CoverageLedger:
         downstream consumers (global synthesis, exploration caches) can key
         on it without churn.
         """
-        solved = self.solved_anywhere()
-        attempted = self.attempted_anywhere()
+        with self._lock:
+            solved = self.solved_anywhere()
+            attempted = self.attempted_anywhere()
+            universe = sorted(self._registered | attempted | solved)
         parts = []
-        for t in sorted(self._registered | attempted | solved):
+        for t in universe:
             state = ("S" if t in solved
                      else "U" if t in attempted else "N")
             parts.append(f"{t}:{state}")
@@ -221,10 +253,13 @@ class CoverageLedger:
         if not p:
             raise ValueError("CoverageLedger.save: no path configured")
         with self._lock:
+            # Deep-copy under the lock: the payload must not alias the live
+            # dict, or json.dump (outside the lock) races concurrent record()
+            # calls from worker threads (code-review finding, 2026-07-07).
             payload = {
                 "version": 1,
                 "registered_task_ids": sorted(self._registered),
-                "nodes": self._nodes,
+                "nodes": copy.deepcopy(self._nodes),
             }
         _atomic_write_json(p, payload)
         return p

@@ -189,7 +189,7 @@ def run_director_session(
         records = _run_probes_concurrently(
             indexed, menu=menu, env=env, target_client=target_client,
             optimizer_client=optimizer_client, cfg=cfg, session_dir=session_dir,
-            decision_index=decision_index,
+            decision_index=decision_index, leads_path=leads_path,
         )
 
         # Telemetry from the real (executed) probes of THIS turn.
@@ -202,29 +202,9 @@ def run_director_session(
             if r.get("behavior_prompt", "") in history_set:
                 n_replications += 1
         n_contrastive_pairs += _count_contrastive_pairs(real)
-
-        # Passing probes become LEADS (design §1.2) — hints for later
-        # conception; NEVER solved-state (a lucky probe must not be able to
-        # empty global_unsolved).
-        if leads_path:
-            from css.explore.leads import record_lead
-            for r in real:
-                if int(r.get("n_pass", 0)) > 0:
-                    try:
-                        record_lead(
-                            leads_path,
-                            task_id=str(r.get("task_id", "")),
-                            behavior_prompt=str(r.get("behavior_prompt", "")),
-                            n_pass=int(r.get("n_pass", 0)),
-                            k=int(r.get("k", 1)),
-                            session_ref="%s#probe_%s" % (
-                                os.path.basename(session_dir),
-                                r.get("probe_index")),
-                            decision_index=decision_index,
-                            cap=int(getattr(cfg, "leads_per_task", 3)),
-                        )
-                    except Exception:  # noqa: BLE001 — leads must not kill a turn
-                        pass
+        # (Passing probes were archived as LEADS inside dispatch_probe — the
+        # probe-execution boundary — so every dispatch_probe caller feeds the
+        # book, not just this loop.)
 
         for r in records:
             append_jsonl(transcript_path, {"turn": n_turns, "role": "probe",
@@ -263,7 +243,7 @@ def run_director_session(
 
 def _run_probes_concurrently(
     indexed: "list[tuple]", *, menu, env, target_client, optimizer_client, cfg,
-    session_dir, decision_index,
+    session_dir, decision_index, leads_path="",
 ) -> "list[dict]":
     """Dispatch this turn's probes concurrently, preserving spec order."""
     if len(indexed) == 1:
@@ -271,7 +251,8 @@ def _run_probes_concurrently(
         return [dispatch_probe(spec, menu=menu, env=env, target_client=target_client,
                                optimizer_client=optimizer_client, cfg=cfg,
                                session_dir=session_dir, probe_index=idx,
-                               decision_index=decision_index)]
+                               decision_index=decision_index,
+                               leads_path=leads_path)]
     results: "list[dict]" = [None] * len(indexed)  # type: ignore[list-item]
     with ThreadPoolExecutor(max_workers=len(indexed)) as pool:
         fut_to_pos = {}
@@ -280,6 +261,7 @@ def _run_probes_concurrently(
                 dispatch_probe, spec, menu=menu, env=env, target_client=target_client,
                 optimizer_client=optimizer_client, cfg=cfg, session_dir=session_dir,
                 probe_index=idx, decision_index=decision_index,
+                leads_path=leads_path,
             )
             fut_to_pos[fut] = pos
         for fut in fut_to_pos:

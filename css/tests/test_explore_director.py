@@ -29,7 +29,7 @@ def _tasks():
 def _fake_dispatch():
     """Stand-in for probe.dispatch_probe: canned record, no rollout/narrator."""
     def fn(spec, *, menu, env, target_client, optimizer_client, cfg,
-           session_dir, probe_index, decision_index=0):
+           session_dir, probe_index, decision_index=0, leads_path=""):
         tid = spec.get("task_id")
         prompt = spec.get("behavior_prompt", "")
         if tid not in menu:

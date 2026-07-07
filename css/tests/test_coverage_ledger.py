@@ -53,6 +53,52 @@ def test_single_pass_always_means_solved():
     assert led.global_unsolved() == set()
 
 
+def test_solved_task_is_never_uncharted_even_below_m():
+    # Code-review regression (2026-07-07): with m>1 a task solved on its only
+    # attempt is not 'attempted' (1 < m) but is certainly not a blind spot —
+    # leaving it in uncharted() would block the MERGE transition forever.
+    led = CoverageLedger(["t1", "t2"], min_attempts=3)
+    led.record("n0", "t1", True)                  # single-attempt solve
+    assert "t1" not in led.uncharted()
+    assert led.uncharted() == {"t2"}
+
+
+def test_readers_are_safe_against_concurrent_writers():
+    # Readers take the (re-entrant) lock too: iterating dicts while worker
+    # threads insert used to be able to raise RuntimeError.
+    import threading as _t
+    led = CoverageLedger(["t%d" % i for i in range(50)], min_attempts=1)
+    stop = _t.Event()
+    errors: list = []
+
+    def writer():
+        i = 0
+        while not stop.is_set():
+            led.record("n%d" % (i % 7), "t%d" % (i % 50), i % 3 == 0, kind="l0")
+            i += 1
+
+    def reader():
+        try:
+            while not stop.is_set():
+                led.global_unsolved()
+                led.paradigm_sensitive()
+                led.signature()
+                led.uncharted()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [_t.Thread(target=writer) for _ in range(3)] + [
+        _t.Thread(target=reader) for _ in range(3)]
+    for th in threads:
+        th.start()
+    import time as _time
+    _time.sleep(0.3)
+    stop.set()
+    for th in threads:
+        th.join()
+    assert not errors, errors
+
+
 # ── global sets: union-of-evidence ───────────────────────────────────────────
 def _two_node_ledger() -> CoverageLedger:
     led = CoverageLedger(["t1", "t2", "t3", "t4", "t5", "t9"], min_attempts=1)
