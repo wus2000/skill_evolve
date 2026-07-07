@@ -121,7 +121,12 @@ def truncate_tool_results(messages: list[dict], tool_trunc: int) -> list[dict]:
 
 POST_ROLLOUT_EVAL_ROLE = "evaluation"
 POST_ROLLOUT_EVAL_MARKER = (
-    "[POST-ROLLOUT EVALUATION — analysis only; the task agent never saw this]"
+    "[POST-ROLLOUT EVALUATION — training-time diagnostic ONLY. The task agent "
+    "never saw this and never will: at deployment there is no evaluator, no "
+    "expected answer, no verification report. Use it to understand what went "
+    "wrong, but whatever you produce must stand WITHOUT it — never mention or "
+    "condition on evaluators/expected values; state lessons through the "
+    "task's own semantics.]"
 )
 
 

@@ -458,7 +458,17 @@ class SpreadsheetBenchEnv:
                     conversation.append(
                         {
                             "role": "system",
-                            "content": f"[POST-EXECUTION VERIFICATION]\n\n{enrichment_msg}",
+                            "content": (
+                                "[POST-EXECUTION VERIFICATION — training-time "
+                                "diagnostic ONLY. The task agent never saw this "
+                                "and never will: at deployment there is no "
+                                "evaluator, no expected answer, no verification "
+                                "report. Use it to understand what went wrong, "
+                                "but whatever you produce must stand WITHOUT "
+                                "it — never mention or condition on evaluators/"
+                                "expected values; state lessons through the "
+                                "task's own semantics.]\n\n" + enrichment_msg
+                            ),
                         }
                     )
                     with open(os.path.join(prediction_dir, "conversation.json"), "w") as f:
