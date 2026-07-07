@@ -152,6 +152,7 @@ def run_burst(
     out_dir: str,
     decision_index: int,
     ledger=None,
+    coverage=None,
 ) -> BurstResult:
     """Run exactly ``cfg.burst_steps`` L0 steps at ``node`` (one tree visit).
 
@@ -195,7 +196,13 @@ def run_burst(
         current_score=node.val_score,
         exact_steps=cfg.burst_steps,
         ledger=ledger,
+        coverage=coverage,
     )
+    if coverage is not None:
+        try:
+            coverage.save()
+        except Exception:  # noqa: BLE001 — the book must not kill the burst
+            _log.exception("coverage ledger save failed (continuing)")
 
     # Val refresh — zero-rollout reuse of the gate's accepted predictions.
     best_val_dir = getattr(summary, "best_val_out_dir", "")
@@ -414,6 +421,19 @@ def run_css_tree(
     global_best: dict = {}
     ckpt_path = latest_checkpoint(out_dir) if resume else None
 
+    # Coverage ledger (L1_actions_redesign §1.1) — file-persisted, so resume
+    # simply reloads it; the registered universe is the env's train set.
+    from css.coverage import CoverageLedger, coverage_path
+    coverage = CoverageLedger.load(
+        coverage_path(out_dir),
+        min_attempts=int(getattr(cfg, "ledger_min_attempts", 1)))
+    coverage.path = coverage_path(out_dir)
+    try:
+        coverage.register_tasks(
+            str(it.get("task_id", it.get("id", ""))) for it in env.train_items())
+    except Exception:  # noqa: BLE001 — envless harnesses (tests) skip registration
+        pass
+
     if ckpt_path:
         ckpt = load_checkpoint(ckpt_path)
         if ckpt.config_fingerprint and ckpt.config_fingerprint != fp:
@@ -507,7 +527,7 @@ def run_css_tree(
         if node.status == "active":
             br = do_burst(tree, node, env, target_client, optimizer_client,
                           cfg=cfg, out_dir=out_dir, decision_index=decision_index,
-                          ledger=ledger)
+                          ledger=ledger, coverage=coverage)
             record.update(kind="burst", burst=br.burst_index, steps=br.steps,
                           accepted=br.n_accepted, reward=round(br.reward, 6),
                           val_after=round(br.val_after, 6))
@@ -619,7 +639,7 @@ def run_css_tree(
                           rules_len=len(child.rules or ""))
                 br = do_burst(tree, child, env, target_client, optimizer_client,
                               cfg=cfg, out_dir=out_dir, decision_index=decision_index,
-                              ledger=ledger)
+                              ledger=ledger, coverage=coverage)
                 # Spawn reward is rebased to the PARENT's val (redesign §2):
                 # measuring against the empty-rules baseline booked +0.43..
                 # +0.59 of cold-start recovery as profit (20x a burst reward)

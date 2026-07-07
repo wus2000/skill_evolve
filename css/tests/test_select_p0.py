@@ -45,7 +45,8 @@ def _fake_burst(plans: dict):
     """Scripted burst: ``plans[node_id][burst_index]`` = val gain."""
     calls: list[tuple[str, int]] = []
 
-    def fn(tree, node, env, tc, oc, *, cfg, out_dir, decision_index, ledger=None):
+    def fn(tree, node, env, tc, oc, *, cfg, out_dir, decision_index, ledger=None,
+           coverage=None):
         idx = node.n_bursts
         calls.append((node.node_id, idx))
         gain = plans.get(node.node_id, [])

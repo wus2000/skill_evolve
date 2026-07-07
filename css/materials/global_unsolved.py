@@ -1,21 +1,26 @@
 """Global unsolved — cross-strategy synthesis (design §2.3), the NEW-target source.
 
-Mechanical intersection over every node's latest residual set: tasks failing at
-EVERY node are the global hard residual; tasks solved by only some strategies are
-paradigm-sensitive. Each global-hard group gets one cross-strategy reading — do
-the paradigms fail the SAME way (a common failure mechanism, the prime target for
-a genuinely new strategy) or in different ways — plus a priority.
+Task sets come from the COVERAGE LEDGER (docs/L1_actions_redesign.md §1.1),
+union-of-evidence semantics: ``global_unsolved`` = tasks attempted (>= m) by
+>= 1 node and solved by NO node — a task leaves the set only by actually being
+solved somewhere. (The former per-burst residual INTERSECTION is gone: each
+burst's residual was the failure set of that burst's sampled analysis batch,
+so support drifted per burst and one node emptied the intersection at decision
+1 of the AW post-mortem run — exploration never fired again.)
+
+Each global-unsolved group gets one cross-strategy reading — do the paradigms
+fail the SAME way (a common failure mechanism, the prime target for a genuinely
+new strategy) or in different ways — plus a priority.
 
 CONTRACT (read by the NEW generation pipeline):
   * ``global/unsolved/groups.json`` — ``{group_key: {task_ids, summary, priority,
     common_mechanism: bool}}``. Insertion order matches the ``group_<k>.md`` files.
   * ``global/unsolved/group_<k>.md`` — the k-th group's narrative synthesis.
-  * ``global/unsolved/meta.json`` — signature (resume skip), global-hard and
-    paradigm-sensitive task id lists.
+  * ``global/unsolved/meta.json`` — signature (resume skip), global-unsolved,
+    paradigm-sensitive and uncharted task id lists.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -27,20 +32,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from css.data.tree import SearchTree, TreeNode
 
 _log = logging.getLogger("css.materials")
-
-
-
-def _node_latest_residuals(out_dir: str, node_id: str) -> set[str] | None:
-    hist = common.read_jsonl(
-        common.dossier_path(out_dir, node_id, "residual_history.jsonl"))
-    if not hist:
-        return None
-    return set(str(t) for t in hist[-1].get("residual_task_ids", []) or [])
-
-
-def _signature(node_residuals: dict[str, set]) -> str:
-    parts = [f"{nid}:{','.join(sorted(ids))}" for nid, ids in sorted(node_residuals.items())]
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def _frontier_groups(out_dir: str, node_id: str) -> dict:
@@ -103,39 +94,52 @@ def synthesize_global(
     cfg: "CSSConfig", out_dir: str,
 ) -> dict:
     """Recompute the cross-strategy unsolved synthesis. Cheap mechanical core +
-    signature-gated LLM readings (skipped when the residual landscape is unchanged)."""
+    signature-gated LLM readings (skipped when the coverage partition is unchanged)."""
+    from css.coverage import load_coverage
+
     gdir = common.global_unsolved_dir(out_dir)
     os.makedirs(gdir, exist_ok=True)
     groups_path = os.path.join(gdir, "groups.json")
     meta_path = os.path.join(gdir, "meta.json")
 
-    node_residuals: dict[str, set] = {}
-    for nid in tree.nodes:
-        ids = _node_latest_residuals(out_dir, nid)
-        if ids is not None:
-            node_residuals[nid] = ids
-    if not node_residuals:
+    ledger = load_coverage(
+        out_dir, min_attempts=int(getattr(cfg, "ledger_min_attempts", 1)))
+    if not ledger.has_data():
+        _log.warning("materials/global — coverage ledger empty; synthesis "
+                     "skipped (backfill with tools/rebuild_coverage_ledger.py "
+                     "for pre-ledger runs)")
+        common.write_json_atomic(groups_path, {})
+        common.write_json_atomic(meta_path, {
+            "signature": "", "source": "no_coverage_data",
+            "global_unsolved_task_ids": [], "paradigm_sensitive_task_ids": [],
+            "uncharted_task_ids": []})
         return {}
 
-    sets = list(node_residuals.values())
-    global_hard = sorted(set.intersection(*sets)) if sets else []
-    union = sorted(set().union(*sets)) if sets else []
-    paradigm_sensitive = sorted(set(union) - set(global_hard))
-    signature = _signature(node_residuals)
+    # Union-of-evidence sets; priority-ordered by accumulated failed attempts.
+    global_unsolved = sorted(
+        ledger.global_unsolved(),
+        key=lambda t: (-ledger.failure_weight(t), t))
+    paradigm_sensitive = sorted(ledger.paradigm_sensitive())
+    uncharted = sorted(ledger.uncharted())
+    signature = ledger.signature()
 
     prior_meta = common.read_json(meta_path)
     if isinstance(prior_meta, dict) and prior_meta.get("signature") == signature:
         return common.read_json(groups_path) or {}
 
-    if not global_hard:
+    if not global_unsolved:
         common.write_json_atomic(groups_path, {})
         common.write_json_atomic(meta_path, {
-            "signature": signature, "n_nodes": len(node_residuals),
-            "global_hard_task_ids": [], "paradigm_sensitive_task_ids": paradigm_sensitive})
-        _log.info("materials/global — no global-hard residual (%d nodes, %d paradigm-sensitive)",
-                  len(node_residuals), len(paradigm_sensitive))
+            "signature": signature, "n_nodes": len(ledger.node_ids()),
+            "global_unsolved_task_ids": [],
+            "paradigm_sensitive_task_ids": paradigm_sensitive,
+            "uncharted_task_ids": uncharted})
+        _log.info("materials/global — no global-unsolved task (%d nodes, "
+                  "%d paradigm-sensitive, %d uncharted)",
+                  len(ledger.node_ids()), len(paradigm_sensitive), len(uncharted))
         return {}
 
+    global_hard = global_unsolved
     hard_set = set(global_hard)
     raw = common.run_json_stage(
         optimizer_client, prompts.GLOBAL_GROUP_SYSTEM,
@@ -174,10 +178,13 @@ def synthesize_global(
     # so keep groups.json in the same order the md files were written.
     common.write_json_atomic(groups_path, contract)
     common.write_json_atomic(meta_path, {
-        "signature": signature, "n_nodes": len(node_residuals),
-        "global_hard_task_ids": global_hard,
+        "signature": signature, "n_nodes": len(ledger.node_ids()),
+        "global_unsolved_task_ids": global_hard,
         "paradigm_sensitive_task_ids": paradigm_sensitive,
+        "uncharted_task_ids": uncharted,
         "group_order": list(contract.keys())})
-    _log.info("materials/global — %d global-hard tasks in %d groups (%d nodes)",
-              len(global_hard), len(contract), len(node_residuals))
+    _log.info("materials/global — %d global-unsolved tasks in %d groups "
+              "(%d nodes, %d paradigm-sensitive, %d uncharted)",
+              len(global_hard), len(contract), len(ledger.node_ids()),
+              len(paradigm_sensitive), len(uncharted))
     return contract

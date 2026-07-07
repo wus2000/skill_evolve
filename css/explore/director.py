@@ -91,12 +91,16 @@ def run_director_session(
     session_dir: str,
     decision_index: int = 0,
     history_texts: "list[str]" = (),
+    leads_path: str = "",
 ) -> dict:
     """Run one exploration session; return ``{"report_md", "meta"}``.
 
     Never raises: a hard failure yields an empty report and a meta with
     ``stop_reason`` describing it. ``history_texts`` (past strategy texts) is used
     only for the ``n_replications`` telemetry (exact-match detection).
+    ``leads_path``, when given, archives every passing probe as a LEAD
+    (:mod:`css.explore.leads`) — signal for later conception, never
+    coverage-ledger state.
     """
     os.makedirs(session_dir, exist_ok=True)
     system = director_system_prompt(mode)
@@ -198,6 +202,29 @@ def run_director_session(
             if r.get("behavior_prompt", "") in history_set:
                 n_replications += 1
         n_contrastive_pairs += _count_contrastive_pairs(real)
+
+        # Passing probes become LEADS (design §1.2) — hints for later
+        # conception; NEVER solved-state (a lucky probe must not be able to
+        # empty global_unsolved).
+        if leads_path:
+            from css.explore.leads import record_lead
+            for r in real:
+                if int(r.get("n_pass", 0)) > 0:
+                    try:
+                        record_lead(
+                            leads_path,
+                            task_id=str(r.get("task_id", "")),
+                            behavior_prompt=str(r.get("behavior_prompt", "")),
+                            n_pass=int(r.get("n_pass", 0)),
+                            k=int(r.get("k", 1)),
+                            session_ref="%s#probe_%s" % (
+                                os.path.basename(session_dir),
+                                r.get("probe_index")),
+                            decision_index=decision_index,
+                            cap=int(getattr(cfg, "leads_per_task", 3)),
+                        )
+                    except Exception:  # noqa: BLE001 — leads must not kill a turn
+                        pass
 
         for r in records:
             append_jsonl(transcript_path, {"turn": n_turns, "role": "probe",

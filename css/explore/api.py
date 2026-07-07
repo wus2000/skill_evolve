@@ -141,6 +141,7 @@ def get_or_explore(
             extra = getattr(cfg, "extra", None) or {}
             if isinstance(extra, dict):
                 history_texts = extra.get("explore_history_texts", []) or []
+            from css.explore.leads import leads_path as _leads_path
             run_director_session(
                 group_key=group_key, mode=mode,
                 group_tasks=list(group_tasks or []),
@@ -149,6 +150,7 @@ def get_or_explore(
                 env=env, target_client=target_client, optimizer_client=optimizer_client,
                 cfg=cfg, session_dir=session_dir, decision_index=decision_index,
                 history_texts=history_texts,
+                leads_path=_leads_path(out_dir),
             )
 
         reports = _session_reports_for_group(out_dir, group_key)

@@ -170,6 +170,13 @@ class CSSConfig:
     explore_probe_k_max: int = 2        # max k per dispatch_probe call
     explore_neighbor_tasks: int = 3     # solved-neighbor tasks offered for contrast probes
 
+    # Coverage ledger + probe leads (L1_actions_redesign §1)
+    ledger_min_attempts: int = 1        # attempts before a 0-pass task counts as
+                                        # UNSOLVED (m; user-set 2026-07-07, revisit
+                                        # after live observation)
+    leads_per_task: int = 3             # probe-pass leads kept per task (best
+                                        # pass-rate first)
+
     # Generation pipelines
     gen_novelty_retries: int = 2        # NEW: max regenerations after novelty-confrontation rejects
 

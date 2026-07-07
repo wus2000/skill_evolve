@@ -44,7 +44,8 @@ def _fake_burst(plans: dict):
     accept_new_best first step; 0 => five rejects)."""
     calls: list[tuple[str, int]] = []
 
-    def fn(tree, node, env, tc, oc, *, cfg, out_dir, decision_index, ledger=None):
+    def fn(tree, node, env, tc, oc, *, cfg, out_dir, decision_index, ledger=None,
+           coverage=None):
         assert node.status == "active" or node.n_bursts == 0, (
             "burst must only run on ACTIVE nodes (or a freshly spawned child)")
         idx = node.n_bursts
