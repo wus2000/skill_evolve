@@ -152,3 +152,45 @@ def test_new_draft_without_sections_fails(tmp_path, monkeypatch):
     out = run_new_pipeline(_new_ctx(tmp_path))
     assert out.child is None and out.decline is False
     assert "section" in out.reason
+
+
+def test_altitude_fail_redrafts_with_critique_then_passes(tmp_path, monkeypatch):
+    # Decision log #14: the gate JUDGES only; a fail feeds DRAFTING's critique
+    # slot and a fresh draft is re-gated. The gate never rewrites the draft.
+    seen = {"drafts": 0}
+
+    def fake(client, system, user, *, parse=None, ok=None, required=None,
+             max_tokens=4096, repair_max_tokens=16384, stage=""):
+        if stage == _llm.STAGE_NEW_DRAFT:
+            seen["drafts"] += 1
+            if "FAILED THE ALTITUDE/PURITY GATE" in user:
+                assert "too tactical" in user, "gate feedback must reach the redraft"
+                return {"strategy_md": _STRAT, "rationale": {}}
+            return {"strategy_md": "## Step Recipe\nAt step 3 press retry.\n",
+                    "rationale": {}}
+        if stage == _llm.STAGE_NEW_ALTITUDE:
+            if "Step Recipe" in user:
+                return {"verdict": "revise", "feedback": "too tactical",
+                        "violated_criteria": [4], "quoted_offense": "At step 3"}
+            return {"verdict": "pass"}
+        return _HAPPY[stage]
+
+    monkeypatch.setattr("css.l1gen._llm.complete_optimizer_json", fake)
+    out = run_new_pipeline(_new_ctx(tmp_path))
+    assert out.child is not None
+    assert seen["drafts"] == 2, "one critique-driven redraft"
+    assert "Step Recipe" not in out.child.strategy
+
+
+def test_altitude_exhaustion_fails_the_spawn(tmp_path, monkeypatch):
+    def fake(client, system, user, *, parse=None, ok=None, required=None,
+             max_tokens=4096, repair_max_tokens=16384, stage=""):
+        if stage == _llm.STAGE_NEW_ALTITUDE:
+            return {"verdict": "revise", "feedback": "still too tactical",
+                    "violated_criteria": [4], "quoted_offense": "step"}
+        return _HAPPY[stage]
+
+    monkeypatch.setattr("css.l1gen._llm.complete_optimizer_json", fake)
+    out = run_new_pipeline(_new_ctx(tmp_path, cfg=_cfg(gen_novelty_retries=1)))
+    assert out.child is None and out.decline is False
+    assert "altitude gate rejected" in out.reason

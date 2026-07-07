@@ -27,7 +27,6 @@ STAGE_NEW_CONCEPT = "l1gen.new.conception"
 STAGE_NEW_NOVELTY = "l1gen.new.novelty"
 STAGE_NEW_DRAFT = "l1gen.new.drafting"
 STAGE_NEW_ALTITUDE = "l1gen.new.altitude"
-STAGE_NEW_REPAIR = "l1gen.new.altitude_repair"
 
 STAGE_REFINE_CAUSE = "l1gen.refine.cause"
 STAGE_REFINE_PLAN = "l1gen.refine.edit_plan"

@@ -35,9 +35,14 @@ def _fake_dispatch():
     return fn
 
 
-def _router(distill_text):
-    """One optimizer_fn that plays every role, keyed by the system prompt."""
-    state = {"dir": 0}
+def _router(distill_text, clean_text="Clean findings: a behavioral approach helps."):
+    """One optimizer_fn that plays every role, keyed by the system prompt.
+
+    Judge-only screens: purity flags the gold answer on the FIRST distillation;
+    the re-distillation (recognizable by the REVISION REQUIRED block in the
+    user message) returns ``clean_text``, which then passes both screens.
+    """
+    state = {"dir": 0, "distill": 0}
 
     def opt(system, user):
         if "=== YOUR MISSION ===" in system:
@@ -49,16 +54,24 @@ def _router(distill_text):
             return json.dumps({"action": "report",
                                "report_markdown": "Report mentioning %s." % _GOLD})
         if "content-purity" in system:
-            return json.dumps({"verdict": "revise", "violations": [_GOLD],
-                               "rewritten": "Clean findings: a behavioral approach helps."})
+            if _GOLD in user:
+                return json.dumps({"verdict": "revise", "violations": [_GOLD],
+                                   "feedback": "remove the leaked gold answer"})
+            return json.dumps({"verdict": "pass", "violations": [],
+                               "feedback": ""})
         if "ALTITUDE screen" in system:
             return json.dumps({"verdict": "pass", "violated_criteria": [],
-                               "feedback": "", "quoted_offense": "", "rewritten": ""})
+                               "feedback": "", "quoted_offense": ""})
         if "You distill" in system:
+            state["distill"] += 1
+            if "REVISION REQUIRED" in user:
+                return clean_text
             return distill_text
         return "?"
 
-    return StubLLMClient(optimizer_fn=opt)
+    client = StubLLMClient(optimizer_fn=opt)
+    client._state = state
+    return client
 
 
 def _explore(tmp_path, client, group_key="groupZ", decision_index=0):
@@ -69,17 +82,34 @@ def _explore(tmp_path, client, group_key="groupZ", decision_index=0):
         out_dir=str(tmp_path), decision_index=decision_index)
 
 
-def test_purity_screen_strips_planted_gold(tmp_path, monkeypatch):
+def test_purity_fail_triggers_redistill_not_rewrite(tmp_path, monkeypatch):
+    # Judge/generator separation: the screen only judges; the fix is a fresh
+    # DISTILLATION carrying the screen's feedback (never a screen rewrite).
     monkeypatch.setattr(d, "dispatch_probe", _fake_dispatch())
     client = _router("Distilled: the probe leaked %s here." % _GOLD)
     findings = _explore(tmp_path, client)
     assert findings, "findings were produced"
-    assert _GOLD not in findings, "content-purity screen stripped the gold answer"
+    assert _GOLD not in findings, "the re-distillation dropped the gold answer"
+    assert client._state["distill"] == 2, "exactly one critique-driven redistill"
     assert (tmp_path / "global" / "exploration" / "groupZ" / "findings.md").exists()
     meta = json.loads(
         (tmp_path / "global" / "exploration" / "groupZ" / "findings.meta.json").read_text())
     assert meta["stale"] is False
     assert meta["source_sessions"]
+
+
+def test_screen_exhaustion_discards_findings(tmp_path, monkeypatch):
+    # Persistent screen failure -> findings DISCARDED (no cache), never adopted
+    # via a screen rewrite; the empty result reaches the caller.
+    monkeypatch.setattr(d, "dispatch_probe", _fake_dispatch())
+    # Every distillation (fresh and revised) still leaks the gold answer.
+    client = _router("Distilled: leak %s." % _GOLD,
+                     clean_text="Still leaking %s after revision." % _GOLD)
+    findings = _explore(tmp_path, client)
+    assert findings == ""
+    assert not (tmp_path / "global" / "exploration" / "groupZ" /
+                "findings.md").exists()
+    assert client._state["distill"] == 3, "1 initial + 2 redistills, then discard"
 
 
 def test_findings_cached_then_reexplored_on_stale(tmp_path, monkeypatch):

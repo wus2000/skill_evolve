@@ -231,7 +231,7 @@ EXPLORATION FINDINGS (reference any prototype-seed probe you build on):
 -------------------------------------------------------------
 {findings}
 -------------------------------------------------------------
-
+{critique}
 Write the deployable strategy document and its rationale. Respond with ONLY the \
 JSON object described."""
 
@@ -299,36 +299,6 @@ STRATEGY DOCUMENT:
 
 Apply the altitude + purity gate to the whole document. Respond with ONLY the \
 JSON object described."""
-
-
-ALTITUDE_REPAIR_SYSTEM = """\
-You are repairing a strategy document that failed the altitude + purity gate. You \
-are given the document and the gate's specific feedback. Rewrite ONLY what the \
-feedback flags: lift tactical/task-bound passages to strategy altitude, remove any \
-task-specific ids / gold answers / dataset values, and strip meta-commentary — \
-while preserving the document's behavioral paradigm and its ``## <behavioral \
-mechanism>`` section structure. Do not weaken or redesign the strategy; only fix \
-the altitude/purity defects.
-
-{firewall}
-
-Output ONLY a JSON object:
-  {{"strategy_md": "<the repaired full strategy document, same paradigm, same \
-section structure, defects removed>"}}
-No prose outside the JSON object."""
-
-ALTITUDE_REPAIR_USER = """\
-STRATEGY DOCUMENT (repair in place):
--------------------------------------------------------------
-{strategy}
--------------------------------------------------------------
-
-GATE FEEDBACK (fix exactly this):
--------------------------------------------------------------
-{feedback}
--------------------------------------------------------------
-
-Return the repaired document. Respond with ONLY the JSON object described."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -563,21 +533,22 @@ child should INHERIT after the strategy was edited. The strategy just changed; \
 some rules still apply, some now conflict with the repositioned mechanism, and \
 some only ever patched the very behavior the edit cures.
 
-For EACH rule, return a three-way verdict:
+For EACH rule, return a two-way verdict — you SELECT, you never rewrite
+(verified rules are assets; wording adaptation is the job of the child's own
+optimization loop, which rewrites under measurement):
   * keep — still compatible with the new strategy; carry it over VERBATIM.
+    This includes rules whose WORDING leans on the old strategy but whose
+    tactic remains sound — keep them; the child's first optimization burst
+    will rewrite wording under verification.
   * drop — it conflicts with the repositioned mechanism, or it only existed to \
     patch the disease the edit now cures (redundant/harmful).
-  * rewrite — the rule is generally useful but its WORDING is bound to the old \
-    strategy; provide a minimally reworded version that fits the new strategy \
-    while preserving the tactic.
 
 Be conservative about dropping: drop only when you can name the specific tension. \
 A rule merely unrelated to the edit is still compatible — keep it. Preserve order.
 
 Output ONLY a JSON array, one object per rule, IN DOCUMENT ORDER:
   [{"rule_excerpt": "<the rule's text, verbatim from the input>", "verdict": \
-"keep"|"drop"|"rewrite", "reason": "<why>", "rewritten": "<required only for \
-rewrite: the reworded rule; omit/'' otherwise>"}]
+"keep"|"drop", "reason": "<why — full reasoning, especially for drops>"}]
 No prose outside the JSON array."""
 
 REFINE_INHERIT_USER = """\
@@ -692,7 +663,7 @@ EXPLORATION REPORT (the probe evidence behind the reconciliations):
 -------------------------------------------------------------
 {findings}
 -------------------------------------------------------------
-
+{critique}
 Write the deployable fused strategy document and its rationale. Respond with \
 ONLY the JSON object described."""
 
@@ -780,5 +751,4 @@ def merge_draft_system() -> str:
     return MERGE_DRAFT_SYSTEM.format(firewall=_STRATEGY_ALTITUDE_FIREWALL)
 
 
-def altitude_repair_system() -> str:
-    return ALTITUDE_REPAIR_SYSTEM.format(firewall=_STRATEGY_ALTITUDE_FIREWALL)
+

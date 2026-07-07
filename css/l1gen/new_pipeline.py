@@ -133,47 +133,64 @@ def run_new_pipeline(ctx: SpawnContext) -> SpawnOutcome:
                                 artifacts_dir=gd)
         _io.write_json_atomic(concept_path, concept)
 
-    # ── Step 4 — drafting ────────────────────────────────────────────────────
+    # ── Steps 4+5 — drafting + altitude/purity gate (regenerate loop) ───────
+    # The gate JUDGES only (decision log #14): a failing draft is never
+    # rewritten by the gate; its feedback re-enters DRAFTING as a critique and
+    # a fresh draft is re-gated, up to cfg.gen_novelty_retries extra rounds.
     draft_path = os.path.join(gd, "draft.json")
+    alt_path = os.path.join(gd, "altitude_check.json")
     draft = _io.read_json(draft_path)
-    if draft is None:
-        user = prompts.DRAFTING_USER.format(
-            conception=json.dumps(concept, ensure_ascii=False, indent=2),
-            target_selection=json.dumps(sel, ensure_ascii=False, indent=2),
-            findings=findings,
-        )
-        draft = _llm.complete_optimizer_json(
-            oc, prompts.drafting_system(), user, parse=_llm.parse_json_object,
-            ok=lambda r: bool(r.get("strategy_md")),
-            max_tokens=_DRAFT_MAX, stage=_llm.STAGE_NEW_DRAFT,
-        )
-        if not (isinstance(draft, dict) and str(draft.get("strategy_md", "")).strip()):
-            return SpawnOutcome(child=None, mode="NEW", decline=False,
-                                reason="new.drafting produced no strategy_md", artifacts_dir=gd)
-        if not parse_sections(str(draft.get("strategy_md", ""))):
-            return SpawnOutcome(child=None, mode="NEW", decline=False,
-                                reason="new.drafting produced no '## ' behavioral-mechanism sections",
-                                artifacts_dir=gd)
+    alt = _io.read_json(alt_path)
+    if not (isinstance(draft, dict) and draft
+            and isinstance(alt, dict) and alt.get("ok")):
+        retries = int(getattr(cfg, "gen_novelty_retries", 2))
+        critique = ""
+        trails: list = []
+        ok = False
+        for attempt in range(retries + 1):
+            critique_block = ("" if not critique else
+                              "\nTHE PREVIOUS DRAFT FAILED THE ALTITUDE/PURITY "
+                              "GATE — address exactly this feedback in a fresh "
+                              "draft:\n" + critique + "\n")
+            user = prompts.DRAFTING_USER.format(
+                conception=json.dumps(concept, ensure_ascii=False, indent=2),
+                target_selection=json.dumps(sel, ensure_ascii=False, indent=2),
+                findings=findings, critique=critique_block,
+            )
+            draft = _llm.complete_optimizer_json(
+                oc, prompts.drafting_system(), user, parse=_llm.parse_json_object,
+                ok=lambda r: bool(r.get("strategy_md")),
+                max_tokens=_DRAFT_MAX, stage=_llm.STAGE_NEW_DRAFT,
+            )
+            if not (isinstance(draft, dict) and str(draft.get("strategy_md", "")).strip()):
+                return SpawnOutcome(child=None, mode="NEW", decline=False,
+                                    reason="new.drafting produced no strategy_md",
+                                    artifacts_dir=gd)
+            if not parse_sections(str(draft.get("strategy_md", ""))):
+                return SpawnOutcome(child=None, mode="NEW", decline=False,
+                                    reason="new.drafting produced no '## ' behavioral-mechanism sections",
+                                    artifacts_dir=gd)
+            ok, feedback, trail = screen.altitude_purity_check(
+                oc, str(draft.get("strategy_md", "")), stage=_llm.STAGE_NEW_ALTITUDE)
+            trails.append(trail)
+            if ok:
+                break
+            critique = feedback
+        alt = {"ok": bool(ok), "trail": trails}
+        _io.write_json_atomic(alt_path, alt)
+        if not ok:
+            return SpawnOutcome(
+                child=None, mode="NEW", decline=False,
+                reason="new.altitude gate rejected the draft after %d attempt(s)"
+                       % len(trails), artifacts_dir=gd)
         _io.write_json_atomic(draft_path, draft)
 
     strategy_md = str(draft.get("strategy_md", ""))
     rationale = draft.get("rationale", {}) if isinstance(draft.get("rationale"), dict) else {}
-
-    # ── Step 5 — altitude + purity (one repair round) ───────────────────────
-    alt_path = os.path.join(gd, "altitude_check.json")
-    alt = _io.read_json(alt_path)
-    if alt is None:
-        ok, final_text, trail = screen.altitude_purity_check(
-            oc, strategy_md, allow_repair=True, stage=_llm.STAGE_NEW_ALTITUDE)
-        alt = {"ok": bool(ok), "final_strategy": final_text, "trail": trail}
-        _io.write_json_atomic(alt_path, alt)
-    if not alt.get("ok"):
-        return SpawnOutcome(child=None, mode="NEW", decline=False,
-                            reason="new.altitude check failed after repair", artifacts_dir=gd)
-    final_text = str(alt.get("final_strategy", strategy_md)) or strategy_md
+    final_text = strategy_md
     if not parse_sections(final_text):
         return SpawnOutcome(child=None, mode="NEW", decline=False,
-                            reason="new.altitude repair dropped the section structure",
+                            reason="new.drafting produced no '## ' behavioral-mechanism sections",
                             artifacts_dir=gd)
 
     # Persist the deployable original + rationale, build the child.

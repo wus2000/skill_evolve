@@ -191,12 +191,14 @@ def _assemble_rules(decisions: "List[dict]") -> str:
         if not isinstance(d, dict):
             continue
         verdict = str(d.get("verdict", "")).lower()
-        if verdict == "keep":
-            t = str(d.get("rule_excerpt", "") or "").strip()
-        elif verdict == "rewrite":
-            t = str(d.get("rewritten", "") or "").strip() or str(d.get("rule_excerpt", "") or "").strip()
-        else:  # drop
+        if verdict == "drop":
             t = ""
+        else:
+            # keep — VERBATIM. (The former "rewrite" verdict is retired,
+            # decision log #14 / ruling 6: adjudicators select, they never
+            # rewrite verified rule text; a legacy "rewrite" verdict degrades
+            # to keeping the original excerpt.)
+            t = str(d.get("rule_excerpt", "") or "").strip()
         if t:
             kept.append(t)
     return ("\n".join(kept).strip() + "\n") if kept else ""
@@ -335,8 +337,8 @@ def run_refine_pipeline(ctx: SpawnContext) -> SpawnOutcome:
     alt_path = os.path.join(gd, "altitude_check.json")
     alt = _io.read_json(alt_path)
     if alt is None:
-        ok, _final, trail = screen.altitude_purity_check(
-            oc, final_text, allow_repair=False, stage=_llm.STAGE_REFINE_ALTITUDE)
+        ok, _feedback, trail = screen.altitude_purity_check(
+            oc, final_text, stage=_llm.STAGE_REFINE_ALTITUDE)
         alt = {"ok": bool(ok), "trail": trail}
         _io.write_json_atomic(alt_path, alt)
     if not alt.get("ok"):

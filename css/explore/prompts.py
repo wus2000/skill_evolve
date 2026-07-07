@@ -254,20 +254,25 @@ reference, a step recipe that only works by encoding the known answer, or any
 "expected result" value. Such content is invalid by construction downstream (the
 deployed agent has no ground truth) and would leak answers.
 
-Judge the document and return ONLY this JSON object:
+You JUDGE only — you never rewrite the document yourself. Your feedback goes
+back to the distillation step, which regenerates the findings; make it specific
+and actionable enough for that regeneration to succeed.
+
+Return ONLY this JSON object:
 {
   "verdict": "pass" | "revise",
-  "violations": ["short quote or description of each answer-leaking span found"],
-  "rewritten": "the FULL findings text with every violation removed or reworded to a general behavioral statement, preserving all legitimate behavioral findings and their probe references; identical to the input when verdict is 'pass'"
-}
-When verdict is "pass", "violations" is [] and "rewritten" repeats the input
-unchanged. When you strip content, keep the surrounding behavioral finding intact —
-remove only the leaking specifics."""
+  "violations": ["exact quote or precise description of each answer-leaking span found"],
+  "feedback": "specific, actionable guidance for the re-distillation: which spans
+    to remove or generalize, and how to preserve the surrounding legitimate
+    behavioral finding and its probe references while dropping only the leaking
+    specifics; empty string when verdict is 'pass'"
+}"""
 
 # ── Screen 2: altitude (behavioral approaches, no step-level corrections) ──────
 # Same verdict shape as the design's reusable Altitude Screen
-# ({verdict, violated_criteria, feedback, quoted_offense}); adds "rewritten" so a
-# single call can both judge and repair the findings document.
+# ({verdict, violated_criteria, feedback, quoted_offense}). JUDGE ONLY: the
+# screen never rewrites the document — its feedback drives a re-distillation
+# (judge/generator separation, decision log #14).
 
 ALTITUDE_SCREEN_SYSTEM = """\
 You are an ALTITUDE screen for an exploration findings document. The findings must
@@ -278,11 +283,15 @@ stay at STRATEGY / BEHAVIORAL-APPROACH altitude. Judge against these criteria:
   4. NO step-level tactical prescriptions ("at step X do Y") — those belong to a
      different loop that runs after a strategy is deployed.
 
+You JUDGE only — you never rewrite the document yourself. Your feedback goes back
+to the distillation step, which regenerates the findings; be specific about which
+sentences offend and what a compliant rendering of the same finding looks like.
+
 Return ONLY this JSON object:
 {
   "verdict": "pass" | "revise" | "reject",
   "violated_criteria": [<criterion numbers that fail, e.g. 4>],
-  "feedback": "one paragraph, specific to the offending sentences",
-  "quoted_offense": "the most representative offending span, quoted",
-  "rewritten": "the FULL findings text lifted back to behavioral altitude (step-level prescriptions generalized to behavioral principles or removed), preserving legitimate findings and their probe references; repeat the input unchanged when verdict is 'pass'"
+  "feedback": "specific, actionable guidance for the re-distillation, tied to the
+    offending sentences; empty string when verdict is 'pass'",
+  "quoted_offense": "the most representative offending span, quoted"
 }"""

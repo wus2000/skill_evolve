@@ -6,9 +6,10 @@ Two entry points:
     confrontation. Prefers an external ``css.materials.screen`` implementation
     (the materials package owns the canonical Altitude Screen); falls back to a
     self-contained local implementation when that package is not present yet.
-  * :func:`altitude_purity_check` — the single-document final gate used by NEW
-    (with one repair round) and REFINE (pass/fail only, so a controlled edit is
-    never silently rewritten by the gate).
+  * :func:`altitude_purity_check` — the single-document final gate. JUDGE
+    ONLY for every pipeline (decision log #14): a failing document is never
+    rewritten by the gate; the caller feeds the feedback back into its own
+    drafting step and regenerates.
 
 All optimizer calls route through :mod:`css.l1gen._llm` so tests drive them by
 stage.
@@ -23,7 +24,6 @@ from css.l1gen import _llm, prompts
 _log = logging.getLogger("css.l1gen")
 
 _GATE_MAX_TOKENS = 2048
-_REPAIR_MAX_TOKENS = 12288
 _SCREEN_MAX_TOKENS = 4096
 
 
@@ -106,47 +106,34 @@ def _run_gate(client: Any, strategy_text: str, stage: str) -> dict:
     return obj
 
 
-def _repair(client: Any, strategy_text: str, feedback: str) -> str:
-    obj = _llm.complete_optimizer_json(
-        client, prompts.altitude_repair_system(),
-        prompts.ALTITUDE_REPAIR_USER.format(strategy=strategy_text, feedback=feedback or "(none)"),
-        parse=_llm.parse_json_object, ok=lambda r: bool(r.get("strategy_md")),
-        max_tokens=_REPAIR_MAX_TOKENS, stage=_llm.STAGE_NEW_REPAIR,
-    )
-    return str((obj or {}).get("strategy_md", "") or "")
-
-
 def altitude_purity_check(
     client: Any,
     strategy_text: str,
     *,
-    allow_repair: bool,
     stage: str,
 ) -> "Tuple[bool, str, dict]":
     """Run the final altitude+purity gate on a whole strategy document.
 
-    Returns ``(ok, final_text, trail)``. When ``allow_repair`` (NEW), a failing
-    document gets exactly ONE repair round and is re-checked; ``final_text`` is the
-    repaired text only if the repair passes, else the original. When
-    ``allow_repair`` is False (REFINE), the gate is pass/fail only — a controlled
-    edit is never silently rewritten by the gate. ``trail`` records every verdict
-    for persistence.
+    JUDGE ONLY (decision log #14): returns ``(ok, feedback, trail)`` and never
+    rewrites the document. On failure the caller routes ``feedback`` back into
+    its own drafting step (regenerate-with-critique) and re-gates the fresh
+    draft; the gate must never be able to replace the product of the pipeline
+    it guards.
     """
     v1 = _run_gate(client, strategy_text, stage)
     trail: "Dict[str, Any]" = {"verdict_1": v1}
     if str(v1.get("verdict", "")).lower() == "pass":
-        return True, strategy_text, trail
-    if not allow_repair:
-        trail["outcome"] = "fail_no_repair"
-        return False, strategy_text, trail
-
-    repaired = _repair(client, strategy_text, str(v1.get("feedback", "")))
-    trail["repair_applied"] = bool(repaired.strip())
-    if not repaired.strip():
-        trail["outcome"] = "repair_empty"
-        return False, strategy_text, trail
-    v2 = _run_gate(client, repaired, stage)
-    trail["verdict_2"] = v2
-    ok = str(v2.get("verdict", "")).lower() == "pass"
-    trail["outcome"] = "repaired_pass" if ok else "repaired_fail"
-    return ok, (repaired if ok else strategy_text), trail
+        trail["outcome"] = "pass"
+        return True, "", trail
+    trail["outcome"] = "fail"
+    bits = []
+    fb = str(v1.get("feedback", "") or "").strip()
+    if fb:
+        bits.append(fb)
+    quoted = str(v1.get("quoted_offense", "") or "").strip()
+    if quoted:
+        bits.append("Most representative offense: %r" % quoted)
+    crits = v1.get("violated_criteria")
+    if isinstance(crits, list) and crits:
+        bits.append("Violated criteria: %s" % ", ".join(str(c) for c in crits))
+    return False, "\n".join(bits) or "the altitude/purity gate rejected the document", trail

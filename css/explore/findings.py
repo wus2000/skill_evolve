@@ -1,27 +1,30 @@
 """Cross-session distillation of exploration reports into cached findings.
 
 One or more session reports for a task group are distilled into a single
-findings document (narrative paragraphs first, synthesis last; every claim tied to
-its probe evidence; any first-ever-pass probe featured). The document then passes
-a DOUBLE SCREEN before it is cached (design §3.6):
+findings document (narrative paragraphs first, synthesis last; every claim tied
+to its probe evidence; any first-ever-pass probe featured). The document then
+passes a DOUBLE SCREEN before it is cached (design §3.6):
 
-  (a) content-purity — findings may cite probe OUTCOMES but must not contain gold
-      solutions or task-specific answer content; one LLM screen rewrites/strips
-      any violation;
+  (a) content-purity — findings may cite probe OUTCOMES but must not contain
+      gold solutions or task-specific answer content;
   (b) altitude — findings must be about behavioral approaches and their
-      effectiveness, with no step-level corrections; reuses
-      ``css.materials.screen.screen_items`` when that module exists, else a local
-      single-call altitude screen with the same verdict shape.
+      effectiveness, with no step-level corrections.
 
-Both screens are best-effort: a screen that cannot run leaves the text unchanged
-rather than dropping content.
+Judge/generator separation (decision log #14): the screens JUDGE ONLY — they
+never rewrite the document. A non-pass verdict feeds its feedback back into the
+DISTILLATION step as a revision critique (the generating pipeline regenerates,
+bounded retries), and the regenerated document is re-screened. When the retries
+are exhausted the findings are DISCARDED (honest failure: no cache entry, the
+session reports remain archived for audit) rather than adopted with a screen's
+own rewrite — a single screen call must never be able to replace the evidence-
+grounded product of a whole exploration session.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Tuple
 
 from css.explore.prompts import (
     ALTITUDE_SCREEN_SYSTEM,
@@ -32,13 +35,28 @@ from css.model.json_repair import complete_optimizer_json
 
 _log = logging.getLogger("css.explore.findings")
 
+# 1 initial distillation + up to 2 critique-driven re-distillations.
+_MAX_DISTILL_ATTEMPTS = 3
+
 
 # ── Distillation ──────────────────────────────────────────────────────────────
-def _distill(session_reports: "list[str]", group_key: str, optimizer_client: Any) -> str:
+def _distill(
+    session_reports: "list[str]", group_key: str, optimizer_client: Any,
+    critique: str = "",
+) -> str:
     parts = ["TASK GROUP: %s" % group_key, ""]
     for i, rep in enumerate(session_reports, 1):
         parts.append("=== SESSION REPORT %d ===" % i)
         parts.append(rep.strip())
+        parts.append("")
+    if critique.strip():
+        parts.append("=== REVISION REQUIRED ===")
+        parts.append(
+            "A previous distillation of these same reports FAILED screening. "
+            "Produce a fresh distillation that fully addresses the screening "
+            "feedback below while preserving every legitimate, probe-grounded "
+            "finding:")
+        parts.append(critique.strip())
         parts.append("")
     user = "\n".join(parts)
     try:
@@ -50,7 +68,7 @@ def _distill(session_reports: "list[str]", group_key: str, optimizer_client: Any
     return text or ""
 
 
-# ── Screens ───────────────────────────────────────────────────────────────────
+# ── Screens (judge only) ─────────────────────────────────────────────────────
 def _parse_obj(text: str) -> Any:
     if not text:
         return None
@@ -68,43 +86,50 @@ def _has_verdict(result: Any) -> bool:
     return isinstance(result, dict) and "verdict" in result
 
 
-def _screen_rewrite(system: str, findings: str, optimizer_client: Any, stage: str) -> str:
-    """Run one judge-and-rewrite screen; return the possibly-rewritten findings.
+def _judge(system: str, findings: str, optimizer_client: Any,
+           stage: str) -> "Tuple[bool, str]":
+    """Run one judge-only screen; return ``(ok, feedback)``.
 
-    On ``revise``/``reject`` with a usable ``rewritten`` field, adopt it; otherwise
-    keep the input unchanged (a screen that fails to produce a clean rewrite must
-    not silently delete legitimate findings).
+    A screen that cannot run or answer is an optimistic pass (the screen is a
+    safety net, not the gate of record) — recorded in the log.
     """
     try:
         result = complete_optimizer_json(
             optimizer_client, system, findings,
             parse=_parse_obj, ok=_has_verdict,
-            max_tokens=16384, stage=stage,
+            max_tokens=8192, stage=stage,
         )
     except Exception:  # noqa: BLE001
-        return findings
+        _log.warning("[explore:%s] screen call failed; optimistic pass", stage)
+        return True, ""
     if not isinstance(result, dict):
-        return findings
-    verdict = str(result.get("verdict", "")).lower()
-    if verdict in ("revise", "reject"):
-        rewritten = result.get("rewritten")
-        if isinstance(rewritten, str) and rewritten.strip():
-            _log.info("[explore:%s] screen rewrote findings (verdict=%s)", stage, verdict)
-            return rewritten.strip()
-    return findings
+        _log.warning("[explore:%s] screen unparseable; optimistic pass", stage)
+        return True, ""
+    if str(result.get("verdict", "")).lower() == "pass":
+        return True, ""
+    bits = []
+    fb = str(result.get("feedback", "") or "").strip()
+    if fb:
+        bits.append(fb)
+    violations = result.get("violations")
+    if isinstance(violations, list) and violations:
+        bits.append("Offending spans: " + "; ".join(str(v) for v in violations))
+    quoted = str(result.get("quoted_offense", "") or "").strip()
+    if quoted:
+        bits.append("Most representative offense: %r" % quoted)
+    return False, "\n".join(bits) or "the screen rejected the document"
 
 
-def _purity_screen(findings: str, optimizer_client: Any) -> str:
-    return _screen_rewrite(PURITY_SCREEN_SYSTEM, findings, optimizer_client, "explore_purity")
+def _purity_judge(findings: str, optimizer_client: Any) -> "Tuple[bool, str]":
+    return _judge(PURITY_SCREEN_SYSTEM, findings, optimizer_client, "explore_purity")
 
 
-def _altitude_screen(findings: str, optimizer_client: Any, cfg: Any) -> str:
-    """Altitude screen — reuse ``css.materials.screen.screen_items`` if present.
+def _altitude_judge(findings: str, optimizer_client: Any,
+                    cfg: Any) -> "Tuple[bool, str]":
+    """Altitude judge — reuse ``css.materials.screen.screen_items`` if present.
 
-    Falls back to a local single-call screen with the design's verdict shape
-    ({verdict, violated_criteria, feedback, quoted_offense} + a ``rewritten`` field
-    so one call both judges and lifts). The reuse hook is guarded against
-    signature drift: any failure degrades to the local screen.
+    The reuse hook only JUDGES; its non-pass feedback is forwarded. Any reuse
+    failure degrades to the local judge.
     """
     try:
         from css.materials.screen import screen_items  # type: ignore
@@ -112,25 +137,26 @@ def _altitude_screen(findings: str, optimizer_client: Any, cfg: Any) -> str:
         screen_items = None
     if screen_items is not None:
         try:
-            # Materials contract: screen_items(items, optimizer_client, cfg, stage)
-            # -> list of verdict dicts in the design shape. screen_items judges but
-            # does not rewrite, so a non-pass verdict is lifted locally.
             verdicts = screen_items(
                 [findings], optimizer_client, cfg, "explore_findings_altitude"
             )
             v = verdicts[0] if verdicts and isinstance(verdicts[0], dict) else None
-            if v is not None and str(v.get("verdict", "")).lower() == "pass":
-                return findings
             if v is not None:
-                return _screen_rewrite(
-                    ALTITUDE_SCREEN_SYSTEM, findings, optimizer_client, "explore_altitude"
-                )
-        except Exception:  # noqa: BLE001 — signature drift / runtime error -> local
-            _log.info("[explore:altitude] screen_items reuse failed; using local screen")
-    return _screen_rewrite(ALTITUDE_SCREEN_SYSTEM, findings, optimizer_client, "explore_altitude")
+                if str(v.get("verdict", "")).lower() == "pass":
+                    return True, ""
+                fb = str(v.get("feedback", "") or "").strip()
+                quoted = str(v.get("quoted_offense", "") or "").strip()
+                out = fb or "the altitude screen rejected the document"
+                if quoted:
+                    out += "\nMost representative offense: %r" % quoted
+                return False, out
+        except Exception:  # noqa: BLE001 — signature drift -> local judge
+            _log.info("[explore:altitude] screen_items reuse failed; local judge")
+    return _judge(ALTITUDE_SCREEN_SYSTEM, findings, optimizer_client,
+                  "explore_altitude")
 
 
-# ── Public: build findings (distill + double screen) ──────────────────────────
+# ── Public: build findings (distill -> judge -> redistill loop) ──────────────
 def build_findings(
     session_reports: "list[str]",
     *,
@@ -138,13 +164,39 @@ def build_findings(
     optimizer_client: Any,
     cfg: Any,
 ) -> str:
-    """Distill reports into screened findings markdown (``""`` on empty/failure)."""
+    """Distill reports into double-screened findings (``""`` on failure).
+
+    Non-pass screens feed their feedback into a re-distillation (up to
+    ``_MAX_DISTILL_ATTEMPTS`` total attempts). Exhaustion DISCARDS the findings
+    — the screens never rewrite content themselves.
+    """
     reports = [r for r in (session_reports or []) if r and r.strip()]
     if not reports:
         return ""
-    raw = _distill(reports, group_key, optimizer_client)
-    if not raw.strip():
-        return ""
-    cleaned = _purity_screen(raw, optimizer_client)
-    lifted = _altitude_screen(cleaned, optimizer_client, cfg)
-    return (lifted or "").strip()
+    critique = ""
+    for attempt in range(1, _MAX_DISTILL_ATTEMPTS + 1):
+        raw = _distill(reports, group_key, optimizer_client, critique)
+        if not raw.strip():
+            return ""
+        ok_p, fb_p = _purity_judge(raw, optimizer_client)
+        ok_a, fb_a = _altitude_judge(raw, optimizer_client, cfg)
+        if ok_p and ok_a:
+            if attempt > 1:
+                _log.info("[explore:%s] findings passed screening after %d "
+                          "distillation attempt(s)", group_key, attempt)
+            return raw.strip()
+        pieces = []
+        if not ok_p:
+            pieces.append("CONTENT-PURITY screen:\n" + fb_p)
+        if not ok_a:
+            pieces.append("ALTITUDE screen:\n" + fb_a)
+        critique = "\n\n".join(pieces)
+        _log.info("[explore:%s] distillation attempt %d failed screening "
+                  "(purity=%s altitude=%s); %s", group_key, attempt,
+                  "ok" if ok_p else "FAIL", "ok" if ok_a else "FAIL",
+                  "re-distilling with critique"
+                  if attempt < _MAX_DISTILL_ATTEMPTS else "DISCARDING")
+    _log.warning("[explore:%s] findings failed screening after %d attempts — "
+                 "discarded (no cache entry; session reports remain archived)",
+                 group_key, _MAX_DISTILL_ATTEMPTS)
+    return ""

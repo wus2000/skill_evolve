@@ -83,8 +83,9 @@ _REFINE_HAPPY = {
     _llm.STAGE_REFINE_ALTITUDE: {"verdict": "pass"},
     _llm.STAGE_REFINE_INHERIT: [
         {"rule_excerpt": "- old rule 1", "verdict": "keep", "reason": "still applies"},
-        {"rule_excerpt": "- old rule 2", "verdict": "rewrite",
-         "rewritten": "- reworded rule 2", "reason": "worded against old strategy"},
+        {"rule_excerpt": "- old rule 2", "verdict": "keep",
+         "reason": "wording leans on the old strategy but the tactic is sound; "
+                   "the child's first burst rewrites wording under verification"},
         {"rule_excerpt": "- old rule 3", "verdict": "drop", "reason": "patched the cured disease"}],
 }
 
@@ -101,7 +102,7 @@ def test_refine_success_controlled_edit_and_inheritance(tmp_path, monkeypatch):
     assert raw_section_text(out.child.strategy, "Ground Every Claim") == \
         raw_section_text(_PARENT, "Ground Every Claim")
     # inheritance assembly: keep + rewrite survive (in order), drop omitted
-    assert out.child.rules.strip().splitlines() == ["- old rule 1", "- reworded rule 2"]
+    assert out.child.rules.strip().splitlines() == ["- old rule 1", "- old rule 2"]
     gd = os.path.join(str(tmp_path), "nodes", "n0002", "gen")
     for f in ("cause_confirmation.json", "edit_plan.json", "confrontation.json",
               "applied.json", "coherence_diff.json", "rationale.json",
@@ -187,7 +188,10 @@ def test_refine_resume_skips_persisted_steps(tmp_path, monkeypatch):
 
 
 # ── inheritance assembly (unit) ──────────────────────────────────────────────
-def test_assemble_rules_keep_drop_rewrite_order():
+def test_assemble_rules_keep_drop_order_and_legacy_rewrite_degrades():
+    # Ruling: adjudicators SELECT, they never rewrite verified rule text
+    # (decision log #14 / ruling 6). A legacy "rewrite" verdict degrades to
+    # keeping the ORIGINAL excerpt verbatim — never the LLM's reworded text.
     decisions = [
         {"rule_excerpt": "- a", "verdict": "keep"},
         {"rule_excerpt": "- b", "verdict": "rewrite", "rewritten": "- B2"},
@@ -195,7 +199,7 @@ def test_assemble_rules_keep_drop_rewrite_order():
         {"rule_excerpt": "- d", "verdict": "keep"},
     ]
     out = _assemble_rules(decisions)
-    assert out.strip().splitlines() == ["- a", "- B2", "- d"]
+    assert out.strip().splitlines() == ["- a", "- b", "- d"]
 
 
 def test_assemble_rules_all_dropped_is_empty():
