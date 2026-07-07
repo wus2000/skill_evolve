@@ -138,16 +138,19 @@ def complete_optimizer_json(
 ) -> Any:
     """Call ``complete_optimizer`` for JSON, with context-aware repair retries.
 
-    Two independent repair triggers, each at most one extra LLM call:
+    Two independent recovery triggers, each at most one extra LLM call:
 
-    1. STRUCTURAL — the response does not ``parse`` into a usable value
-       (``ok(result)`` falsy, default: ``bool``). Ask the model to repair its own
-       malformed JSON and re-parse. (Unchanged from before.)
-    2. SCHEMA — the response parses fine but ``required(result)`` reports one or
-       more missing REQUIRED fields. Inject those field descriptions as feedback
-       into the repair prompt, ask the model to ADD exactly those fields, re-parse,
-       and accept the result only if it is usable AND no longer missing any
-       required field.
+    1. STRUCTURAL (syntax) — the response does not ``parse`` into a usable
+       value (``ok(result)`` falsy, default: ``bool``). Ask the model to
+       repair its own malformed JSON and re-parse. Pure format work — the
+       repair prompt forbids new content ("REPAIR, do not REDO").
+    2. CONTENT (missing required fields) — the response parses fine but
+       ``required(result)`` reports missing REQUIRED fields. Missing fields
+       are missing CONTENT, and content must come from the ORIGINAL call
+       (decision log #14: regenerate-with-critique, never a third-party
+       repair answering on the model's behalf): the original call is retried
+       ONCE with the missing-field list appended as explicit feedback, and
+       the retry is accepted only if it is usable AND complete.
 
     ``required`` is the call site's missing-required-field detector: given the
     parsed result it returns a list of human-readable descriptions of fields that
@@ -180,30 +183,40 @@ def complete_optimizer_json(
         # Adopt the repaired text/result; it may still need a schema repair below.
         result, text = repaired_result, repaired
 
-    # Trigger 2 — SCHEMA: valid JSON, but missing REQUIRED field(s).
+    # Trigger 2 — CONTENT: valid JSON, but missing REQUIRED field(s).
+    # Retry the ORIGINAL call with the omission named (regenerate-with-
+    # critique); a third-party repair must never author content on the
+    # original model's behalf (decision log #14).
     if required is not None:
         missing = required(result)
         if missing:
-            feedback = (
-                "The response is valid JSON but OMITS the following REQUIRED "
+            retry_user = (
+                user
+                + "\n\n=== YOUR PREVIOUS ANSWER WAS INCOMPLETE — ANSWER AGAIN "
+                "IN FULL ===\n"
+                "Your previous answer omitted the following REQUIRED "
                 "field(s):\n- " + "\n- ".join(str(m) for m in missing)
-                + "\nAdd exactly these field(s), recovering each value faithfully "
-                "from the source material above. Leave every other field unchanged."
+                + "\nProduce the complete answer again, including these "
+                "field(s) with substantive values grounded in the material "
+                "above."
             )
-            repaired = repair_json_via_llm(
-                client, system, user, text,
-                max_tokens=repair_max_tokens, stage=stage, feedback=feedback,
-            )
-            if repaired is not None:
-                repaired_result = parse(repaired)
-                if usable(repaired_result) and not required(repaired_result):
+            try:
+                retry_text, _u = client.complete_optimizer(
+                    system, retry_user, max_tokens=max_tokens)
+            except Exception:  # noqa: BLE001 — retry is best-effort
+                retry_text = ""
+            if (retry_text or "").strip():
+                retry_result = parse(retry_text)
+                if usable(retry_result) and not required(retry_result):
                     _log.info(
-                        "[json-repair:%s] recovered %d missing required field(s) "
-                        "via LLM repair", stage or "?", len(missing),
+                        "[json-repair:%s] recovered %d missing required "
+                        "field(s) via ORIGINAL-call retry (content path)",
+                        stage or "?", len(missing),
                     )
-                    return repaired_result
+                    return retry_result
             _log.warning(
-                "[json-repair:%s] %d required field(s) still missing after repair: %s",
+                "[json-repair:%s] %d required field(s) still missing after the "
+                "original-call retry: %s",
                 stage or "?", len(missing), "; ".join(str(m) for m in missing[:5]),
             )
     return result

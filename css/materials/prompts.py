@@ -32,55 +32,90 @@ ALTITUDE — read at the level of behavioral strategy, not execution tactics:
 # ═══════════════════════════════════════════════════════════════════════════
 # Layer 1 — per-trajectory strategy-behavior interpretation
 # ═══════════════════════════════════════════════════════════════════════════
-INTERPRET_SYSTEM = """\
+INTERPRET_PROSE_SYSTEM = """\
 You interpret ONE trajectory of a frozen task agent at the altitude of
 behavioral strategy. The agent was given a cognitive strategy (below) and
 produced the run you are shown, with its final outcome. Explain, as evidence
-for a strategy designer, HOW the agent behaved and how that behavior led to the
-outcome.
+for a strategy designer, HOW the agent behaved and how that behavior led to
+the outcome.
 
 """ + ALTITUDE_CLAUSE + """
 
-Write the narrative as the body of your answer; the other fields exist to serve
-a specific downstream reader and must be consistent with the narrative.
+Write FREELY, in full markdown prose — no JSON, no rigid schema. Give your
+reading depth and specificity: quote what the agent actually did, and cite
+turn numbers inline (e.g. "at turn 12 the agent ...") whenever you ground a
+judgement in a concrete moment — a later reader must be able to check every
+claim against the trajectory.
 
-Output — ONE JSON object, no fences, no prose outside it. It MUST contain
-EXACTLY these eight keys, each spelled EXACTLY as written (no abbreviations,
-no renames): "narrative", "outcome_causality", "behavior_signature",
-"adherence", "strategy_signals", "anomalies", "task_group_hint", "key_steps".
-{
-  "narrative": "<multiple paragraphs (\\n\\n-separated, inside this ONE string): the overall way this agent approached the task; which pieces of the strategy visibly shaped its choices at which junctures, and which it ignored or could not act on; how that way of behaving led, step by step at the BEHAVIORAL level, to the outcome>",
-  "outcome_causality": "<one paragraph: the mechanistic chain from behavior
-    pattern to success or failure>",
-  "behavior_signature": "<one line naming this trajectory's behavior pattern>",
-  "adherence": [
-    {"section": "<strategy section name this judges>",
-     "verdict": "followed|partial|ignored|inapplicable",
-     "evidence_steps": [<turn indices>],
-     "note": "<one line: how it was (not) followed here>"}
-  ],
-  "strategy_signals": [
-    {"claim": "<a full sentence: a behavioral cause-effect this trajectory
-      evidences>", "evidence_steps": [<turn indices>],
-     "confidence": "low|medium|high"}
-  ],
-  "anomalies": "<unexpected environment feedback or events worth a designer's
-    attention; empty string if none>",
-  "task_group_hint": "<surface type of this task, for cross-trajectory grouping>",
-  "key_steps": [<a few turn indices a human should read to verify this reading>]
-}
+Organize the reading under exactly these four headings:
 
-Requirements: narrative, outcome_causality, behavior_signature are mandatory and
-non-empty. The list fields may be empty when genuinely nothing applies. Judge
-adherence only against sections that actually appear in the strategy."""
+## OVERALL BEHAVIOR
+The overall way this agent approached the task: its visible plan, how it used
+tools and feedback, where its attention went, how its approach evolved across
+the run.
+
+## STRATEGY ADHERENCE
+Walk through EVERY section of the strategy BY NAME (the section list is
+provided). For each: did the agent visibly follow it, partially follow it,
+ignore it, or was it inapplicable here — and HOW, citing the turns that show
+it. If the strategy is empty, describe the agent's default behavior patterns
+instead.
+
+## OUTCOME CAUSALITY
+The mechanistic chain from behavior pattern to the final outcome: which
+behaviors, in what order, produced the success or the failure.
+
+## ANOMALIES
+Unexpected environment feedback or events worth a designer's attention.
+Write "None observed." when there are none."""
 
 
-def build_interpret_user(strategy: str, traj_render: str, outcome_line: str) -> str:
+def build_interpret_prose_user(
+    strategy: str, section_names: "list[str]", traj_render: str,
+    outcome_line: str,
+) -> str:
     strat = strategy.strip() if strategy and strategy.strip() else "(empty strategy — bare agent)"
+    sections = ("\n".join("- %s" % s for s in section_names)
+                if section_names else "(the strategy has no sections)")
     return (
         "## The agent's cognitive strategy (read-only context)\n" + strat
+        + "\n\n## Strategy sections to cover in STRATEGY ADHERENCE\n" + sections
         + "\n\n## Task outcome\n" + outcome_line
         + "\n\n## The trajectory\n" + traj_render
+    )
+
+
+INTERPRET_EXTRACT_SYSTEM = """\
+You extract structured fields from a trajectory interpretation that was
+written by an analyst. You are given the analyst's full prose reading and the
+list of the strategy's section names. Work ONLY from the prose — do not
+invent judgements the prose does not support.
+
+Output ONLY this JSON object:
+{
+  "behavior_signature": "<one line naming this trajectory's behavior pattern,
+    distilled from the prose>",
+  "adherence": [
+    {"section": "<EXACTLY one name from the provided section list, copied
+       verbatim>",
+     "verdict": "followed" | "partial" | "ignored" | "inapplicable",
+     "evidence_steps": [<turn numbers the prose cites for this judgement>],
+     "note": "<the prose's judgement for this section, restated faithfully>"}
+  ]
+}
+Include one adherence entry per section the prose actually judges; omit
+sections the prose does not mention. ``evidence_steps`` may be empty when the
+prose cites no turns for that section. When the section list is empty, return
+"adherence": []."""
+
+
+def build_interpret_extract_user(prose: str, section_names: "list[str]") -> str:
+    sections = ("\n".join("- %s" % s for s in section_names)
+                if section_names else "(none)")
+    return (
+        "## Strategy section names (the ONLY valid values for \"section\")\n"
+        + sections
+        + "\n\n## The analyst's prose reading\n" + prose
     )
 
 

@@ -6,9 +6,11 @@ section edits but OMITTED the required ``target_tasks`` field on every edit, so
 ``_validate_merged_edits`` dropped them all -> ``merged_edits.json == []`` ->
 ``reject_no_survivor``.
 
-With the ``required=`` schema-repair hook wired into the merger, the omission
-triggers a feedback-driven LLM repair that restores ``target_tasks``, and the
-edits survive validation.
+With the ``required=`` hook wired into the merger, the omission triggers a
+feedback-driven RETRY OF THE ORIGINAL CALL (decision log #14: missing fields
+are missing CONTENT, and content comes from the original pipeline — never a
+third-party repair answering on the model's behalf); the retry restores
+``target_tasks`` and the edits survive validation.
 
 Deterministic and stub-based (no network, no LLM API).
 
@@ -73,11 +75,11 @@ _REPAIRED = json.dumps(
 
 
 def _stub(repaired: str = _REPAIRED) -> StubLLMClient:
-    """First optimizer call -> incomplete; the repair call (detected by the repair
-    specialist system prompt) -> ``repaired``."""
+    """First optimizer call -> incomplete; the ORIGINAL-CALL RETRY (detected by
+    the incompleteness feedback appended to the user message) -> ``repaired``."""
 
     def optimizer_fn(system: str, user: str) -> str:
-        if "JSON repair specialist" in system:
+        if "YOUR PREVIOUS ANSWER WAS INCOMPLETE" in user:
             return repaired
         return _INCOMPLETE
 
@@ -104,7 +106,7 @@ def test_detector_ignores_absent_optional_fields():
 
 # ── complete_optimizer_json schema repair ────────────────────────────────────
 
-def test_schema_repair_recovers_missing_field():
+def test_missing_fields_recovered_via_original_call_retry():
     result = complete_optimizer_json(
         _stub(), "MERGER", "USER",
         parse=_parse_merger_output, required=_merger_required_missing, stage="merger",
@@ -123,8 +125,8 @@ def test_without_required_no_repair():
     assert all("target_tasks" not in e for e in result)
 
 
-def test_repair_still_missing_falls_back():
-    # If repair ALSO omits the field, fall back to the original (no crash, no loop).
+def test_retry_still_missing_falls_back():
+    # If the retry ALSO omits the field, fall back to the original (no crash, no loop).
     result = complete_optimizer_json(
         _stub(repaired=_INCOMPLETE), "MERGER", "USER",
         parse=_parse_merger_output, required=_merger_required_missing, stage="merger",

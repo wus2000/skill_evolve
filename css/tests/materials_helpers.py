@@ -108,33 +108,49 @@ def interp_record(traj_id: str, task_id: str, passed: bool, *,
         "interp": {
             "narrative": narrative,
             "outcome_causality": "the way it behaved led to the outcome",
+            "anomalies": "",
             "behavior_signature": signature,
             "adherence": adherence if adherence is not None else
             [{"section": "Exploration", "verdict": "followed",
               "evidence_steps": [1], "note": "scanned first"}],
-            "strategy_signals": [], "anomalies": "", "task_group_hint": "lookup",
-            "key_steps": [1],
         },
+        "interp_prose": narrative,
     }
 
 
-def default_interp(user: str) -> dict:
+DEFAULT_PROSE = (
+    "## OVERALL BEHAVIOR\nThe agent explored broadly then committed to one "
+    "path (at turn 1 it scanned the workspace).\n\n"
+    "## STRATEGY ADHERENCE\nExploration: followed — at turn 1 the agent "
+    "scanned first.\n\n"
+    "## OUTCOME CAUSALITY\nBroad exploration surfaced the key constraint.\n\n"
+    "## ANOMALIES\nNone observed.\n")
+
+
+def default_extract(user: str) -> dict:
     return {
-        "narrative": "The agent explored broadly then committed to one path.",
-        "outcome_causality": "Broad exploration surfaced the key constraint.",
         "behavior_signature": "explore-then-commit",
         "adherence": [{"section": "Exploration", "verdict": "followed",
                        "evidence_steps": [1], "note": "scanned first"}],
-        "strategy_signals": [{"claim": "Exploring first helps.",
-                              "evidence_steps": [1], "confidence": "high"}],
-        "anomalies": "", "task_group_hint": "lookup", "key_steps": [1],
     }
+
+
+class ProseClient:
+    """Fake optimizer client for the two-pass interpret: pass 1 prose."""
+
+    def __init__(self, prose: str = DEFAULT_PROSE):
+        self.prose = prose
+        self.calls = 0
+
+    def complete_optimizer(self, system, user, max_tokens=4096):
+        self.calls += 1
+        return self.prose, {}
 
 
 def default_handlers() -> dict:
     """A full set of benign handlers for an end-to-end pass; override per test."""
     return {
-        "interp": default_interp,
+        "interp_extract": default_extract,
         "interp_screen": screen_all("pass"),
         "interp_revise": lambda u: {"revised": "clean revised text"},
         "group_pass1": lambda u: {"groups": [{
