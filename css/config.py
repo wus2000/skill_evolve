@@ -72,12 +72,13 @@ class CSSConfig:
     merger_inject_history: bool = True   # Inject per-edit verification history into merger prompt
     merger_history_window: int = 3       # Max recent steps of edit verification history shown to merger
     merger_granularity: str = "point"    # "point" (fine-grained point edits) | "section" (one edit per section)
-    edit_pipeline: str = "v2"            # "v2" = editpipe (orthogonal kind/subject/placement schema;
-                                         #   mechanical layer detects but never adjudicates; semantic
-                                         #   repair loop; deterministic apply with structure assertions;
-                                         #   full per-edit audit trail — validated on real step replays,
-                                         #   see docs/edit_pipeline_v2.md) | "legacy" = aggregate merger
-                                         #   with field-equality dedup + whole-document LLM apply
+    edit_pipeline: str = "v2"            # "v3" = plan/draft/review/apply consolidation
+                                         #   (single-direction, group-level verify —
+                                         #   docs/editpipe_v3_design.md)
+                                         # | "v2" = editpipe merge+adjudicate (validated on
+                                         #   real step replays, docs/edit_pipeline_v2.md;
+                                         #   kept as the fallback during the v3 transition)
+                                         # | "legacy" = aggregate merger + whole-doc apply
     rules_max_chars: int = 60_000       # Soft cap for rules.md (log warning, no truncation)
 
     # ── Per-edit ablation verification (signal floor + pass criterion) ────
