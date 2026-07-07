@@ -134,7 +134,9 @@ def test_refine_explores_escalated_u_group_before_decline(tmp_path, monkeypatch)
     seen = {}
 
     def fake_explore(group_key, **kw):
-        seen.update(group_key=group_key, mode=kw["mode"], tasks=list(kw["group_tasks"]))
+        # P2 contract: group_tasks arrive as RESOLVED item dicts.
+        tasks = [t.get("task_id") for t in kw["group_tasks"]]
+        seen.update(group_key=group_key, mode=kw["mode"], tasks=tasks)
         return "probe found no missing mechanism"
 
     monkeypatch.setattr("css.explore.api.get_or_explore", fake_explore)

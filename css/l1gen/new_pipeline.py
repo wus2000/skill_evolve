@@ -66,25 +66,37 @@ def run_new_pipeline(ctx: SpawnContext) -> SpawnOutcome:
 
     # ── Step 0 — exploration (lazy; never fatal) ────────────────────────────
     # NEW explores the top-priority global-unsolved group ahead of design
-    # (design §4.1 step 0). If the materials synthesis does not exist yet, skip.
+    # (design §4.1 step 0). Uncharted tasks (never attempted; L1_actions_
+    # redesign §4) join the probe menu tagged in the briefing, so the frontier
+    # map has no blind spots. If neither exists yet, skip.
     expl_path = os.path.join(gd, "exploration_ref.json")
     exploration = _io.read_json(expl_path)
     if exploration is None:
         target = _context.new_exploration_target(out_dir)
-        if target is None:
+        uncharted = _context.uncharted_task_ids(out_dir)
+        if target is None and not uncharted:
             exploration = {"findings": "", "source": "no_global_unsolved_yet"}
         else:
-            gk, tids = target
+            gk, tids = target if target is not None else ("uncharted_frontier", [])
             groups = _io.read_json(
                 os.path.join(out_dir, "global", "unsolved", "groups.json")) or {}
             gmeta = groups.get(gk, {}) if isinstance(groups, dict) else {}
+            menu_ids = list(tids) + [t for t in uncharted if t not in set(tids)]
             exploration = _context.run_exploration(
-                mode="NEW", group_key=gk, group_tasks=tids, neighbor_tasks=[],
-                briefing_md=_context.exploration_briefing_new(ctx.tree, out_dir, cfg, gk, gmeta),
+                mode="NEW", group_key=gk, group_tasks=menu_ids, neighbor_tasks=[],
+                briefing_md=_context.exploration_briefing_new(
+                    ctx.tree, out_dir, cfg, gk, gmeta,
+                    extra_task_ids=uncharted, uncharted=uncharted),
                 cfg=cfg, env=ctx.env, target_client=ctx.target_client, optimizer_client=oc,
                 out_dir=out_dir, decision_index=ctx.decision_index)
+            exploration["menu_task_ids"] = menu_ids
         _io.write_json_atomic(expl_path, exploration)
     findings = str(exploration.get("findings", "") or "") or "(no exploration findings)"
+    # Probe leads ride along with the findings into every downstream prompt
+    # (design §1.2): ideas already found, not yet absorbed by any strategy.
+    lb = _context.leads_block(out_dir, list(exploration.get("menu_task_ids") or []))
+    if lb:
+        findings = findings + "\n\n" + lb
 
     # ── Step 1 — study & target selection ───────────────────────────────────
     sel_path = os.path.join(gd, "target_selection.json")

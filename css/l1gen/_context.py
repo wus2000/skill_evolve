@@ -214,7 +214,9 @@ def _group_narrative_md(out_dir: str, group_key: str) -> str:
 
 
 def exploration_briefing_new(tree: Any, out_dir: str, cfg: Any, group_key: str,
-                             group_meta: dict) -> str:
+                             group_meta: dict, *,
+                             extra_task_ids: "Optional[List[str]]" = None,
+                             uncharted: "Optional[List[str]]" = None) -> str:
     """Complete history package for a NEW target group (the probe agent's briefing)."""
     parts = ["## Target group: %s" % group_key]
     if group_meta.get("summary"):
@@ -222,6 +224,15 @@ def exploration_briefing_new(tree: Any, out_dir: str, cfg: Any, group_key: str,
     nar = _group_narrative_md(out_dir, group_key)
     if nar.strip():
         parts.append("### Cross-strategy synthesis\n" + _cap(nar, cfg))
+    if uncharted:
+        parts.append("### Never-attempted tasks (also on the menu)\n"
+                     "No strategy has ever attempted these — there is no failure "
+                     "evidence either way; a cheap probe maps them:\n"
+                     + "\n".join("- %s" % t for t in uncharted))
+    lb = leads_block(out_dir, list(group_meta.get("task_ids") or [])
+                     + list(extra_task_ids or []))
+    if lb:
+        parts.append(lb)
     parts.append("### Every strategy tried (full dossiers)\n"
                  + all_node_dossiers(tree, out_dir, cfg))
     return "\n\n".join(parts)
@@ -238,12 +249,134 @@ def exploration_briefing_refine(tree: Any, out_dir: str, cfg: Any, node_id: str,
     return "\n\n".join(parts)
 
 
+def resolve_task_items(env: Any, ids_or_items: "List") -> "List[dict]":
+    """Resolve task IDs to env item dicts (dicts pass through untouched).
+
+    The probe layer rolls out real env items; the materials contracts carry
+    bare task-id strings. Unresolvable ids are dropped LOUDLY — a probe on a
+    phantom id would burn a rollout on an error record.
+    """
+    wanted = list(ids_or_items or [])
+    if not wanted:
+        return []
+    if all(isinstance(x, dict) for x in wanted):
+        return wanted
+    lookup: "Dict[str, dict]" = {}
+    try:
+        for it in env.train_items():
+            tid = str(it.get("task_id", it.get("id", "")))
+            if tid:
+                lookup[tid] = it
+    except Exception:  # noqa: BLE001 — envless harness: wrap ids minimally
+        _log.warning("resolve_task_items: env.train_items() unavailable; "
+                     "wrapping bare ids")
+        return [x if isinstance(x, dict) else {"task_id": str(x)} for x in wanted]
+    out: "List[dict]" = []
+    missing: "List[str]" = []
+    for x in wanted:
+        if isinstance(x, dict):
+            out.append(x)
+        elif str(x) in lookup:
+            out.append(lookup[str(x)])
+        else:
+            missing.append(str(x))
+    if missing:
+        _log.warning("resolve_task_items: %d id(s) not in the train set "
+                     "(dropped): %s", len(missing), ", ".join(missing[:8]))
+    return out
+
+
+def uncharted_task_ids(out_dir: str, cap: int = 5) -> "List[str]":
+    """Never-attempted train tasks (materials meta contract), capped."""
+    meta = _io.read_json(os.path.join(out_dir, "global", "unsolved", "meta.json")) or {}
+    ids = [str(t) for t in (meta.get("uncharted_task_ids") or [])]
+    return ids[: max(0, int(cap))]
+
+
+def leads_block(out_dir: str, task_ids: "List[str]") -> str:
+    """Known probe leads for these tasks (may be ''); design §1.2 consumption."""
+    try:
+        from css.explore.leads import leads_path, render_leads
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        return render_leads(leads_path(out_dir), task_ids)
+    except Exception:  # noqa: BLE001 — leads are hints, never fatal
+        return ""
+
+
+def shortfall_map(out_dir: str, cfg: Any, node_id: str) -> "Dict[str, List[str]]":
+    """This node's shortfall (unsolved here, solved elsewhere) -> solver ids."""
+    try:
+        from css.coverage import load_coverage
+        ledger = load_coverage(out_dir, min_attempts=int(
+            getattr(cfg, "ledger_min_attempts", 1)))
+        return ledger.shortfall(node_id)
+    except Exception:  # noqa: BLE001 — a missing ledger yields no shortfall
+        return {}
+
+
+def solver_neighbor_ids(out_dir: str, cfg: Any, shortfall: "Dict[str, List[str]]") -> "List[str]":
+    """Contrast menu: tasks the shortfall's solvers DO solve (design §5).
+
+    Capped by ``cfg.explore_neighbor_tasks``; excludes the shortfall tasks
+    themselves (those are the targets).
+    """
+    cap = max(0, int(getattr(cfg, "explore_neighbor_tasks", 3)))
+    if cap == 0 or not shortfall:
+        return []
+    try:
+        from css.coverage import load_coverage
+        ledger = load_coverage(out_dir, min_attempts=int(
+            getattr(cfg, "ledger_min_attempts", 1)))
+    except Exception:  # noqa: BLE001
+        return []
+    targets = set(shortfall)
+    out: "List[str]" = []
+    for solvers in shortfall.values():
+        for sid in solvers:
+            for t in sorted(ledger.solved_set(sid) - targets):
+                if t not in out:
+                    out.append(t)
+                if len(out) >= cap:
+                    return out
+    return out
+
+
+def exploration_briefing_shortfall(
+    tree: Any, out_dir: str, cfg: Any, node_id: str,
+    shortfall: "Dict[str, List[str]]",
+) -> str:
+    """REFINE shortfall briefing: per-task solver evidence + this node's dossier.
+
+    Each target task names WHO solved it (proof the task is crackable by a real
+    strategy) plus the solver's strategy head — the director can then run
+    same-task contrast probes (this node's behavior vs the solver's).
+    """
+    parts = ["## Shortfall targets for %s — tasks OTHER strategies solve and "
+             "this one fails" % node_id]
+    for tid in sorted(shortfall):
+        solvers = shortfall[tid]
+        parts.append("### %s — solved by: %s" % (tid, ", ".join(solvers)))
+        for sid in solvers[:2]:
+            strat = node_strategy(tree, out_dir, sid)
+            if strat != _NA:
+                head = " ".join(strat.split())[:400]
+                parts.append("solver %s strategy head: %s" % (sid, head))
+    lb = leads_block(out_dir, sorted(shortfall))
+    if lb:
+        parts.append(lb)
+    parts.append("### This node's dossier\n"
+                 + node_dossier_block(tree, out_dir, node_id, cfg))
+    return "\n\n".join(parts)
+
+
 def run_exploration(
     *,
     mode: str,
     group_key: str,
-    group_tasks: "List[str]",
-    neighbor_tasks: "List[str]",
+    group_tasks: "List",
+    neighbor_tasks: "List",
     briefing_md: str,
     cfg: Any,
     env: Any,
@@ -258,8 +391,9 @@ def run_exploration(
     findings) when there is no target group; on a missing ``css.explore`` module or
     any error returns empty findings with a diagnostic ``source`` (design §4:
     "never fail the pipeline over missing exploration"). ``get_or_explore`` is
-    itself never-raising, but we guard anyway. ``neighbor_tasks`` is currently ``[]``
-    (solved-neighbor selection is a materials concern the director tolerates empty).
+    itself never-raising, but we guard anyway. Task inputs may be id strings
+    (materials contracts) or item dicts — ids are resolved against the env's
+    train set here, because the probe layer rolls out REAL items.
     """
     if not group_key:
         return {"findings": "", "source": "no_target_group"}
@@ -267,10 +401,14 @@ def run_exploration(
         from css.explore.api import get_or_explore  # type: ignore
     except Exception:  # noqa: BLE001 — module may be absent in a thin checkout
         return {"findings": "", "source": "explore_module_absent", "group_key": group_key}
+    group_items = resolve_task_items(env, group_tasks)
+    neighbor_items = resolve_task_items(env, neighbor_tasks)
+    if not group_items:
+        return {"findings": "", "source": "no_resolvable_tasks", "group_key": group_key}
     try:
         findings = get_or_explore(
-            group_key, group_tasks=list(group_tasks or []),
-            neighbor_tasks=list(neighbor_tasks or []), briefing_md=briefing_md or "",
+            group_key, group_tasks=group_items,
+            neighbor_tasks=neighbor_items, briefing_md=briefing_md or "",
             mode=mode, env=env, target_client=target_client,
             optimizer_client=optimizer_client, cfg=cfg, out_dir=out_dir,
             decision_index=decision_index,

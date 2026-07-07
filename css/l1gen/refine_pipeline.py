@@ -231,11 +231,32 @@ def run_refine_pipeline(ctx: SpawnContext) -> SpawnOutcome:
 
     attribution, attr_text = _context.frontier_attribution(out_dir, pid)
 
-    # ── Step 1 — cause confirmation (+ U-group explore retry) ───────────────
+    # ── Step 1 — cause confirmation (shortfall contrast first, then U-retry) ─
+    # Targeting priority (L1_actions_redesign §5): the coverage ledger's
+    # SHORTFALL (tasks this node has unsolved that a sibling solved) is the
+    # highest-value target — the task is provably crackable by a real strategy
+    # and the solver is a live reference for same-task contrast probes. The
+    # escalate-flagged U-group retry stays as the secondary path.
     cause_path = os.path.join(gd, "cause_confirmation.json")
     cause = _io.read_json(cause_path)
     if cause is None:
-        cause = _cause_confirm(ctx, cfg, attr_text, findings="")
+        shortfall = _context.shortfall_map(out_dir, cfg, pid)
+        findings0 = ""
+        if shortfall:
+            expl0 = _context.run_exploration(
+                mode="REFINE", group_key="shortfall_%s" % pid,
+                group_tasks=sorted(shortfall),
+                neighbor_tasks=_context.solver_neighbor_ids(out_dir, cfg, shortfall),
+                briefing_md=_context.exploration_briefing_shortfall(
+                    ctx.tree, out_dir, cfg, pid, shortfall),
+                cfg=cfg, env=ctx.env, target_client=ctx.target_client,
+                optimizer_client=oc,
+                out_dir=out_dir, decision_index=ctx.decision_index)
+            findings0 = str(expl0.get("findings", "") or "")
+        cause = _cause_confirm(ctx, cfg, attr_text, findings=findings0)
+        if shortfall:
+            cause["_shortfall_tasks"] = sorted(shortfall)
+            cause["_shortfall_source"] = "explore" if findings0 else "explore_empty"
         if not bool(cause.get("has_target")):
             # No defensible A/B target: explore the top escalate-flagged U group,
             # then re-confirm WITH findings before deciding to decline (design §4.2).
@@ -251,7 +272,7 @@ def run_refine_pipeline(ctx: SpawnContext) -> SpawnOutcome:
                     cfg=cfg, env=ctx.env, target_client=ctx.target_client, optimizer_client=oc,
                     out_dir=out_dir, decision_index=ctx.decision_index)
                 findings2, explored, source = str(expl.get("findings", "") or ""), [gk], expl.get("source", "")
-            cause = _cause_confirm(ctx, cfg, attr_text, findings=findings2)
+            cause = _cause_confirm(ctx, cfg, attr_text, findings=findings2 or findings0)
             cause["_explored_u_groups"] = explored
             cause["_exploration_source"] = source
         _io.write_json_atomic(cause_path, cause)

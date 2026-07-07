@@ -48,14 +48,37 @@ def _findings_paths(out_dir: str, group_key: str) -> "tuple[str, str]":
     return os.path.join(gd, "findings.md"), os.path.join(gd, "findings.meta.json")
 
 
+def _ledger_signature(out_dir: str) -> str:
+    """Current coverage-ledger partition signature ('' when unavailable)."""
+    try:
+        from css.coverage import load_coverage
+        led = load_coverage(out_dir)
+        return led.signature() if led.has_data() else ""
+    except Exception:  # noqa: BLE001 — exploration must run without the ledger
+        return ""
+
+
 def _cached_findings(out_dir: str, group_key: str) -> "str | None":
-    """Return fresh cached findings for a group, or ``None`` to (re)explore."""
+    """Return fresh cached findings for a group, or ``None`` to (re)explore.
+
+    Freshness = not marked stale AND the coverage partition is unchanged since
+    the findings were distilled (L1_actions_redesign §4: a task flipping
+    solved/unsolved is exactly the evidence a new session should see; attempts
+    piling up inside a state do not re-trigger).
+    """
     findings_path, meta_path = _findings_paths(out_dir, group_key)
     if not os.path.exists(findings_path):
         return None
     meta = read_json(meta_path) or {}
     if meta.get("stale"):
         return None
+    cached_sig = str(meta.get("ledger_signature", "") or "")
+    if cached_sig:
+        current = _ledger_signature(out_dir)
+        if current and current != cached_sig:
+            _log.info("[explore] findings for group=%r stale by ledger "
+                      "signature (%s -> %s)", group_key, cached_sig, current)
+            return None
     text = read_text(findings_path)
     return text if text.strip() else None
 
@@ -176,6 +199,7 @@ def get_or_explore(
             "created_ts": time.time(),
             "source_sessions": [name for name, _ in reports],
             "stale": False,
+            "ledger_signature": _ledger_signature(out_dir),
         })
         _log.info("[explore] cached findings for group=%r (%d chars, %d session(s))",
                   group_key, len(findings), len(reports))

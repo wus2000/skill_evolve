@@ -129,7 +129,10 @@ def test_new_sources_top_priority_group_for_exploration(tmp_path, monkeypatch):
     seen = {}
 
     def fake_explore(group_key, **kw):
-        seen.update(group_key=group_key, tasks=list(kw["group_tasks"]), mode=kw["mode"])
+        # P2 contract: group_tasks arrive as RESOLVED item dicts (the probe
+        # layer rolls out real env items); the envless harness wraps bare ids.
+        tasks = [t.get("task_id") for t in kw["group_tasks"]]
+        seen.update(group_key=group_key, tasks=tasks, mode=kw["mode"])
         return "PROBE FINDINGS: behavioral element X cracks the group"
 
     monkeypatch.setattr("css.explore.api.get_or_explore", fake_explore)
