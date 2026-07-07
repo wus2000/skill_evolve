@@ -38,3 +38,5 @@ env_candidates/
 
 # Tool artifacts
 .playwright-mcp/
+reports/
+webarena_traj_samples/
