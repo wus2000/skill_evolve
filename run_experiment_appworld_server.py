@@ -79,10 +79,11 @@ def main() -> None:
         # Runtime. Each rollout runs its episode in a dedicated py3.11 worker
         # subprocess; a loaded world is ~300-500MB RSS -> engine slots are the
         # RAM-bound cap (128 ~= 40-64GB; calibrate after live measurement).
-        max_api_workers=256,   # raised 128->256 (2026-07-06, user decision:
-                               # three arms share three endpoints at 256 each);
-                               # engine slots stay 128 (RAM-bound physical cap
-                               # — the EngineSlotLimiter is the env throttle)
+        max_api_workers=300,   # raised 256->300 (2026-07-07, user decision:
+                               # fresh-restart pair AW=300 / SS=512 on the
+                               # four-arm llmfleet pool); engine slots stay 128
+                               # (RAM-bound physical cap — the EngineSlotLimiter
+                               # is the env throttle)
         concurrency_limit=1,
         task_timeout_s=1800,   # 50 interactions x worst-case LLM latency + eval
         max_turns=50,          # mirrors appworld_max_interactions (generic field)
@@ -98,14 +99,11 @@ def main() -> None:
         minibatch_size=16,
         reflect_mode="plan_a",
         merger_granularity="point",
-        # Edit pipeline v2 (approved 2026-07-05): orthogonal schema +
-        # semantic adjudication + deterministic apply + structured
-        # provenance (source_raw_edits -> mechanical target_tasks union).
-        # Validated on real step replays: 0 silent drops vs legacy's 19,
-        # 6-7/7 lost-signal coverage, mean verification target set 3.5->6.0
-        # tasks/edit. See docs/edit_pipeline_v2.md. "legacy" kept for
-        # ablation only.
-        edit_pipeline="v2",
+        # Edit pipeline v3 (user decision 2026-07-07: fresh restart on the
+        # full redesigned mechanism): plan/draft/review/apply consolidation
+        # with ###-level DSP, group-level ablation verify, and lossless
+        # fallback. See docs/editpipe_v3_design.md. "v2" kept as rollback.
+        edit_pipeline="v3",
         # Budget-bounded L0 (V3.4) — same policy as the Bird/ALFWorld arms.
         min_l0_epochs=0,
         max_l0_steps=20,

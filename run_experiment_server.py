@@ -66,10 +66,10 @@ def main() -> None:
         target_model="qwen3.6-35b-a3b",
         optimizer_model="qwen3.6-35b-a3b",
 
-        # Runtime. Workers = 256 (2026-07-06, user decision: the three fresh
-        # tree-mechanism arms each run 256 workers over the shared 3-endpoint
-        # pool; supersedes the 128-shared-with-BFCL arrangement).
-        max_api_workers=256,
+        # Runtime. Workers = 512 (2026-07-07, user decision: fresh-restart
+        # pair AW=300 / SS=512 on the four-arm llmfleet pool; supersedes the
+        # 256-per-arm arrangement).
+        max_api_workers=512,
         concurrency_limit=1,   # ONE tree node per round — new PROPOSAL nodes get inf UCB
                                # (n_steps=0) so they are always selected first for exploitation.
         task_timeout_s=3600,   # 60 min per-rollout wall-clock (multi-turn headroom over the 30min LLM req timeout)
@@ -84,10 +84,11 @@ def main() -> None:
         # L0 exploitation. batch = 40 (the historical SpreadsheetBench value,
         # now explicit; ~29% of the 140 pool, 3-4 steps/epoch).
         batch_size=40,
-        # Edit pipeline v2 (default since 2026-07-05 but pinned explicit): the
-        # raw->merged overhaul validated on real replays incl. a
-        # spreadsheetbench_step2 fixture. See docs/edit_pipeline_v2.md.
-        edit_pipeline="v2",
+        # Edit pipeline v3 (user decision 2026-07-07: fresh restart on the
+        # full redesigned mechanism): plan/draft/review/apply consolidation
+        # with ###-level DSP, group-level ablation verify, and lossless
+        # fallback. See docs/editpipe_v3_design.md. "v2" kept as rollback.
+        edit_pipeline="v3",
         # Budget-bounded L0 (V3.4) — same policy as the Bird/ALFWorld/AppWorld/
         # ScienceWorld arms (supersedes this launcher's earlier implicit
         # min_l0_epochs=1 / unlimited steps).

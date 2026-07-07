@@ -7,6 +7,7 @@ to inject the recorded real merger accident as a perturbation.
 
 Usage (from the repo root):
   python tools/replay_editpipe.py v2 appworld_step1 [n_repeats]
+  python tools/replay_editpipe.py v3 appworld_step1 [n_repeats]
   python tools/replay_editpipe.py legacy appworld_step1 [n_repeats]
   python tools/replay_editpipe.py inject appworld_step1
   python tools/replay_editpipe.py v2 all 3
@@ -235,6 +236,67 @@ def run_v2(case, seed_tag):
     return metrics, detail
 
 
+def run_v3(case, seed_tag):
+    """v3 consolidation (plan/draft/review) + section applier on real raws."""
+    from css.optimizer.editpipe3 import pipeline as ep3
+    from css.optimizer.editpipe3.docmodel import RulesDocV3
+    from css.optimizer.exploitation import _flatten_raw_edits
+    from css.config import CSSConfig
+
+    base, patches, n_raw = load_case(case)
+    raw_edits = _flatten_raw_edits(patches)
+    client = QwenClient()
+    cfg = CSSConfig()
+    t0 = time.time()
+    cons = ep3.consolidate(client, base, raw_edits, cfg, max_workers=8)
+    candidate, deferred = ep3.apply_groups(client, base, cons.groups)
+    wall = time.time() - t0
+
+    all_ids = {r["id"] for r in raw_edits}
+    cited = set()
+    for g in cons.groups:
+        for e in g.edits:
+            cited.update(e.source_ids)
+    edits_repr = [
+        f"[{e.op}] {e.section} :: {e.content}"
+        for g in cons.groups for e in g.edits]
+    audit_actions = {}
+    for a in cons.audit:
+        audit_actions[a.get("action", "?")] = (
+            audit_actions.get(a.get("action", "?"), 0) + 1)
+    metrics = {
+        "pipeline": "v3", "case": case, "tag": seed_tag,
+        "n_raw": n_raw,
+        "n_raw_materials": len(raw_edits),
+        "n_groups": len(cons.groups),
+        "group_aspects": [g.aspect for g in cons.groups],
+        "edits_per_group": [len(g.edits) for g in cons.groups],
+        "ops": sorted(e.op for g in cons.groups for e in g.edits),
+        "provenance": {
+            "raw_ids_cited": len(cited & all_ids),
+            "raw_ids_uncited": len(all_ids - cited),
+            "mean_target_tasks": round(
+                sum(len(g.target_tasks) for g in cons.groups)
+                / max(1, len(cons.groups)), 1),
+        },
+        "dropped_by_review": sum(len(g.dropped) for g in cons.groups),
+        "audit_actions": audit_actions,
+        "n_deferred_apply": len(deferred),
+        "signal_coverage": signal_coverage(edits_repr, case),
+        "candidate_sections": [
+            s.title for s in RulesDocV3.parse(candidate).sections],
+        "wall_s": round(wall, 1),
+        **client.stats(),
+    }
+    detail = {
+        "groups": [g.to_dict() for g in cons.groups],
+        "audit": cons.audit,
+        "deferred": deferred,
+        "candidate_text": candidate,
+    }
+    return metrics, detail
+
+
 def run_legacy(case, seed_tag):
     from types import SimpleNamespace
     from css.optimizer.exploitation import _merger_with_validation
@@ -287,7 +349,7 @@ def main():
              if case == "all" else [case])
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    runner = {"v2": run_v2, "legacy": run_legacy,
+    runner = {"v2": run_v2, "v3": run_v3, "legacy": run_legacy,
               "inject": run_v2_inject}[which]
     for c in cases:
         for r in range(repeats):
