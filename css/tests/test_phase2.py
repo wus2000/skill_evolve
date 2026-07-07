@@ -261,17 +261,31 @@ def test_phase2_modules_import_without_skillopt():
     assert OptimizerOnlyClient is not None
 
 
-def test_router_client_resolves_backend_and_calls_through():
-    """Covers the real RouterLLMClient path (the gap that hid the backend blocker).
+def test_router_backend_mapping_resolves_real_module():
+    """Backend-name mapping resolves to the concrete legacy skillopt module.
 
-    Stub-based tests never exercise _resolve_backend; this asserts (a) the
-    backend-name mapping resolves to a concrete module and rejects unknowns, and
-    (b) complete_target/optimizer set the right deployment and forward args.
+    Requires the legacy ``skillopt`` package (present on dev machines only);
+    exits gracefully where it is absent (e.g. experiment servers) — the
+    production OpenAI-compatible path never imports it.
     """
-    # (a) mapping: 'claude' resolves to the claude_backend module; unknown raises.
+    try:
+        import skillopt  # noqa: F401
+    except ImportError:
+        return
     rc = RouterLLMClient(target_model="m-target", optimizer_model="m-opt", backend="claude")
     mod = rc._resolve_backend()
     assert mod.__name__.endswith("claude_backend")
+
+
+def test_router_client_resolves_backend_and_calls_through():
+    """Covers the real RouterLLMClient path (the gap that hid the backend blocker).
+
+    Stub-based tests never exercise _resolve_backend; this asserts (a) unknown
+    backend names are rejected before any import, and (b) complete_target /
+    optimizer set the right deployment and forward args.
+    """
+    # (a) unknown backend raises without importing anything.
+    rc = RouterLLMClient(target_model="m-target", optimizer_model="m-opt", backend="claude")
     bad = RouterLLMClient("a", "b", backend="no-such-backend")
     raised = False
     try:
