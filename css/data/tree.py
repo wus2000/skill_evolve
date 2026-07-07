@@ -106,10 +106,18 @@ class TreeNode:
     created_epoch: int = -1
 
     # ── Tree-search (burst-granular) state ────────────────────────────────
-    # Bursts completed at this node. The UCB exploration term runs on bursts
-    # (one burst = one visit); spawn+first-burst is atomic, so every node in
-    # the selection pool has n_bursts >= 1 (no inf-UCB fresh nodes).
+    # Bursts completed at this node. Bursts are the EVIDENCE clock (materials,
+    # saturation windows, spawn-failure cooldown). The UCB charge unit is
+    # n_selections below (redesign 2026-07-07).
     n_bursts: int = 0
+    # Selections charged at this node — every time SELECT picks it: burst,
+    # successful spawn, failed spawn alike (each consumed one decision). The
+    # UCB exploration term decays on THIS count (AW post-mortem: spawns not
+    # being charged let the saturated root monopolize selection while its
+    # children's bursts inflated the burst-based T — and thereby the root's
+    # own bonus). Spawn+first-burst is atomic, so every node in the selection
+    # pool has n_selections >= 1 (no inf-UCB fresh nodes).
+    n_selections: int = 0
     # Per-burst gated net val movement (reward history; parallels bursts.jsonl
     # on disk). Kept small: floats only.
     burst_rewards: list[float] = field(default_factory=list)
@@ -185,6 +193,9 @@ class TreeNode:
             created_epoch=int(d.get("created_epoch", -1)),
             val_ledger=dict(d.get("val_ledger", {})),
             n_bursts=int(d.get("n_bursts", 0)),
+            # Old checkpoints predate n_selections; a node's burst count is
+            # the closest historical approximation of its charge count.
+            n_selections=int(d.get("n_selections", d.get("n_bursts", 0))),
             burst_rewards=[float(x) for x in d.get("burst_rewards", [])],
             burst_accepts=[int(x) for x in d.get("burst_accepts", [])],
             spawn_fail_count=int(d.get("spawn_fail_count", 0)),
@@ -215,6 +226,7 @@ class TreeNode:
             "created_epoch": self.created_epoch,
             "val_ledger": self.val_ledger,
             "n_bursts": self.n_bursts,
+            "n_selections": self.n_selections,
             "burst_rewards": self.burst_rewards,
             "burst_accepts": self.burst_accepts,
             "spawn_fail_count": self.spawn_fail_count,

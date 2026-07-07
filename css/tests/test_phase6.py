@@ -225,37 +225,50 @@ def _fail_scorer(item, rollout_index):
 
 
 def test_ucb1_unvisited_is_finite():
-    # Tree-search mechanism: spawn + first-burst is atomic, so n_bursts == 0
-    # only ever occurs for the run-opening root; the legacy `inf` branch (the
-    # chain-degeneration mechanism: fresh nodes unconditionally selected) is
-    # deliberately GONE. n_bursts is clamped to >= 1 in the formula.
+    # Tree-search mechanism: spawn + first-burst is atomic, so n_selections
+    # == 0 only ever occurs for the run-opening root; the legacy `inf` branch
+    # (the chain-degeneration mechanism: fresh nodes unconditionally selected)
+    # is deliberately GONE. n_selections is clamped to >= 1 in the formula.
     nd = _node("a", val=0.5, n_steps=0, slope=0.0)
-    assert nd.n_bursts == 0
-    score = ucb1_score(nd, total_bursts=100, alpha=0.5, beta=0.5, window=10)
+    assert nd.n_selections == 0
+    score = ucb1_score(nd, total_selections=100, beta=0.5)
     assert score != float("inf")
     one = _node("b", val=0.5, n_steps=0, slope=0.0)
-    one.n_bursts = 1
-    assert score == ucb1_score(one, total_bursts=100, alpha=0.5, beta=0.5, window=10)
+    one.n_selections = 1
+    assert score == ucb1_score(one, total_selections=100, beta=0.5)
 
 
-def test_ucb1_visited_ranks_by_value_and_slope():
-    good = _node("g", val=0.8, n_steps=10, slope=0.2)
-    bad = _node("b", val=0.2, n_steps=10, slope=-0.1)
-    good.n_bursts = 2
-    bad.n_bursts = 2
-    sg = ucb1_score(good, total_bursts=100, alpha=0.5, beta=0.5, window=10)
-    sb = ucb1_score(bad, total_bursts=100, alpha=0.5, beta=0.5, window=10)
+def test_ucb1_visited_ranks_by_value():
+    # The slope term is deleted (L1_actions_redesign §2); with equal charge
+    # counts the ranking is pure exploitation.
+    good = _node("g", val=0.8, n_steps=10)
+    bad = _node("b", val=0.2, n_steps=10)
+    good.n_selections = 2
+    bad.n_selections = 2
+    sg = ucb1_score(good, total_selections=100, beta=0.5)
+    sb = ucb1_score(bad, total_selections=100, beta=0.5)
     assert sg > sb
-    # Same n_bursts/total -> same exploration term; the win is exploitation+slope.
 
 
-def test_ucb1_fewer_bursts_bigger_bonus():
-    a = _node("a", val=0.5, n_steps=10, slope=0.0)
-    b = _node("b", val=0.5, n_steps=10, slope=0.0)
-    a.n_bursts = 1
-    b.n_bursts = 8
-    sa = ucb1_score(a, total_bursts=9, alpha=0.5, beta=0.5, window=10)
-    sb = ucb1_score(b, total_bursts=9, alpha=0.5, beta=0.5, window=10)
+def test_ucb1_slope_term_gone():
+    # Regression (AW post-mortem): a newborn's [1,1,1,0,0] cold-start accept
+    # pattern used to score the maximum negative trend and eat its bonus.
+    # The stubbed slope must now have ZERO effect on the score.
+    hot_churn = _node("c", val=0.5, n_steps=10, slope=+0.3)
+    cold_start = _node("n", val=0.5, n_steps=10, slope=-0.3)
+    hot_churn.n_selections = 2
+    cold_start.n_selections = 2
+    assert ucb1_score(hot_churn, total_selections=100, beta=0.5) == \
+        ucb1_score(cold_start, total_selections=100, beta=0.5)
+
+
+def test_ucb1_fewer_selections_bigger_bonus():
+    a = _node("a", val=0.5, n_steps=10)
+    b = _node("b", val=0.5, n_steps=10)
+    a.n_selections = 1
+    b.n_selections = 8
+    sa = ucb1_score(a, total_selections=9, beta=0.5)
+    sb = ucb1_score(b, total_selections=9, beta=0.5)
     assert sa > sb
 
 

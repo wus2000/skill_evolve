@@ -392,7 +392,7 @@ def run_css_tree(
     from css.model.client import OptimizerOnlyClient, TargetOnlyClient
     from css.orchestrator import RunResult, _run_val_subset, _save_skill_snapshot, _val_skill_text
     from css.tracing import TracingLLMClient, init_trace, log_event
-    from css.tree.select import select_node, total_bursts
+    from css.tree.select import select_node, total_bursts, total_selections
 
     os.makedirs(out_dir, exist_ok=True)
     init_trace(out_dir)
@@ -488,12 +488,18 @@ def run_css_tree(
 
         node = select_node(tree, cfg=cfg)
         assert node is not None
+        # Charge the selection (redesign §2): every pick consumes a decision,
+        # burst and spawn alike — uncharged spawns were the root-monopoly
+        # mechanism in the AW post-mortem.
+        node.n_selections += 1
         _log.info("Decision %d/%d — selected %s (status=%s val=%.4f bursts=%d "
-                  "T=%d pool=%d)",
+                  "sel=%d T=%d pool=%d)",
                   decision_index, budget, node.node_id, node.status,
-                  node.val_score, node.n_bursts, total_bursts(tree), len(pool))
+                  node.val_score, node.n_bursts, node.n_selections,
+                  total_selections(tree), len(pool))
         log_event("decision", decision_index=decision_index, node_id=node.node_id,
                   status=node.status, val=node.val_score, n_bursts=node.n_bursts,
+                  n_selections=node.n_selections,
                   pool=[p.node_id for p in pool])
 
         record: dict = {"index": decision_index, "node_id": node.node_id}
@@ -541,22 +547,49 @@ def run_css_tree(
                     node.status = "terminal"
                     _log.info("Node %s TERMINAL — REFINE declined: %s",
                               node.node_id, outcome.reason)
+                elif outcome.decline:
+                    # Root decline = world-state says the action is pointless
+                    # right now (e.g. degenerate MERGE matrix), NOT a pipeline
+                    # failure — block without a strike (redesign §2).
+                    node.spawn_block_T = total_bursts(tree) + 3
+                    _log.info("Root spawn DECLINED (%s) — blocked until 3 "
+                              "more bursts land", outcome.reason)
+                    log_event("root_spawn_declined", node_id=node.node_id,
+                              reason=outcome.reason,
+                              decision_index=decision_index)
                 else:
                     # Cooldown, not a free retry: with unchanged materials the
                     # generator reproduces the same duplicate child, and UCB
                     # reselects the highest-val saturated node every decision
                     # (observed: AW burned decisions 6-10 in a spin). Block
-                    # until any burst lands somewhere; 3 strikes -> terminal.
+                    # until any burst lands somewhere; 3 strikes -> terminal
+                    # for strategy nodes. The root is the only NEW/MERGE entry
+                    # point (a terminal root seals off the phase transition),
+                    # so it gets an exponentially longer block instead
+                    # (redesign §2).
                     node.spawn_fail_count += 1
                     node.spawn_block_T = total_bursts(tree)
                     if node.spawn_fail_count >= 3:
-                        node.status = "terminal"
-                        _log.info("Node %s TERMINAL — %d spawns produced no "
-                                  "child (last: %s)", node.node_id,
-                                  node.spawn_fail_count, outcome.reason)
-                        log_event("node_terminal", node_id=node.node_id,
-                                  reason="spawn_exhausted",
-                                  decision_index=decision_index)
+                        if node.is_root:
+                            extra = 3 * (2 ** (node.spawn_fail_count - 3))
+                            node.spawn_block_T = total_bursts(tree) + extra
+                            _log.warning(
+                                "Root spawn failed %d times (last: %s) — "
+                                "long-blocked until %d more bursts land",
+                                node.spawn_fail_count, outcome.reason, extra)
+                            log_event("root_spawn_blocked",
+                                      node_id=node.node_id,
+                                      fail_count=node.spawn_fail_count,
+                                      block_extra=extra,
+                                      decision_index=decision_index)
+                        else:
+                            node.status = "terminal"
+                            _log.info("Node %s TERMINAL — %d spawns produced "
+                                      "no child (last: %s)", node.node_id,
+                                      node.spawn_fail_count, outcome.reason)
+                            log_event("node_terminal", node_id=node.node_id,
+                                      reason="spawn_exhausted",
+                                      decision_index=decision_index)
                     else:
                         _log.warning(
                             "Spawn produced no child (%s) — node %s blocked "
@@ -567,6 +600,9 @@ def run_css_tree(
                 node.spawn_fail_count = 0     # fresh evidence: cooldown resets
                 child = outcome.child
                 child.created_epoch = decision_index
+                # Spawn + first burst is atomic: the child enters the pool
+                # already charged once (no inf-UCB newborns).
+                child.n_selections = 1
                 if mode == "NEW":
                     child.branch_type = "NEW"
                     child.rules = ""            # zero inheritance (user ruling)
@@ -584,9 +620,14 @@ def run_css_tree(
                 br = do_burst(tree, child, env, target_client, optimizer_client,
                               cfg=cfg, out_dir=out_dir, decision_index=decision_index,
                               ledger=ledger)
+                # Spawn reward is rebased to the PARENT's val (redesign §2):
+                # measuring against the empty-rules baseline booked +0.43..
+                # +0.59 of cold-start recovery as profit (20x a burst reward)
+                # while every child sat below the incumbent. The child's own
+                # first-burst reward keeps its meaning in child.burst_rewards.
                 record.update(spawned=child.node_id,
                               child_baseline=round(child.baseline_val_score, 6),
-                              reward=round(br.reward, 6),
+                              reward=round(child.val_score - node.val_score, 6),
                               val_after=round(br.val_after, 6))
                 if materials_fn is not None:
                     try:

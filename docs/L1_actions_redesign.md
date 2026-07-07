@@ -136,8 +136,10 @@ score = val_score + beta * sqrt(ln(max(T, 2)) / n_selections)
   reward ("still improving") is already expressed by val rising between
   selections; the behavior it wants to punish ("stalled") is already owned
   by the saturation state machine. It was redundant in intent and inverted
-  in practice. `cfg.alpha` and `cfg.W` become deprecated (fields kept for
-  old-config compatibility; unused).
+  in practice. `cfg.alpha` becomes deprecated (field kept for old-config
+  compatibility; unused). `cfg.W` STAYS — it is the general trend window
+  with non-SELECT consumers (reflect's recent-rejected window, longitudinal
+  analytics).
 - **`n_selections` (new TreeNode field)**: incremented EVERY time the node
   is selected — burst, successful spawn, failed spawn alike (each consumed
   a decision). `n_bursts` keeps its original semantics (saturation windows,
@@ -287,7 +289,8 @@ session re-runs only after the ledger actually changes.
 ## 8. Config & compatibility
 
 - New keys: `ledger_min_attempts` (default 1), `leads_per_task` (default 3).
-- Deprecated (kept, unused): `alpha`, `W`.
+- Deprecated (kept, unused): `alpha`. (`W` stays: general trend window with
+  non-SELECT consumers.)
 - MERGE reuses existing knobs (`gen_novelty_retries`, draft token caps,
   cooldown constants).
 - Old checkpoints: `n_selections` defaults to `n_bursts`; a missing ledger

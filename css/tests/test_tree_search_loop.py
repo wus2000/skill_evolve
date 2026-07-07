@@ -199,14 +199,14 @@ def test_refine_decline_terminal(tmp_path, monkeypatch):
     assert not child.children_ids
 
 
-# ── selection: burst units, no inf ──────────────────────────────────────────
-def test_ucb_no_inf_and_burst_units():
-    fresh = TreeNode(node_id="a", val_score=0.6)          # n_bursts == 0
-    veteran = TreeNode(node_id="b", val_score=0.6, n_bursts=9)
-    s_fresh = ucb1_score(fresh, total_bursts=10, alpha=0.0, beta=0.5, window=10)
-    s_vet = ucb1_score(veteran, total_bursts=10, alpha=0.0, beta=0.5, window=10)
+# ── selection: selection units, no inf ──────────────────────────────────────
+def test_ucb_no_inf_and_selection_units():
+    fresh = TreeNode(node_id="a", val_score=0.6)          # n_selections == 0
+    veteran = TreeNode(node_id="b", val_score=0.6, n_selections=9)
+    s_fresh = ucb1_score(fresh, total_selections=10, beta=0.5)
+    s_vet = ucb1_score(veteran, total_selections=10, beta=0.5)
     assert s_fresh != float("inf")
-    assert s_fresh > s_vet, "fewer bursts => bigger exploration bonus"
+    assert s_fresh > s_vet, "fewer selections => bigger exploration bonus"
 
 
 # ── checkpoint / resume ─────────────────────────────────────────────────────

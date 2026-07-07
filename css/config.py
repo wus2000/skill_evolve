@@ -31,7 +31,11 @@ class CSSConfig:
 
     # ── Tree management: SELECT / PRUNE (design D11 / D13) ───────────────
     min_steps: int = 10                 # PRUNE minimum investment
-    alpha: float = 0.5                  # SELECT accept_slope weight (pilot-tuned)
+    alpha: float = 0.5                  # DEPRECATED (L1_actions_redesign §2): the
+                                        # SELECT slope term is deleted — it punished
+                                        # newborn cold-start settling and rewarded
+                                        # basin-top churn. Field kept for old-config
+                                        # compatibility; unused.
     beta: float = 0.5                   # SELECT exploration weight (pilot-tuned)
     prune_bootstrap_resamples: int = 1000
     prune_ci: float = 0.95              # confidence level for paired bootstrap
