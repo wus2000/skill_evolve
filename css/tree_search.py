@@ -322,6 +322,23 @@ def _unwired_spawner(ctx: SpawnContext) -> SpawnOutcome:  # pragma: no cover
     )
 
 
+def root_spawn_mode(coverage, cfg: "CSSConfig") -> str:
+    """Root three-way dispatch (L1_actions_redesign §3): NEW vs MERGE.
+
+    NEW while an unsolved frontier (or any uncharted blind spot) remains;
+    MERGE on TRUE full coverage — every registered train task attempted and
+    solved by SOME node. The degenerate-matrix case (nothing exclusive to
+    fuse) is judged inside the MERGE pipeline, which then DECLINES (a root
+    decline blocks without a strike). The transition is reversible: a MERGE
+    child regressing re-opens global_unsolved and the next spawn is NEW.
+    """
+    if coverage is None or not coverage.has_data():
+        return "NEW"
+    if coverage.global_unsolved() or coverage.uncharted():
+        return "NEW"
+    return "MERGE"
+
+
 def node_stalled(node: "TreeNode", cfg: "CSSConfig") -> bool:
     """Saturation judgement at the burst boundary — NO NEW BEST for the last
     ``saturation_dry_bursts`` bursts' worth of steps.
@@ -548,7 +565,7 @@ def run_css_tree(
                           decision_index=decision_index,
                           burst_accepts=list(node.burst_accepts))
         else:  # saturated -> spawn + first burst (atomic)
-            mode = "NEW" if node.is_root else "REFINE"
+            mode = root_spawn_mode(coverage, cfg) if node.is_root else "REFINE"
             ctx = SpawnContext(
                 tree=tree, parent=node, mode=mode, new_node_id=tree.new_node_id(),
                 cfg=cfg, env=env, target_client=target_client,
@@ -627,6 +644,10 @@ def run_css_tree(
                     child.branch_type = "NEW"
                     child.rules = ""            # zero inheritance (user ruling)
                     child.best_rules = ""
+                elif mode == "MERGE":
+                    # MERGE integrates verified assets: the pipeline's
+                    # selectively-assembled rules stay (L1_actions_redesign §6).
+                    child.branch_type = "MERGE"
                 else:
                     child.branch_type = "REFINE"
                 tree.add_child(node.node_id, child)
@@ -640,6 +661,15 @@ def run_css_tree(
                 br = do_burst(tree, child, env, target_client, optimizer_client,
                               cfg=cfg, out_dir=out_dir, decision_index=decision_index,
                               ledger=ledger, coverage=coverage)
+                if mode == "MERGE":
+                    # Step 7 (L1_actions_redesign §6): the first burst has
+                    # landed in the ledger — check the fusion's declared
+                    # coverage. Record-only; never blocks the spawn.
+                    try:
+                        from css.l1gen.merge_pipeline import merge_coverage_check
+                        merge_coverage_check(out_dir, child.node_id, cfg)
+                    except Exception:  # noqa: BLE001
+                        _log.exception("merge coverage check failed (continuing)")
                 # Spawn reward is rebased to the PARENT's val (redesign §2):
                 # measuring against the empty-rules baseline booked +0.43..
                 # +0.59 of cold-start recovery as profit (20x a burst reward)

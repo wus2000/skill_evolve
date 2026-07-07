@@ -37,6 +37,13 @@ STAGE_REFINE_RATIONALE = "l1gen.refine.rationale"
 STAGE_REFINE_ALTITUDE = "l1gen.refine.altitude"
 STAGE_REFINE_INHERIT = "l1gen.refine.inherit"
 
+STAGE_MERGE_CONCEPT = "l1gen.merge.conception"
+STAGE_MERGE_NOVELTY = "l1gen.merge.novelty"
+STAGE_MERGE_DRAFT = "l1gen.merge.drafting"
+STAGE_MERGE_ALTITUDE = "l1gen.merge.altitude"
+STAGE_MERGE_RULES_SELECT = "l1gen.merge.rules_select"
+STAGE_MERGE_RULES_CONSOLIDATE = "l1gen.merge.rules_consolidate"
+
 STAGE_SCREEN = "l1gen.altitude_screen"
 
 

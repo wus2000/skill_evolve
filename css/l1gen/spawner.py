@@ -27,6 +27,9 @@ def make_spawner() -> "SpawnerFn":
             if mode == "REFINE":
                 from css.l1gen.refine_pipeline import run_refine_pipeline
                 return run_refine_pipeline(ctx)
+            if mode == "MERGE":
+                from css.l1gen.merge_pipeline import run_merge_pipeline
+                return run_merge_pipeline(ctx)
             return SpawnOutcome(child=None, mode=ctx.mode, decline=False,
                                 reason="unknown spawn mode %r" % ctx.mode)
         except Exception as exc:  # noqa: BLE001 — a spawn crash must not kill the run

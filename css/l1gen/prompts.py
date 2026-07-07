@@ -595,8 +595,189 @@ Return the per-rule inheritance decisions in document order. Respond with ONLY t
 JSON array described."""
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MERGE generation (L1_actions_redesign §6) — fuse complementary coverage
+# ══════════════════════════════════════════════════════════════════════════════
+
+MERGE_CONCEPT_SYSTEM = """\
+You are designing a FUSED strategy from several existing strategies whose task \
+coverage is COMPLEMENTARY: each solves train tasks the others fail. The goal is \
+a single strategy expected to preserve the UNION of their coverage — fusion is \
+about keeping every source's winning behavior alive, not averaging prose.
+
+You are given the coverage complementarity matrix (who exclusively solves what), \
+every source strategy's full text, and an exploration report in which fusion \
+hypotheses were PROBED on real tasks (which reconciliations held, which \
+conflicts are irreconcilable). Ground every choice in that evidence:
+  * pick the BASE strategy (broadest / strongest coverage) to organize around;
+  * for each other source, name WHICH of its sections carry its exclusive \
+coverage and how they integrate;
+  * where two sources' behaviors CONFLICT, adopt a reconciliation the probes \
+validated (e.g. conditional routing on task features); if the report marked a \
+pair irreconcilable, leave that source out and say so;
+  * declare the coverage the fusion is expected to preserve.
+
+Output ONLY a JSON object:
+  {"base_node": "<node_id>",
+   "contributions": [{"source": "<node_id>",
+                       "sections": ["<section name>", "..."],
+                       "adaptation": "<how it integrates / routes>"}, ...],
+   "conflict_resolutions": [{"between": ["<node_id>", "<node_id>"],
+                              "resolution": "<the probe-validated reconciliation, \
+or 'excluded: irreconcilable'>"}, ...],
+   "expected_coverage": ["<task_id>", "..."]}
+No prose outside the JSON."""
+
+MERGE_CONCEPT_USER = """\
+COVERAGE COMPLEMENTARITY MATRIX (from the coverage ledger):
+-------------------------------------------------------------
+{matrix}
+-------------------------------------------------------------
+
+SOURCE STRATEGIES (full text):
+-------------------------------------------------------------
+{source_strategies}
+-------------------------------------------------------------
+
+EXPLORATION REPORT (fusion hypotheses probed on real tasks):
+-------------------------------------------------------------
+{findings}
+-------------------------------------------------------------
+
+Design the fusion blueprint. Respond with ONLY the JSON object described."""
+
+
+MERGE_DRAFT_SYSTEM = """\
+You are writing the deployable FUSED strategy document from an approved fusion \
+blueprint. The document is read by an executor agent AS ITS INSTRUCTIONS while \
+it solves tasks — it is not a design memo.
+
+{firewall}
+
+Fusion discipline: preserve each contributing source's winning behavior as the \
+blueprint assigns it; where the blueprint routes behaviors conditionally, state \
+the routing condition as a concrete, observable task feature the executor can \
+check. Do not water conflicting behaviors down into vague compromise language — \
+route, sequence, or scope them.
+
+Also produce a rationale (a SEPARATE record, never shown to the executor).
+
+Output ONLY a JSON object:
+  {{
+    "strategy_md": "<the full fused strategy document: flat '## <behavioral \
+mechanism>' sections (an optional short preamble before the first '##'), \
+deployable voice, no meta-commentary, no node ids>",
+    "rationale": {{
+      "target_problem": "<the coverage union this fusion must preserve>",
+      "idea_sources": "<which source strategies contributed what, and which \
+probe evidence validated the reconciliations>",
+      "expected_behavior_changes": ["<a concrete behavioral change versus \
+running any single source strategy>", "..."]
+    }}
+  }}
+No prose outside the JSON."""
+
+MERGE_DRAFT_USER = """\
+FUSION BLUEPRINT (the approved conception):
+-------------------------------------------------------------
+{conception}
+-------------------------------------------------------------
+
+SOURCE STRATEGIES (full text — the behaviors being fused):
+-------------------------------------------------------------
+{source_strategies}
+-------------------------------------------------------------
+
+EXPLORATION REPORT (the probe evidence behind the reconciliations):
+-------------------------------------------------------------
+{findings}
+-------------------------------------------------------------
+
+Write the deployable fused strategy document and its rationale. Respond with \
+ONLY the JSON object described."""
+
+
+MERGE_RULES_SELECT_SYSTEM = """\
+You are selecting which VERIFIED rules sections to carry into a newly fused \
+strategy. The source node's rules were grown and gate-verified under ITS OWN \
+strategy; the fused strategy (given below) is the yardstick now.
+
+Judge each '### ' section of the source rules independently:
+  * keep — the section is compatible with the fused strategy AND plausibly \
+supports the coverage this source contributes (its exclusive tasks are listed);
+  * drop — the section contradicts the fused strategy's behavior, is specific \
+to a mechanism the fusion excluded, or is generic filler another source \
+already covers better.
+
+You are choosing, NOT rewriting: section text is carried verbatim by the \
+system. When unsure, lean keep for sections tied to the source's exclusive \
+coverage and lean drop for generic advice.
+
+Output ONLY a JSON array, one entry per section, in document order:
+  [{"section": "<the exact '### ' heading text>", "verdict": "keep"|"drop",
+    "reason": "<one sentence>"}, ...]
+No prose outside the JSON."""
+
+MERGE_RULES_SELECT_USER = """\
+FUSED STRATEGY (the yardstick):
+-------------------------------------------------------------
+{strategy}
+-------------------------------------------------------------
+
+SOURCE NODE: {source_node} — exclusive coverage: {exclusive_tasks}
+
+SOURCE RULES SECTIONS (judge each '### ' section):
+-------------------------------------------------------------
+{rules}
+-------------------------------------------------------------
+
+Return the per-section keep/drop verdicts in document order. Respond with ONLY \
+the JSON array described."""
+
+
+MERGE_RULES_CONSOLIDATE_SYSTEM = """\
+You are consolidating the KEPT rules sections from several source nodes into \
+one rules document for a fused strategy. Every candidate section below is \
+identified as (source_node, section heading); the system will assemble the \
+final document from your selection VERBATIM — you choose and order, you never \
+rewrite.
+
+Consolidation discipline:
+  * duplicates (two sections teaching the same behavior): keep exactly one — \
+prefer the source whose exclusive coverage depends on it;
+  * direct conflicts (two sections commanding incompatible behavior in the \
+same situation): keep the one from the stronger source for that situation, \
+drop the other;
+  * order the survivors so related sections sit together (base source first).
+
+Output ONLY a JSON object:
+  {"sections": [{"source": "<node_id>", "section": "<the exact '### ' heading \
+text>"}, ...],
+   "dropped": [{"source": "<node_id>", "section": "<heading>",
+                 "reason": "duplicate of ..."|"conflicts with ..."}, ...]}
+No prose outside the JSON."""
+
+MERGE_RULES_CONSOLIDATE_USER = """\
+FUSED STRATEGY (context for conflict judgement):
+-------------------------------------------------------------
+{strategy}
+-------------------------------------------------------------
+
+CANDIDATE SECTIONS (all kept by the per-source screens; full text):
+-------------------------------------------------------------
+{candidates}
+-------------------------------------------------------------
+
+Select and order the final sections (verbatim assembly follows your list). \
+Respond with ONLY the JSON object described."""
+
+
 def drafting_system() -> str:
     return DRAFTING_SYSTEM.format(firewall=_STRATEGY_ALTITUDE_FIREWALL)
+
+
+def merge_draft_system() -> str:
+    return MERGE_DRAFT_SYSTEM.format(firewall=_STRATEGY_ALTITUDE_FIREWALL)
 
 
 def altitude_repair_system() -> str:
