@@ -252,7 +252,8 @@ def run_v3(case, seed_tag):
     candidate, deferred = ep3.apply_groups(client, base, cons.groups)
     wall = time.time() - t0
 
-    all_ids = {r["id"] for r in raw_edits}
+    # E#n ids are issued by consolidate() in material order (code-issued ids).
+    all_ids = {"E#%d" % (i + 1) for i in range(len(raw_edits))}
     cited = set()
     for g in cons.groups:
         for e in g.edits:
