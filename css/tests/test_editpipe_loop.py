@@ -135,6 +135,56 @@ def test_adjudicate_nonconvergence_delivers_unchanged_for_verification():
         assert frag in applied.text
 
 
+def test_purge_resolving_everything_is_convergence_not_fallback():
+    """Code-review F3 (2026-07-07): when the focused purge clears the last
+    blocking violations, the outcome IS convergence — previously the loop fell
+    through to the fallback, logged a misleading '0 resolved / 0 accepted'
+    WARNING and wrote converged=False into the audit ledger."""
+
+    def opt(system, user):
+        if "edit validator" in system:
+            return json.dumps({"valid": False, "violations": [
+                {"type": "content_purity", "edit_indices": [0],
+                 "detail": "body cites training-task provenance"}]})
+        if "You clean ONE rules.md edit body" in system:
+            return json.dumps({"body": "- act on the header row only"})
+        return json.dumps({"reasoning": "no ops", "operations": []})
+
+    client = StubLLMClient(optimizer_fn=opt)
+    edits = [_edit(subject="Topic A", body="- as seen in task 17, act on the header")]
+    res = adjudicate(client, BASE, edits, max_rounds=1, hard_cap_rounds=1)
+    assert res.converged, "purge cleared everything: this is convergence"
+    assert res.accepted_risks == []
+    assert res.edits[0].body == "- act on the header row only"
+
+
+def test_semantic_finding_with_mechanical_type_name_is_carried():
+    """Code-review F2 (2026-07-07): a VALIDATOR-reported finding whose vtype
+    collides with a mechanical type name (e.g. a semantic 'anchor_overlap' the
+    mechanical detectors cannot re-derive) used to be dropped by the carry
+    filter at loop exit — neither carried nor re-detected. It must now reach
+    the fallback's accepted-risk audit."""
+
+    def opt(system, user):
+        if "edit validator" in system:
+            return json.dumps({"valid": False, "violations": [
+                {"type": "anchor_overlap", "edit_indices": [0, 1],
+                 "detail": "both edits rework the same Alpha guidance"}]})
+        return json.dumps({"reasoning": "no ops", "operations": []})
+
+    client = StubLLMClient(optimizer_fn=opt)
+    edits = [
+        _edit(kind="edit_point", subject="Alpha", anchor="- a1", body="- a1x"),
+        _edit(kind="edit_point", subject="Alpha", anchor="- a2", body="- a2x"),
+    ]
+    res = adjudicate(client, BASE, edits, max_rounds=1, hard_cap_rounds=1)
+    assert not res.converged
+    assert any(v.vtype == "anchor_overlap" for v in res.accepted_risks), (
+        "the semantic finding must be carried into the fallback audit, "
+        "not silently evaporated")
+    assert len(res.edits) == 2, "nothing deleted"
+
+
 def test_adjudicate_scope_guard_rejects_out_of_allowlist_ops():
     """Repair tries to drop an edit not implicated in any violation — the op
     must be rejected and the edit survive."""

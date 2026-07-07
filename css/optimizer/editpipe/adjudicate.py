@@ -697,14 +697,16 @@ def adjudicate(
             "editpipe.repair: %d ops -> %d edits after round %d",
             len(ops), len(res.edits), round_no)
 
-    # Re-detect mechanically after the last repair, and CARRY the final
-    # round's semantic-only blocking findings (they are not recomputable
-    # without another validator call and must not vanish unaudited).
+    # Re-detect mechanically after the last repair, and CARRY the ENTIRE
+    # final round's blocking findings. Code-review fix (2026-07-07): the old
+    # filter dropped semantic findings whose vtype happened to collide with a
+    # mechanical type name (the validator labels freely, e.g. a semantic
+    # "anchor_overlap") — such findings were neither carried nor re-detected
+    # and evaporated silently. Dedup absorbs any genuine overlap with the
+    # mechanical re-detection.
     mech = detect_conflicts(res.edits, doc) \
         + detect_restatements(res.edits, doc)
-    semantic_carry = [v for v in last_blocking
-                      if v.vtype not in _MECH_TYPES]
-    blocking = [v for v in _dedup_violations(mech + semantic_carry)
+    blocking = [v for v in _dedup_violations(mech + last_blocking)
                 if v.vtype not in _APPLY_DEGRADABLE]
     if not blocking:
         res.converged = True
@@ -718,6 +720,16 @@ def adjudicate(
     # the GT firewall is non-negotiable), so give the LLM one focused
     # purge call per impure edit before accepting any residual risk.
     blocking = _purify_impure_edits(client, res.edits, blocking, audits)
+    if not blocking:
+        # Code-review fix (2026-07-07): the purge resolved everything —
+        # this IS convergence; the old path fell through to the fallback and
+        # logged a misleading "0 resolved / 0 accepted" non-convergence
+        # WARNING while writing converged=False into the audit ledger.
+        res.converged = True
+        _log.info(
+            "editpipe.adjudicate: converged after the focused purge "
+            "(round %d)", res.rounds)
+        return res
 
     # Non-convergence: minimal, content-preserving fallback.
     res.edits, accepted = deterministic_fallback(res.edits, blocking, audits)
