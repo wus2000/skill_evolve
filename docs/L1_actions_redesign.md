@@ -339,3 +339,34 @@ session re-runs only after the ledger actually changes.
     RLock and ``save()`` deep-copies under it; the exploration-findings
     signature uses the run's ``ledger_min_attempts``; leads recording lives
     at the ``dispatch_probe`` boundary (§1.2 as written).
+14. **Judge/generator separation** (2026-07-07): any judge/screen/critic
+    call emits SIGNALS only (verdict + structured critique + quoted
+    evidence) — every ``rewritten``/``revised`` field is retired. Content
+    revision has exactly two legal routes: (i) critique fed back into the
+    ORIGINAL generating step (regenerate-with-critique, bounded), the
+    product re-passing all downstream checks; (ii) schema-constrained
+    structured operations applied deterministically with constraint checks.
+    Exhausted retries = honest failure (spawn fail / findings discarded /
+    item rejected), the reason persisting as mechanism input. Sole
+    exemption: pure syntax repair (json_repair), whose missing-field path
+    now retries the ORIGINAL call instead of third-party authoring.
+    Applied across: explore findings screens, NEW/MERGE altitude gate
+    (draft-with-critique loop), REFINE inherit (keep/drop only), materials
+    screen (regeneration routing to interpret), editpipe v3 REVIEW.
+15. **Rich semantic content** (standing, reaffirmed 2026-07-07): LLM-facing
+    semantic fields carry NO word caps and are never length-truncated when
+    rendered to downstream LLMs; output size is controlled by structure
+    (few fields, shallow nesting, long text last, generous max_tokens).
+16. **interp two-pass** (2026-07-07): reasoning and formatting loads are
+    separated — free-prose reading (archived verbatim) + a small extraction
+    call over the prose; dead fields retired; adherence is a closed-set
+    echo-validated choice. Replaces the 8-key single call that produced a
+    ~30% repair rate on the live AW run.
+17. **editpipe v3** (2026-07-07): see docs/editpipe_v3_design.md — the
+    consolidation essence ("N raws -> orthogonal, independently-ablatable,
+    simultaneously-applicable merged edits") is served by a plan/draft/
+    review/apply pipeline; markdown structure stops at ``###`` and is owned
+    by rule code; the Section Applier (LLM) owns in-section semantics; the
+    verify unit is the aspect GROUP (apply/verify granularity decoupled);
+    raw edits are drafting material (reflect unchanged); Qwen3-Embedding
+    clustering is a proven dead end and appears nowhere.
