@@ -2,10 +2,15 @@
 
 Judges items in batches of ``cfg.screen_batch_size`` against four criteria
 (subject is ways-of-behaving not specific actions; claims generalize; narrative
-sufficiency; no tactical prescriptions). One revise round: an item the judge
-marks "revise" is regenerated once with the feedback and re-judged; a "reject"
-is excluded immediately; anything still failing after the revise round is
-rejected. Rejected items are kept (marked), excluded downstream.
+sufficiency; no tactical prescriptions).
+
+JUDGE ONLY (decision log #14): the screen never rewrites an item. Callers that
+can regenerate an item through its SOURCE pipeline use
+:func:`screen_with_regeneration`, which routes a "revise" verdict's feedback to
+the caller-supplied ``regenerate_fn`` (the original pipeline re-produces the
+item), re-judges the regenerated text once, and rejects on continued failure.
+Callers without a regeneration path treat any non-pass verdict as rejected.
+Rejected items are kept (marked), excluded downstream.
 
 Reused by the interpretation gate (Layer 1 -> Layer 2) and the profile / frontier
 document updates; the generation and exploration packages import
@@ -76,60 +81,75 @@ def _judge_all(items: list[str], client: Any, cfg: Any, stage: str) -> list[dict
     return verdicts
 
 
-def _revise_item(item: str, feedback: str, client: Any, cfg: Any, stage: str) -> str:
-    obj = common.run_json_stage(
-        client, prompts.SCREEN_REVISE_SYSTEM,
-        prompts.build_screen_revise_user(item, feedback),
-        parse=common.parse_object, stage=f"{stage}_revise", cfg=cfg,
-        ok=lambda r: isinstance(r, dict) and bool(str(r.get("revised", "")).strip()),
-    )
-    if isinstance(obj, dict) and str(obj.get("revised", "")).strip():
-        return str(obj["revised"])
-    return item  # revision unavailable -> keep original (the re-judge will decide)
-
-
 def screen_items(items: list[str], optimizer_client: Any, cfg: Any, stage: str) -> list[dict]:
     """Judge ``items`` at altitude; return one verdict dict per item, in order.
 
-    Verdict dict: ``{index, verdict: pass|rejected, first_verdict, revised: bool,
-    text: <final text>, violated_criteria, feedback, quoted_offense}``. ``text``
-    is the revised text when a revise round produced an accepted rewrite, else
-    the original — the caller adopts it for the item it screened.
+    PURE JUDGE — never rewrites. Verdict dict: ``{index, verdict:
+    pass|revise|rejected, first_verdict, violated_criteria, feedback,
+    quoted_offense, text: <the original item, unchanged>}``. Callers with a
+    regeneration path handle ``revise`` via :func:`screen_with_regeneration`;
+    callers without one treat any non-pass as rejected.
+    """
+    if not items:
+        return []
+    return _judge_all(items, optimizer_client, cfg, stage)
+
+
+def screen_with_regeneration(
+    items: list[str], optimizer_client: Any, cfg: Any, stage: str,
+    regenerate_fn,
+) -> list[dict]:
+    """Judge; route "revise" feedback to the SOURCE pipeline; re-judge once.
+
+    ``regenerate_fn(index, feedback) -> str | None`` re-produces item ``index``
+    through the pipeline that originally generated it (decision log #14: the
+    screen only judges — content regeneration belongs to the source). ``None``
+    (regeneration unavailable/failed) rejects the item. A regenerated item is
+    re-judged once; continued failure rejects it. On success the verdict
+    carries ``regenerated: True`` and ``text`` = the regenerated item.
     """
     if not items:
         return []
     verdicts = _judge_all(items, optimizer_client, cfg, stage)
-
-    revise_idx = [i for i, v in enumerate(verdicts) if v["first_verdict"] == "revise"]
+    revise_idx = [i for i, v in enumerate(verdicts)
+                  if v["first_verdict"] == "revise"]
     if not revise_idx:
         return verdicts
 
-    revised: dict[int, str] = {}
+    regenerated: dict[int, "str | None"] = {}
     max_workers = max(1, int(getattr(cfg, "max_api_workers", 32)))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futs = {pool.submit(_revise_item, items[i], verdicts[i]["feedback"],
-                            optimizer_client, cfg, stage): i for i in revise_idx}
+        futs = {pool.submit(regenerate_fn, i, verdicts[i]["feedback"]): i
+                for i in revise_idx}
         for fut in as_completed(futs):
             i = futs[fut]
             try:
-                revised[i] = fut.result()
-            except Exception:  # noqa: BLE001
-                revised[i] = items[i]
+                regenerated[i] = fut.result()
+            except Exception:  # noqa: BLE001 — a failed regeneration = reject
+                _log.exception("materials/screen[%s] — regeneration failed for "
+                               "item %d", stage, i)
+                regenerated[i] = None
 
-    re_items = [revised[i] for i in revise_idx]
-    rejudged = _judge_all(re_items, optimizer_client, cfg, stage)
-    for pos, i in enumerate(revise_idx):
-        rv = rejudged[pos] if pos < len(rejudged) else None
-        verdicts[i]["revised"] = True
-        verdicts[i]["text"] = revised[i]
+    alive = [i for i in revise_idx
+             if isinstance(regenerated.get(i), str) and regenerated[i].strip()]
+    rejudged = _judge_all([regenerated[i] for i in alive],
+                          optimizer_client, cfg, stage) if alive else []
+    re_by_idx = {i: rejudged[pos] for pos, i in enumerate(alive)
+                 if pos < len(rejudged)}
+    for i in revise_idx:
+        rv = re_by_idx.get(i)
         if rv is not None and rv["first_verdict"] == "pass":
             verdicts[i]["verdict"] = "pass"
+            verdicts[i]["regenerated"] = True
+            verdicts[i]["text"] = regenerated[i]
         else:
             verdicts[i]["verdict"] = "rejected"
+            verdicts[i]["regenerated"] = i in re_by_idx
             if rv is not None and rv.get("feedback"):
                 verdicts[i]["feedback"] = rv["feedback"]
 
     n_rejected = sum(1 for v in verdicts if v["verdict"] == "rejected")
-    _log.info("materials/screen[%s] — %d items, %d revised, %d rejected",
+    _log.info("materials/screen[%s] — %d items, %d regenerated via source "
+              "pipeline, %d rejected",
               stage, len(items), len(revise_idx), n_rejected)
     return verdicts

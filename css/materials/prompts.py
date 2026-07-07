@@ -167,22 +167,6 @@ def build_screen_user(items: list[str], stage_label: str) -> str:
     )
 
 
-SCREEN_REVISE_SYSTEM = """\
-You revise one piece of behavioral analysis that failed an altitude screen. You
-are given the original text and the screen's feedback. Rewrite the text so it
-satisfies the altitude criteria — about ways of behaving, generalizing beyond
-one task, explaining mechanism, and free of step-level tactical prescriptions —
-while PRESERVING its factual content and conclusions. Do not add findings; only
-lift what is there to altitude.
-
-Output — ONE JSON object, no fences: {"revised": "<the rewritten text>"}"""
-
-
-def build_screen_revise_user(item: str, feedback: str) -> str:
-    return (
-        "## Original text\n" + (item or "").strip()
-        + "\n\n## Screen feedback (what to fix)\n" + (feedback or "").strip()
-    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

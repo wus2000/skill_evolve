@@ -158,10 +158,17 @@ def _outcome_line(traj: "common.LoadedTraj") -> str:
 def _interpret_one(
     traj: "common.LoadedTraj", strategy: str, path: str,
     optimizer_client: Any, cfg: "CSSConfig",
+    feedback: str = "", force: bool = False,
 ) -> dict:
-    """Interpret one trajectory (or load its cached product) → a record dict."""
+    """Interpret one trajectory (or load its cached product) → a record dict.
+
+    ``feedback`` (screen critique) makes this a REVISION of a prior reading:
+    it is appended to the prose prompt and, with ``force=True``, the cached
+    product is re-produced and overwritten (the screen judges; the source
+    pipeline regenerates — decision log #14).
+    """
     cached = common.read_json(path)
-    if isinstance(cached, dict) and cached.get("interp"):
+    if not force and isinstance(cached, dict) and cached.get("interp"):
         return cached
 
     render = format_trajectory(
@@ -184,6 +191,13 @@ def _interpret_one(
     # ── Pass 1 — free prose (zero schema; the reasoning-heavy pass) ────────
     prose_user = prompts.build_interpret_prose_user(
         strategy, section_names, render, _outcome_line(traj))
+    if feedback.strip():
+        prose_user += (
+            "\n\n=== REVISION REQUIRED ===\n"
+            "A previous reading of this trajectory failed the altitude screen. "
+            "Write a fresh reading that fully addresses this feedback while "
+            "keeping every judgement grounded in cited turns:\n"
+            + feedback.strip())
     try:
         prose, _usage = optimizer_client.complete_optimizer(
             prompts.INTERPRET_PROSE_SYSTEM, prose_user,
@@ -277,3 +291,25 @@ def interpret_burst(
     _log.info("materials/interpret — node=%s burst=%d: %d/%d trajectories interpreted",
               node.node_id, burst_result.burst_index, len(records), len(trajs))
     return records
+
+
+def reinterpret_one(
+    exploit_dir: str, idir: str, traj_id: str, strategy: str, feedback: str,
+    optimizer_client: Any, cfg: "CSSConfig",
+) -> "dict | None":
+    """Re-produce ONE trajectory's interpretation with screen feedback.
+
+    The screen-with-regeneration route (decision log #14): reload the
+    trajectory from disk, re-run the two-pass interpretation with the critique
+    appended, overwrite the persisted product, and return the fresh record —
+    or ``None`` when the trajectory can no longer be loaded.
+    """
+    trajs = common.load_burst_trajectories(exploit_dir)
+    match = next((t for t in trajs if t.traj_id == traj_id), None)
+    if match is None:
+        _log.warning("materials/interpret — reinterpret: trajectory %s not "
+                     "found under %s", traj_id, exploit_dir)
+        return None
+    path = os.path.join(idir, f"traj_{traj_id}.json")
+    return _interpret_one(match, strategy, path, optimizer_client, cfg,
+                          feedback=feedback, force=True)

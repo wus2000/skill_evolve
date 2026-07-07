@@ -32,19 +32,37 @@ _log = logging.getLogger("css.materials")
 
 
 def _apply_interp_screen(records: list[dict], optimizer_client: Any, cfg: Any,
-                         out_dir: str, node_id: str, burst_index: int) -> list[dict]:
-    """Screen interpretation narratives; adopt revisions, drop rejects. Returns
-    the kept records (rejected ones stay on disk in screen_verdicts.json)."""
+                         out_dir: str, node_id: str, burst_index: int,
+                         exploit_dir: str = "", strategy: str = "") -> list[dict]:
+    """Screen interpretation narratives (judge only). A "revise" verdict routes
+    its feedback back to the SOURCE pipeline — the trajectory is re-interpreted
+    through the two-pass protocol (decision log #14) and re-judged once; a
+    still-failing or unregenerable reading is rejected. Returns the kept
+    records (rejects stay on disk in screen_verdicts.json)."""
     if not records:
         return records
-    sv_path = os.path.join(
-        common.interpretations_dir(out_dir, node_id, burst_index), "screen_verdicts.json")
+    idir = common.interpretations_dir(out_dir, node_id, burst_index)
+    sv_path = os.path.join(idir, "screen_verdicts.json")
     cached = common.read_json(sv_path)
     if isinstance(cached, list) and len(cached) == len(records):
         verdicts = cached
     else:
         items = [str(r.get("interp", {}).get("narrative", "")) for r in records]
-        verdicts = screen.screen_items(items, optimizer_client, cfg, stage="interp")
+
+        def _regen(i: int, feedback: str) -> "str | None":
+            if not exploit_dir:
+                return None
+            rec = records[i]
+            new_rec = interpret.reinterpret_one(
+                exploit_dir, idir, rec["traj_id"], strategy, feedback,
+                optimizer_client, cfg)
+            if not (isinstance(new_rec, dict) and new_rec.get("interp")):
+                return None
+            records[i] = new_rec
+            return str(new_rec["interp"].get("narrative", "")) or None
+
+        verdicts = screen.screen_with_regeneration(
+            items, optimizer_client, cfg, "interp", _regen)
         for i, v in enumerate(verdicts):
             if i < len(records):
                 v["traj_id"] = records[i]["traj_id"]
@@ -58,8 +76,6 @@ def _apply_interp_screen(records: list[dict], optimizer_client: Any, cfg: Any,
             r = records[idx] if isinstance(idx, int) and 0 <= idx < len(records) else None
         if r is None:
             continue
-        if v.get("revised") and v.get("text"):
-            r["interp"]["narrative"] = v["text"]
         r["screen_verdict"] = v.get("verdict", "pass")
     kept = [r for r in records if r.get("screen_verdict") != "rejected"]
     _log.info("materials/screen — node=%s burst=%d: %d/%d interpretations kept",
@@ -95,10 +111,12 @@ def _screen_profile_claims(mining_products: dict, optimizer_client: Any, cfg: An
     drop: set[tuple[int, int]] = set()
     for pos, (gi, ci) in enumerate(flat):
         v = verdicts[pos] if pos < len(verdicts) else {}
-        if v.get("verdict") == "rejected":
+        # Judge-only consumer: claims have no proportionate regeneration path
+        # (re-running a whole group analysis for one claim), so ANY non-pass
+        # verdict drops the claim — honest rejection with the feedback kept in
+        # the persisted verdicts for audit (decision log #14).
+        if v.get("verdict") != "pass":
             drop.add((gi, ci))
-        elif v.get("revised") and v.get("text"):
-            fa[gi]["distilled_claims"][ci]["claim"] = v["text"]
     for gi, a in enumerate(fa):
         a["distilled_claims"] = [c for ci, c in enumerate(a.get("distilled_claims", []) or [])
                                  if (gi, ci) not in drop]
@@ -134,7 +152,9 @@ def run_materials_pass(
     kept: list[dict] = []
     try:
         records = interpret.interpret_burst(node, burst_result, optimizer_client, cfg, out_dir)
-        kept = _apply_interp_screen(records, optimizer_client, cfg, out_dir, nid, bidx)
+        kept = _apply_interp_screen(
+            records, optimizer_client, cfg, out_dir, nid, bidx,
+            exploit_dir=burst_result.exploit_dir, strategy=node.strategy or "")
     except Exception:  # noqa: BLE001
         _log.exception("materials/interpret+screen failed (node=%s burst=%d)", nid, bidx)
         return  # nothing downstream without interpretations

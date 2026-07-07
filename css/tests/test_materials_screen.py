@@ -1,4 +1,4 @@
-"""The Altitude Screen: batched verdicts, one-round revise, immediate reject."""
+"""The Altitude Screen: pure judging + source-pipeline regeneration routing."""
 from __future__ import annotations
 
 from css.config import CSSConfig
@@ -12,62 +12,70 @@ def _cfg(**kw) -> CSSConfig:
     return CSSConfig(**base)
 
 
-def test_pass_reject_and_revise_once(tmp_path, monkeypatch):
+def _rule(text: str) -> str:
+    if "TODO" in text:
+        return "reject"
+    if "At step" in text or "at step" in text:
+        return "revise"
+    return "pass"
+
+
+def test_screen_items_is_a_pure_judge(monkeypatch):
+    # Decision log #14: the screen never rewrites — screen_items only judges.
     items = [
         "Exploring broadly before committing improves outcomes here.",   # pass
-        "At step 4 the agent should call parse_header first.",            # revise (tactical)
+        "At step 4 the agent should call parse_header first.",            # revise
         "It failed. TODO list of fixes for this exact task instance.",    # reject
     ]
-
-    def rule(text: str) -> str:
-        if "TODO" in text:
-            return "reject"
-        if "At step" in text or "at step" in text:
-            return "revise"
-        return "pass"
-
-    fake = H.FakeStage({
-        "interp_screen": H.screen_by_rule(rule),
-        # the revise call strips the tactical phrasing -> re-judge passes
-        "interp_revise": lambda u: {"revised": "Committing only after broad exploration "
-                                    "is the behavioral principle that matters."},
-    })
+    fake = H.FakeStage({"interp_screen": H.screen_by_rule(_rule)})
     monkeypatch.setattr(common, "run_json_stage", fake)
 
     verdicts = screen.screen_items(items, object(), _cfg(), stage="interp")
-    assert len(verdicts) == 3
-
-    assert verdicts[0]["verdict"] == "pass" and verdicts[0]["first_verdict"] == "pass"
-    assert verdicts[0]["revised"] is False
-
-    # revise -> regenerate once -> re-judge pass
-    assert verdicts[1]["first_verdict"] == "revise"
-    assert verdicts[1]["verdict"] == "pass"
-    assert verdicts[1]["revised"] is True
-    assert "At step" not in verdicts[1]["text"]
-
-    # reject is immediate: no revise round, kept-but-excluded
-    assert verdicts[2]["first_verdict"] == "reject"
-    assert verdicts[2]["verdict"] == "rejected"
-    assert verdicts[2]["revised"] is False
-
-    # exactly one revise call happened (only the middle item)
-    assert fake.count("interp_revise") == 1
+    assert [v["verdict"] for v in verdicts] == ["pass", "revise", "rejected"]
+    # The judge returns the ORIGINAL text untouched, and no revise stage ran.
+    assert verdicts[1]["text"] == items[1]
+    assert fake.count("interp_screen") == 1
 
 
-def test_revise_still_failing_is_rejected(monkeypatch):
-    items = ["At step 4 do X."]  # tactical
-
-    fake = H.FakeStage({
-        "interp_screen": H.screen_by_rule(
-            lambda t: "revise" if "step" in t else "pass"),
-        # revision keeps the tactical marker -> re-judge still 'revise' -> rejected
-        "interp_revise": lambda u: {"revised": "at step 4 do X again"},
-    })
+def test_regeneration_routes_revise_to_the_source_pipeline(monkeypatch):
+    items = ["At step 4 the agent should call parse_header first."]
+    fake = H.FakeStage({"interp_screen": H.screen_by_rule(_rule)})
     monkeypatch.setattr(common, "run_json_stage", fake)
-    verdicts = screen.screen_items(items, object(), _cfg(), stage="interp")
+    seen = {}
+
+    def regen(i, feedback):
+        seen["index"], seen["feedback"] = i, feedback
+        return ("Committing only after broad exploration is the behavioral "
+                "principle that matters.")
+
+    verdicts = screen.screen_with_regeneration(
+        items, object(), _cfg(), "interp", regen)
+    assert seen["index"] == 0 and seen["feedback"], "feedback reached the source"
+    assert verdicts[0]["verdict"] == "pass"
+    assert verdicts[0]["regenerated"] is True
+    assert "At step" not in verdicts[0]["text"]
+
+
+def test_regeneration_still_failing_is_rejected(monkeypatch):
+    items = ["At step 4 do X."]
+    fake = H.FakeStage({"interp_screen": H.screen_by_rule(
+        lambda t: "revise" if "step" in t else "pass")})
+    monkeypatch.setattr(common, "run_json_stage", fake)
+    verdicts = screen.screen_with_regeneration(
+        items, object(), _cfg(), "interp",
+        lambda i, fb: "at step 4 do X again")     # regeneration stays tactical
     assert verdicts[0]["verdict"] == "rejected"
-    assert verdicts[0]["revised"] is True
+
+
+def test_regeneration_unavailable_is_rejected(monkeypatch):
+    items = ["At step 4 do X."]
+    fake = H.FakeStage({"interp_screen": H.screen_by_rule(
+        lambda t: "revise" if "step" in t else "pass")})
+    monkeypatch.setattr(common, "run_json_stage", fake)
+    verdicts = screen.screen_with_regeneration(
+        items, object(), _cfg(), "interp", lambda i, fb: None)
+    assert verdicts[0]["verdict"] == "rejected"
+    assert fake.count("interp_screen") == 1, "nothing to re-judge"
 
 
 def test_batching_covers_all_items(monkeypatch):
@@ -83,14 +91,12 @@ def test_batching_covers_all_items(monkeypatch):
     assert [v["index"] for v in verdicts] == list(range(23))
 
 
-def test_missing_verdict_fails_open(monkeypatch):
+def test_missing_verdicts_fail_open(monkeypatch):
     items = ["a", "b", "c"]
-    # judge returns only one verdict for a 3-item batch -> the other two default pass
-    fake = H.FakeStage({"interp_screen": lambda u: [
-        {"index": 1, "verdict": "reject", "violated_criteria": [1],
-         "feedback": "off", "quoted_offense": "a"}]})
+    # judge returns no verdicts at all -> every item defaults to pass (the
+    # screen is a safety net, not the gate of record), with an audit note.
+    fake = H.FakeStage({"interp_screen": lambda u: []})
     monkeypatch.setattr(common, "run_json_stage", fake)
     verdicts = screen.screen_items(items, object(), _cfg(), stage="interp")
-    assert verdicts[0]["verdict"] == "rejected"
-    assert verdicts[1]["verdict"] == "pass" and verdicts[2]["verdict"] == "pass"
-    assert verdicts[1].get("note") == "screen-missing-defaulted-pass"
+    assert [v["verdict"] for v in verdicts] == ["pass", "pass", "pass"]
+    assert all(v.get("note") == "screen-missing-defaulted-pass" for v in verdicts)
