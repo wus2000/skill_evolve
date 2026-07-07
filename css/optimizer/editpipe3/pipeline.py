@@ -582,7 +582,9 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
 
     results = []
     if by_section:
-        with ThreadPoolExecutor(max_workers=min(8, len(by_section))) as pool:
+        # One fusion call per touched section, all concurrent — pure LLM
+        # calls; the global client pool is the only concurrency gate.
+        with ThreadPoolExecutor(max_workers=len(by_section)) as pool:
             futs = [pool.submit(_fuse, idx, entries)
                     for idx, entries in by_section.items()]
             for fut in as_completed(futs):
