@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -125,6 +126,33 @@ def _render_raw(rid: str, raw: dict) -> str:
 
 
 # ── Stage A: GROUP ────────────────────────────────────────────────────────────
+_HANDLE_RE = re.compile(r"S#\d+")
+
+
+def _resolve_placement(text: str, doc: RulesDocV3) -> str:
+    """Tolerant placement resolution — whitelisted rule ops only.
+
+    Models echo the catalog line ("[S#2] Title"), the bare title, or the
+    handle; all of these unambiguously name one section. Resolution order:
+    NEW passes through; an embedded S#k handle wins; else case-insensitive
+    title equality against the catalog. Anything else -> "" (B decides).
+    No semantic parsing — handle regex and exact-title match only.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if text.upper().startswith("NEW"):
+        return text
+    m = _HANDLE_RE.search(text)
+    if m and doc.resolve(m.group(0)) is not None:
+        return m.group(0)
+    key = text.lstrip("#[ ").rstrip("] ").strip().casefold()
+    for i, s in enumerate(doc.sections):
+        if s.title.strip().casefold() == key:
+            return doc.handle(i)
+    return ""
+
+
 def _check_partition(obj: Any, all_ids: "list[str]") -> "list[str]":
     violations: "list[str]" = []
     if not isinstance(obj, dict) or not isinstance(obj.get("groups"), list):
@@ -186,7 +214,6 @@ def _stage_a_group(client: Any, doc: RulesDocV3, raws: "dict[str, dict]",
                     for i, rid in enumerate(all_ids)]
 
     groups: "list[AspectGroup]" = []
-    catalog = doc.handle_map()
     assigned: set = set()
     for g in obj["groups"]:
         ids = [str(r) for r in g.get("ids", []) if str(r) in raws
@@ -194,17 +221,19 @@ def _stage_a_group(client: Any, doc: RulesDocV3, raws: "dict[str, dict]",
         if not ids:
             continue
         assigned.update(ids)
-        placement = str(g.get("placement", "") or "").strip()
-        if placement and not placement.upper().startswith("NEW") \
-                and placement not in catalog:
+        raw_placement = str(g.get("placement", "") or "").strip()
+        placement = _resolve_placement(raw_placement, doc)
+        if raw_placement and not placement:
             audit.append({"stage": "A", "action": "placement_echo_failed",
-                          "placement": placement, "ids": ids})
-            placement = ""            # B decides
+                          "placement": raw_placement, "ids": ids})
         if len(ids) > _MAX_GROUP_SIZE:
             audit.append({"stage": "A", "action": "oversize_group_split",
                           "ids": ids})
-            for rid in ids:
-                groups.append(AspectGroup(gid="", member_ids=[rid]))
+            for rid in ids:      # splinters keep the group's aspect/placement
+                groups.append(AspectGroup(
+                    gid="", member_ids=[rid],
+                    aspect=str(g.get("aspect", "") or ""),
+                    placement=placement))
             continue
         groups.append(AspectGroup(
             gid="", member_ids=ids,
@@ -235,7 +264,13 @@ def _check_draft(obj: Any, member_ids: "list[str]",
                 "edits[%d].op %r is not one of %s"
                 % (ei, op, ", ".join(sorted(_OPS))))
         section = str(e.get("section", "") or "").strip()
-        if not (section.upper().startswith("NEW") or section in catalog):
+        if section.upper().startswith("NEW"):
+            title = section.split(":", 1)[1].strip() if ":" in section else ""
+            if not title:
+                violations.append(
+                    "edits[%d].section %r — a NEW section must be written "
+                    "as 'NEW: <specific title>'" % (ei, section))
+        elif section not in catalog:
             violations.append(
                 "edits[%d].section %r is neither a valid handle from the "
                 "catalog nor 'NEW: <title>'" % (ei, section))
@@ -471,6 +506,11 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
     doc = RulesDocV3.parse(rules_md)
     catalog = doc.handle_map()
     deferred: "list[dict]" = []
+    # Case-insensitive title index: NEW sections must not stack same-titled
+    # duplicates — a NEW that names an existing (or just-created) title is
+    # routed into that section's fusion batch instead.
+    title_idx = {s.title.strip().casefold(): i
+                 for i, s in enumerate(doc.sections)}
 
     by_section: "dict[int, list[tuple[str, DraftEdit]]]" = {}
     removals: "dict[int, DraftEdit]" = {}
@@ -481,8 +521,22 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
             aid = "A#%d" % n
             if e.op == "add_section" or e.section.upper().startswith("NEW"):
                 title = e.section.split(":", 1)[1].strip() \
-                    if ":" in e.section else "Additional Rules"
+                    if ":" in e.section else ""
+                if not title:
+                    deferred.append({
+                        "id": aid, "gid": g.gid, "edit": e.to_dict(),
+                        "reason": "NEW section without a title (draft "
+                                  "protocol violation survived repair)"})
+                    continue
+                key = title.casefold()
+                if key in title_idx:
+                    by_section.setdefault(title_idx[key], []).append((aid, e))
+                    audit.append({"apply": aid,
+                                  "action": "new_fused_into_same_title",
+                                  "title": title, "gid": g.gid})
+                    continue
                 doc.add_section(title, e.content)
+                title_idx[key] = len(doc.sections) - 1
                 audit.append({"apply": aid, "action": "add_section",
                               "title": title, "gid": g.gid})
                 continue

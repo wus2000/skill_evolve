@@ -86,6 +86,10 @@ Operations available (handle-addressed):
 Drafting discipline:
   * Usually ONE edit per group. Split only when the aspect genuinely needs
     two operations (e.g. a new section plus a removal elsewhere).
+  * Place the edit in an existing section (its S#k handle) whenever one
+    covers this aspect; open a NEW section only when none does. A NEW title
+    must name the specific aspect — never a generic bucket ("Additional
+    Rules", "Misc", "Other Notes").
   * PREFER append (additive, non-destructive). Use replace only when
     correcting or tightening EXISTING guidance is the aspect's very point;
     when you replace, preserve the meaning and information of everything in

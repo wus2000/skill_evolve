@@ -280,7 +280,7 @@ def run_v3(case, seed_tag):
                 sum(len(g.target_tasks) for g in cons.groups)
                 / max(1, len(cons.groups)), 1),
         },
-        "dropped_by_review": sum(len(g.dropped) for g in cons.groups),
+        "dropped_by_draft": sum(len(g.dropped) for g in cons.groups),
         "audit_actions": audit_actions,
         "n_deferred_apply": len(deferred),
         "signal_coverage": signal_coverage(edits_repr, case),

@@ -279,3 +279,125 @@ def test_remove_conflicting_with_same_section_edits_defers():
     new_text, deferred = apply_groups(client, BASE, groups)
     assert any("removal conflicts" in d["reason"] for d in deferred)
     assert "Data Retrieval" in new_text, "the section survives the deferral"
+
+# ── live-replay regressions (2026-07-07 smoke on real fixtures) ───────────────
+def test_resolve_placement_tolerant_forms():
+    from css.optimizer.editpipe3.pipeline import _resolve_placement
+    doc = RulesDocV3.parse(BASE)
+    assert _resolve_placement("S#2", doc) == "S#2"
+    assert _resolve_placement("[S#2] Error Handling", doc) == "S#2"
+    assert _resolve_placement("Error Handling", doc) == "S#2"
+    assert _resolve_placement("error handling", doc) == "S#2"
+    assert _resolve_placement("NEW: Fresh Aspect", doc) == "NEW: Fresh Aspect"
+    assert _resolve_placement("Nonexistent Section", doc) == ""
+    assert _resolve_placement("", doc) == ""
+
+
+def test_check_draft_rejects_untitled_new():
+    from css.optimizer.editpipe3.pipeline import _check_draft
+    catalog = RulesDocV3.parse(BASE).handle_map()
+    untitled = {"edits": [{"op": "add_section", "section": "NEW",
+                           "content": "x", "source_ids": ["E#1"]}],
+                "dropped_ids": []}
+    v = _check_draft(untitled, ["E#1"], catalog)
+    assert any("NEW: <specific title>" in s for s in v)
+    titled = {"edits": [{"op": "add_section", "section": "NEW: Titled",
+                         "content": "x", "source_ids": ["E#1"]}],
+              "dropped_ids": []}
+    assert _check_draft(titled, ["E#1"], catalog) == []
+
+
+def test_apply_new_same_title_fuses_not_stacks():
+    from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
+    groups = [
+        AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
+            DraftEdit(op="add_section", section="NEW: Output Discipline",
+                      content="Emit plain values.", source_ids=["E#1"])]),
+        AspectGroup(gid="G#2", member_ids=["E#2"], edits=[
+            DraftEdit(op="add_section", section="NEW: output discipline",
+                      content="Prefer terse output.", source_ids=["E#2"])]),
+    ]
+    applier = {"application_notes": "fused", "unapplied": [],
+               "new_section_text": "Emit plain values.\nPrefer terse output."}
+    client = _happy_client(applier_obj=applier)
+    new_text, deferred = apply_groups(client, BASE, groups)
+    assert deferred == []
+    doc = RulesDocV3.parse(new_text)
+    matches = [s for s in doc.sections
+               if s.title.casefold() == "output discipline"]
+    assert len(matches) == 1, "same-titled NEW must fuse, not stack"
+    assert "Prefer terse output" in matches[0].body
+
+
+def test_apply_new_naming_existing_title_routes_to_fusion():
+    from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
+    groups = [AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
+        DraftEdit(op="add_section", section="NEW: Error Handling",
+                  content="Also retry on 502.", source_ids=["E#1"])])]
+    applier = {"application_notes": "fused into the existing section",
+               "unapplied": [],
+               "new_section_text": "Retry once on transient failures.\n"
+                                   "Also retry on 502."}
+    new_text, deferred = apply_groups(
+        _happy_client(applier_obj=applier), BASE, groups)
+    assert deferred == []
+    doc = RulesDocV3.parse(new_text)
+    titles = [s.title for s in doc.sections]
+    assert titles.count("Error Handling") == 1
+    assert "502" in doc.sections[titles.index("Error Handling")].body
+
+
+def test_apply_new_without_title_defers():
+    from css.optimizer.editpipe3.pipeline import AspectGroup, DraftEdit
+    groups = [AspectGroup(gid="G#1", member_ids=["E#1"], edits=[
+        DraftEdit(op="add_section", section="NEW", content="orphan text",
+                  source_ids=["E#1"])])]
+    new_text, deferred = apply_groups(
+        _happy_client(applier_obj=_APPLIER_OK), BASE, groups)
+    assert len(deferred) == 1 and "without a title" in deferred[0]["reason"]
+    assert RulesDocV3.parse(new_text).serialize() == \
+        RulesDocV3.parse(BASE).serialize()
+
+
+def test_flatten_raw_edits_maps_edit_fields():
+    from css.optimizer.exploitation import _flatten_raw_edits
+    from css.data.edit import Edit, Patch, RawPatch
+    e = Edit(op="append", content="- do X", target="### Data Retrieval",
+             subject="Data Retrieval", reason="learned",
+             source_tasks=["t1", "t2"])
+    rp = RawPatch(patch=Patch(edits=[e]), source_type="failure", batch_size=4)
+    (m,) = _flatten_raw_edits([rp])
+    assert m["section_target"] == "Data Retrieval", "v2 subject field wins"
+    assert m["kind"] == "append"
+    assert m["body"] == "- do X"
+    assert m["rationale"] == "learned"
+    assert m["target_tasks"] == ["t1", "t2"], \
+        "source_tasks is the material's task provenance"
+    legacy = Edit(op="add_section", content="c", target="### Legacy Anchor")
+    (m2,) = _flatten_raw_edits(
+        [RawPatch(patch=Patch(edits=[legacy]), source_type="failure",
+                  batch_size=1)])
+    assert m2["section_target"] == "### Legacy Anchor", "legacy target fallback"
+
+
+def test_oversize_split_keeps_aspect_and_placement():
+    import re as _re
+
+    ids = ["E#%d" % i for i in range(1, 8)]          # 7 > _MAX_GROUP_SIZE (6)
+    group_obj = {"groups": [
+        {"ids": ids, "aspect": "shared aspect", "placement": "S#1"}]}
+
+    def draft_for(user):
+        mid = _re.findall(r"\[(E#\d+)\]", user)[0]
+        return {"analysis": "a",
+                "edits": [{"op": "append_to_section", "section": "S#1",
+                           "content": "- from %s" % mid,
+                           "source_ids": [mid], "rationale": "r"}],
+                "dropped_ids": []}
+
+    client = _happy_client(group_obj, draft_for, _REVIEW_PASS)
+    res = consolidate(client, BASE, [_raw(body="- r%d" % i) for i in range(7)])
+    assert len(res.groups) == 7
+    assert all(g.aspect == "shared aspect" for g in res.groups), \
+        "splinter singletons keep the group's aspect"
+    assert all(g.placement == "S#1" for g in res.groups)
