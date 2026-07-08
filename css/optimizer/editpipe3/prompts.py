@@ -60,7 +60,9 @@ def build_structure_user(title: str, content: str) -> str:
 GROUP_SYSTEM = """\
 You organize a batch of RAW EDITS (proposed improvements to an agent's
 rules document, written independently by several analysts) into ORTHOGONAL
-CHANGE-ASPECTS for drafting.
+CHANGE-ASPECTS for drafting. You are shown the CURRENT rules document in
+full so that every routing decision is made against what the document
+actually says, not against titles alone.
 
 """ + DSP_NOTE + """
 
@@ -84,6 +86,13 @@ different wording or different placement — those belong together. Two edits
 from the SAME analyst patch are usually deliberate distinctions — separate
 them unless they are plainly the same lesson.
 
+Placement discipline: route a group into an existing section whenever that
+section's theme covers the group's aspect — read the section's actual
+content, not just its title, before deciding it does not fit. Two sections
+about the same theme is a documentation defect the system then has to pay
+for. Reserve NEW for a genuinely uncovered theme, and give it a specific,
+content-bearing title.
+
 Output ONLY this JSON object:
 {
   "groups": [
@@ -93,26 +102,34 @@ Output ONLY this JSON object:
        orthogonal to every other group — write this out properly, it drives
        the drafting>",
      "placement": "<the section this change belongs in: an existing handle
-       copied VERBATIM from the catalog (e.g. S#2), or NEW: <proposed
+       copied VERBATIM from the document (e.g. S#2), or NEW: <proposed
        section title>>"}
   ]
 }
 Every raw edit id must appear in exactly one group."""
 
 
-def build_group_user(raw_render: str, catalog: str) -> str:
+def build_group_user(raw_render: str, doc_render: str) -> str:
     return (
-        "## Section catalog of the current rules document\n" + catalog
+        "## The current rules document (full, handle-annotated)\n" + doc_render
         + "\n\n## Raw edits to organize (full content)\n" + raw_render
         + "\n\nPartition ALL of them into orthogonal change-aspect groups. "
           "Respond with ONLY the JSON object described."
     )
 
 
-# ── B: DRAFT — per-group drafting of deployable edits ────────────────────────
+# ── B: DRAFT — differential drafting of deployable edits ─────────────────────
 DRAFT_SYSTEM = """\
 You draft the DEFINITIVE edit(s) for one change-aspect of an agent's rules
 document, synthesizing a group of raw edits that all serve that aspect.
+
+Your task is DIFFERENTIAL: you are shown the CURRENT rules document in full.
+Compute the NET INCREMENT of this group's material over what the document
+already teaches — anywhere in the document, not just in the suggested
+section — and land that increment at the most precise place. The document's
+value comes from stating each lesson exactly once at its most general
+formulation; a redundant edit is a defect, and an empty edit list (because
+everything is already covered) is a SUCCESS, not a failure.
 
 """ + DSP_NOTE + """
 
@@ -126,18 +143,38 @@ Operations available (handle-addressed):
   * replace_section   {"op": "replace_section", "section": "S#k", "content": ...}
   * remove_section    {"op": "remove_section", "section": "S#k", "content": "<reason>"}
 
+Classify EVERY lesson in the material against the whole document, then draft:
+  * NOVEL — nothing in the document implies it. append_to_section into the
+    section whose theme covers it; add_section only when no section's theme
+    fits (never open a second section about an existing theme).
+  * INSTANCE-OF — an existing rule already implies it: a general rule covers
+    this specific app/endpoint/case even without naming it. Emit NO edit for
+    it; record its source ids under "absorbed_as_covered", quoting the
+    covering rule. Re-teaching a covered lesson through one more named
+    instance is exactly the bloat this stage exists to prevent.
+  * REFINES — covered in general, but the material carries an irreducible
+    new fact: an app-specific parameter, a boundary condition, an exception,
+    a sharper trigger. amend_section carrying ONLY that increment, grafted
+    onto the existing rule (typically as an exception/example entry under
+    it) — never restate the rule itself.
+  * SUPERSEDES — the material proves an existing statement wrong or strictly
+    weaker than what is now known. amend_section (or replace_section when
+    the section as a whole is being restructured), and quote the superseded
+    statement(s) verbatim in "supersedes" so the applier retires them; fold
+    anything unique they contained into your content.
+
 Drafting discipline:
   * Usually ONE edit per group. Split only when the aspect genuinely needs
     two operations (e.g. a new section plus a removal elsewhere).
-  * Place the edit in an existing section (its S#k handle) whenever one
-    covers this aspect; open a NEW section only when none does. A NEW title
-    must name the specific aspect — never a generic bucket ("Additional
-    Rules", "Misc", "Other Notes").
-  * Choose the LIGHTEST sufficient operation: append for new guidance;
-    amend to fix or tighten a specific existing rule (the applier locates
-    it semantically — you never restate the whole section); replace ONLY
-    when the section as a whole is being restructured, and then preserve
-    the meaning and information of everything this aspect does not target.
+  * A NEW title must name the specific aspect — never a generic bucket
+    ("Additional Rules", "Misc", "Other Notes") — and must not carry
+    handle text ("[S#4] ...") or numbering.
+  * Choose the LIGHTEST sufficient operation: amend to graft a refinement
+    onto an existing rule (the applier locates it semantically — you never
+    restate the whole section); append for genuinely new guidance in an
+    existing theme; replace ONLY when the section as a whole is being
+    restructured, and then preserve the meaning and information of
+    everything this aspect does not target.
   * AUDIENCE: the content deploys to the task-executing agent, which at run
     time sees only the task and the environment. Evaluation machinery
     (evaluators, verifiers, expected values, how outputs are checked) is
@@ -156,41 +193,55 @@ Drafting discipline:
     raws teach the same lesson, write its single strongest formulation and
     fold each source's unique specifics into it — never keep parallel
     restatements of one lesson. Every source either contributes to an edit
-    (list it in that edit's source_ids) or is dropped with its reason.
+    (list it in that edit's source_ids), is absorbed as covered, or is
+    dropped with its reason.
   * State each background fact (e.g. why a library behaves some way) at
-    most ONCE across all your edits.
-  * Do not restate guidance the target section already contains.
+    most ONCE across all your edits — and not at all if the document
+    already states it.
+  * Do not restate guidance the document already contains — anywhere in it.
 
 Output ONLY this JSON object:
 {
   "analysis": "<a full synthesis: what the raw edits share, where they
-    differ, which specifics must survive, and how the draft resolves them>",
+    differ, what the document already covers, which specifics must survive,
+    and how the draft resolves them>",
   "edits": [
-    {"op": "<one of the four>",
+    {"op": "<one of the five>",
      "section": "<S#k or NEW: <title>>",
      "content": "<the deployable text (or the removal reason)>",
      "source_ids": ["E#3", "E#9"],
-     "rationale": "<how this edit synthesizes its sources' contributions>"}
+     "rationale": "<how this edit synthesizes its sources' contributions>",
+     "delta": {"relation": "novel" | "refines" | "supersedes",
+               "vs": "<for refines/supersedes: handle + short quote of the
+                 existing statement this edit builds on; empty for novel>",
+               "increment": "<one sentence: what this edit adds that the
+                 document does not already teach>"},
+     "supersedes": ["<verbatim statement(s) this edit retires — usually
+       empty>"]}
+  ],
+  "absorbed_as_covered": [
+    {"ids": ["E#4"], "covered_by": "<handle + short quote of the existing
+      rule that already implies these sources>"}
   ],
   "dropped_ids": [
     {"id": "E#7", "reason": "<a full statement of why this raw edit's
-      content should not survive (covered elsewhere / harmful / obsolete)>"}
+      content should not survive (harmful / obsolete / not generalizable)>"}
   ]
 }
-Every group-member id must appear in exactly one edit's source_ids or in
-dropped_ids."""
+Every group-member id must appear in exactly one edit's source_ids, in one
+absorbed_as_covered entry, or in dropped_ids. An empty "edits" list with
+every member absorbed as covered is a VALID and often correct output."""
 
 
 def build_draft_user(
-    aspect: str, placement: str, members_render: str, section_render: str,
+    aspect: str, placement: str, members_render: str, doc_render: str,
     revision_block: str = "",
 ) -> str:
     return (
-        "## The change-aspect you are drafting\n" + aspect
+        "## The current rules document (full, handle-annotated)\n" + doc_render
+        + "\n\n## The change-aspect you are drafting\n" + aspect
         + "\n\n## Suggested placement\n" + (placement or "(none suggested)")
         + "\n\n## The group's raw edits (full content)\n" + members_render
-        + "\n\n## The target section as it stands (or the document state)\n"
-        + section_render
         + revision_block
         + "\n\nDraft the definitive edit(s). Respond with ONLY the JSON "
           "object described."
@@ -227,6 +278,14 @@ Review the drafts as one deployment:
     lesson twice, OR restate the same background fact (e.g. why a library
     behaves some way) in more than one place — it belongs where it is most
     load-bearing, stated once.
+  * AGAINST the document — redundant_with_doc: an edit (re)states guidance
+    the CURRENT document already contains, or teaches one more named
+    instance of a general rule the document already states (the rule covers
+    the case even without naming it). Cite the section handle and quote the
+    existing statement in your explanation. The re-draft must shrink the
+    edit to its irreducible increment over that statement (typically an
+    amend_section grafting an exception/refinement onto it) — or drop the
+    edit if no increment remains.
   * PER draft — leakage: content contains task-specific answers, gold
     values, or references to specific training tasks (the deployed agent
     has no ground truth; this is disqualifying — the edit is removed);
@@ -238,14 +297,14 @@ Review the drafts as one deployment:
     semantics and schematic examples; not_actionable: vague slogans with
     no trigger condition or concrete behavior; contradicts_existing: the
     edit contradicts guidance already in the document that no edit in this
-    set removes or replaces.
+    set removes, replaces, or supersedes.
 
 Output ONLY this JSON object:
 {
   "pass": true | false,
   "issues": [
     {"ids": ["D#2", "D#5"],
-     "type": "semantic_conflict" | "duplicate" | "leakage" | "audience_violation" | "not_actionable" | "contradicts_existing",
+     "type": "semantic_conflict" | "duplicate" | "redundant_with_doc" | "leakage" | "audience_violation" | "not_actionable" | "contradicts_existing",
      "explanation": "<a full account of the problem and the evidence for it>",
      "instruction": "<full, concrete guidance for the re-draft: what to
        change, what to keep, and how the conflict or duplication should be
@@ -267,22 +326,36 @@ def build_review_user(drafts_render: str, doc_render: str) -> str:
 # ── APPLY: per-section semantic fusion ───────────────────────────────────────
 APPLIER_SYSTEM = """\
 You apply a set of drafted edits to ONE section of an agent's rules
-document, producing the section's new text. You are the semantic applier:
-you decide where each edit's content belongs inside the section and how it
-fuses with what is already there.
+document, producing the section's new text. You are the semantic applier
+AND the section's curator: you decide where each edit's content belongs,
+how it fuses with what is already there, and you deliver the section in its
+MINIMAL COMPLETE form — every distinct lesson stated exactly once, nothing
+lost.
 
 """ + DSP_NOTE + """
 
 Application discipline:
-  * Weave each edit's content into the section where it belongs — merge
-    with related existing guidance rather than duplicating it, keep the
-    section coherent and readable.
+  * Treat existing content and incoming edits as EQUAL-RANK material for
+    the rewrite. When an edit and an existing passage — or two existing
+    passages — teach the same lesson, MERGE them: state the general rule
+    once at its strongest formulation, and fold every case-specific fact
+    under it as a compact exception/example entry (a general rule plus its
+    exceptions — never parallel restatements of one lesson). You are
+    explicitly AUTHORIZED to reorganize and merge the section's existing
+    bullets while applying.
+  * NEVER drop a unique fact. Every API name, parameter, literal value,
+    boundary condition, and exception present in the OLD section must
+    either survive in the new text (verbatim or strengthened) or be listed
+    under "absorbed" (its information merged elsewhere — say where) or
+    "dropped" (removed — say why). "dropped" is expected to stay EMPTY in
+    normal operation.
   * Honor each edit's operation: append_to_section adds guidance;
     amend_section names a specific existing rule to fix — locate it by
-    meaning and correct it in place, leaving the rest untouched;
-    replace_section supplies the section's new overall content.
-  * Preserve the meaning and information of existing content that no edit
-    targets.
+    meaning and correct it in place, leaving unrelated rules untouched;
+    replace_section supplies the section's new overall content. An edit
+    carrying "supersedes" retires the quoted statement(s): fold anything
+    unique they contain into the new formulation and record them under
+    "absorbed".
   * Multiple edits land in this same call: arrange them sensibly relative
     to each other and to the existing text; if two edits state the same
     fact, keep it once.
@@ -293,26 +366,150 @@ Application discipline:
   * An edit that does not belong in this section, or that contradicts it in
     a way you cannot reconcile, goes to "unapplied" with a full reason —
     NEVER force content in.
-  * The new section text is FREE-FORM markdown (no "### " lines).
+  * The new section text is FREE-FORM markdown (no "### " lines); organize
+    sub-structure with "#### " and deeper, at most two bullet levels below
+    a heading.
 
 Output ONLY this JSON object — notes first, the full text LAST:
 {
   "application_notes": "<per edit: where it landed (quote the neighboring
-    existing text), how it was fused, and any minimal adjustment made to
-    surrounding text for coherence>",
+    existing text), how it was fused, and any merges performed on existing
+    content>",
   "unapplied": [{"id": "A#2", "reason": "<full reason>"}],
+  "absorbed": [{"old": "<short quote of the pre-existing or superseded
+    statement>", "into": "<where its information now lives>"}],
+  "dropped": [{"text": "<what was removed>", "reason": "<why>"}],
   "new_section_text": "<the COMPLETE new section content>"
 }"""
 
 
 def build_applier_user(section_title: str, section_body: str,
-                       edits_render: str) -> str:
+                       edits_render: str, curation_note: str = "") -> str:
     return (
         "## Section: %s\n" % section_title
         + (section_body.strip() or "(the section is currently empty)")
         + "\n\n## Edits to apply to THIS section\n" + edits_render
+        + curation_note
         + "\n\nProduce the section's new text. Respond with ONLY the JSON "
           "object described."
+    )
+
+
+def build_curation_note(n_bullets: int, budget: int) -> str:
+    """Over-budget trigger signal injected into the applier call (never a cap:
+    the instruction is to MERGE duplicate lessons, not to cut content)."""
+    return (
+        "\n\n## Curation signal\n"
+        "This section exceeds its bullet budget (%d top-level bullets > %d):"
+        " it has accumulated redundant restatements over many steps. While"
+        " applying, consolidate aggressively — merge duplicate lessons into"
+        " single general rules with exception entries. Merge, never truncate:"
+        " every unique fact must survive." % (n_bullets, budget)
+    )
+
+
+def build_applier_repair_user(section_title: str, section_body: str,
+                              edits_render: str, prev_json: str,
+                              missing: "list[str]") -> str:
+    """Lossless-repair retry: the previous fusion lost identifiers that were
+    neither kept nor declared under absorbed/dropped."""
+    return (
+        "## Section: %s\n" % section_title
+        + (section_body.strip() or "(the section is currently empty)")
+        + "\n\n## Edits to apply to THIS section\n" + edits_render
+        + "\n\n=== LOSSLESS REPAIR REQUIRED ===\n"
+          "Your previous output (below) LOST the following identifiers from"
+          " the old section: they appear neither in new_section_text nor in"
+          " any absorbed/dropped entry. Re-produce the COMPLETE output"
+          " object, keeping your fusion but restoring each lost identifier"
+          " — either weave its fact back into the text or declare it under"
+          " absorbed/dropped with its destination/reason.\n"
+          "\n## Lost identifiers\n"
+        + "\n".join("- `%s`" % m for m in missing)
+        + "\n\n## Your previous output\n" + prev_json
+        + "\n\nRespond with ONLY the corrected JSON object."
+    )
+
+
+# ── CONSOLIDATE: burst-end whole-document tidy-up ────────────────────────────
+CONSOLIDATE_SYSTEM = """\
+You are the curator of an agent's rules document. The document has grown
+through many small accepted edits, each reasonable alone; your job is the
+periodic TIDY-UP: deliver the document in its MINIMAL COMPLETE form without
+changing what it teaches. You are the only stage that sees the whole
+document with the authority to reorganize it — use that authority.
+
+""" + DSP_NOTE + """
+
+What to fix — the known growth defects, in priority order:
+  * Instance pile-up: one lesson restated once per app/endpoint/case
+    ("paginate contacts", "paginate voice messages", "paginate the feed"
+    as separate rules). Rewrite as ONE general rule stating the trigger
+    and the behavior, with the case-specific facts kept as compact
+    exception/example entries under it. Every case-specific fact that adds
+    information (a parameter value, a boundary, an exception) survives;
+    only the repeated restatements go.
+  * Cross-section duplication: the same guidance or background fact stated
+    in several sections. State it ONCE in the section where it is most
+    load-bearing; other sections keep at most a one-line pointer to it.
+  * Theme splits: two sections about one theme — including a title that
+    duplicates another up to a leaked handle prefix ("[S#6] X" next to
+    "X"). Merge them into ONE section with a clean title.
+  * Structural debris: empty sections; sections whose title is leaked
+    protocol text; orphaned fragments (a "Step 6:" with no steps 1-5);
+    stray sub-topic sections that belong inside a parent (a bare "Why?" or
+    "Example" section) — fold them where they belong.
+  * Audience violations: statements that condition on, justify by, or
+    describe evaluation machinery (evaluators, verifiers, scoring scripts,
+    "the evaluator expects X"). REWRITE each into the task's own semantics,
+    preserving the behavioral content — e.g. "the evaluator expects a raw
+    number" becomes "pass the raw number itself, never a formatted string".
+  * Training-data residue: literal emails, person names, dates, or amounts
+    from specific training tasks used in examples. Replace with schematic
+    placeholders (user@example.com, 2024-01-15, representative values),
+    keeping the example's structure and point.
+  * Code-block sprawl: several near-identical snippets teaching one
+    skeleton. Keep the single most complete pattern; fold each variant's
+    unique lines into it or into a one-line note under it.
+  * Deep nesting: bullets nested four or more levels. Flatten to at most
+    two bullet levels, using "#### " sub-headings for the top split.
+
+Hard limits — all binding:
+  * NEVER invent a rule, change what a rule commands, or alter its trigger
+    conditions. This is reorganization, not authorship.
+  * NEVER drop a unique fact: every API name, parameter, literal value,
+    boundary condition, and exception in the input must survive somewhere
+    in the output — or be listed in "dropped_facts" (expected EMPTY).
+  * Keep the document's imperative, agent-addressed style; keep worked
+    examples that teach (schematized); drop only true duplicates.
+
+Output ONLY this JSON object. Every input handle must appear in EXACTLY ONE
+decision; order the "sections" list as the document should read afterwards:
+{
+  "plan": "<brief: the main merges and rewrites you will perform and why>",
+  "sections": [
+    {"op": "keep",    "handles": ["S#3"]},
+    {"op": "rewrite", "handles": ["S#7"], "title": "<title>",
+     "body": "<the full new body>"},
+    {"op": "merge",   "handles": ["S#2", "S#9"], "title": "<title>",
+     "body": "<the full merged body>"},
+    {"op": "delete",  "handles": ["S#11"], "reason": "<why nothing of value
+      is lost>"}
+  ],
+  "dropped_facts": ["<any unique fact you could not place — expected EMPTY>"]
+}
+"keep" sections carry NO body — their text is preserved verbatim, so spend
+your output budget only on the sections you actually change."""
+
+
+def build_consolidate_user(doc_render: str, size_note: str = "") -> str:
+    return (
+        "## The rules document to tidy up (full, handle-annotated)\n"
+        + doc_render
+        + (("\n\n## Mechanical size signals\n" + size_note) if size_note
+           else "")
+        + "\n\nTidy up the document. Respond with ONLY the JSON object "
+          "described."
     )
 
 

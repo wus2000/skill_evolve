@@ -107,6 +107,19 @@ class CSSConfig:
                                          # — small val sets buy DEPTH where width is capped
     gate_shadow_log: bool = True         # paired mode also logs the counterfactual mean decision
 
+    # ── L0 document metabolism (burst-end consolidation, editpipe v3) ─────
+    consolidation_enabled: bool = False  # run the burst-end whole-document tidy-up
+                                         # (design docs/L0_document_metabolism.md; v3 only;
+                                         # per-env launchers opt in explicitly)
+    consolidation_margin: float = 0.015  # non-inferiority margin for the tidy-up gate:
+                                         # accept needs cand_mean >= inc_mean - margin
+                                         # (~1 sigma of the val mean; a plain ">= before"
+                                         # comparison would kill ~half of truly lossless
+                                         # reorganizations on noise alone)
+    l0_section_bullet_budget: int = 15   # curation TRIGGER (never a cap): a section over
+                                         # this many top-level bullets gets an aggressive-
+                                         # merge note in its applier/consolidation calls
+
     # ── Dataset-size subsets (knob >= split size OR <= 0  =>  use the WHOLE set;
     #    only when 0 < knob < split size is the set subsampled). Lets a large
     #    dataset be loaded in full (n_train/n_val/n_test) while keeping each

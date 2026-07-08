@@ -280,6 +280,7 @@ def _edit_from_dict(d: dict, source_type: str) -> "Edit | None":
         reason=str(d.get("reason", "") or d.get("rationale", "") or ""),
         subject=str(d.get("subject", "") or ""),
         anchor=str(d.get("anchor", "") or ""),
+        vs_doc=str(d.get("vs_doc", "") or ""),
     )
     # Parse source_tasks provenance from the LLM output.
     source_tasks = d.get("source_tasks", [])
@@ -397,6 +398,16 @@ exists, refine inside it with a refinement op.
   subject section (describe or approximately quote it; resolved by meaning).
 - `body` — the content (for add_*/edit_* ops). NEVER include a markdown
   heading line in the body; the section heading is rendered from `subject`.
+- `vs_doc` — your coverage self-claim for this edit, one of:
+  "novel" (nothing in `rules.md` implies this lesson),
+  "refines: <the rule it builds on>" (the rule covers the general case; this
+  edit carries an irreducible new fact — a parameter, a boundary, an
+  exception),
+  "instance-of: <the rule that implies it>" (an existing rule already covers
+  this case even without naming it — you emit it only as supporting evidence).
+  This claim is advisory routing signal for the downstream drafter; when in
+  doubt between "instance-of" and "refines", prefer "refines" and carry only
+  the increment.
 
 ## Rules for every edit
 - AUDIENCE: your edits deploy into the playbook of the task-executing agent,
@@ -409,6 +420,19 @@ exists, refine inside it with a refinement op.
   computed literal value — openpyxl stores formulas without evaluating
   them, so the value must already be present when the file is read").
 - ONE edit = ONE theme. Never bundle multiple themes.
+- COVERAGE TEST (apply to every candidate lesson BEFORE emitting it): a
+  lesson is COVERED when an existing rule in `rules.md` logically implies it,
+  even though the rule does not name your specific app, endpoint, or case —
+  "iterate ALL pages of every paginated endpoint" already covers "iterate
+  the voice-message pages". Re-teaching a covered lesson through one more
+  named instance is the failure mode that bloats the playbook; an EMPTY edit
+  list is the CORRECT output when the trajectories reveal nothing the
+  document does not already teach.
+- Refine, don't restate: when a lesson is covered in general but your
+  evidence adds an irreducible new fact (an app-specific parameter, a
+  boundary condition, an exception), emit a refinement-tier edit
+  (add_point/edit_point) anchored at that rule, carrying ONLY the increment
+  — never restate the general rule around it.
 - Gap-fill: add only what is missing, fix only what is wrong. Never restate
   guidance already in `rules.md`; if a section already covers the theme, improve
   it — do not add a duplicate.
@@ -444,7 +468,7 @@ rule_missing | rule_wrong | rule_ignored | data_exploration | code_error | other
 ## Output — only this JSON object (no fences, no prose)
 {
   "failure_summary": [{"type": "<one of the above>", "count": <int>, "description": "<one line>"}],
-  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the pattern this fixes + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
+  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "vs_doc": "<novel | refines: <rule gist> | instance-of: <rule gist>>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the pattern this fixes + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
 }
 "source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
@@ -465,7 +489,7 @@ two or more trajectories; ignore one-off lucky moves.
 ## Output — only this JSON object (no fences, no prose)
 {
   "success_patterns": [{"count": <int>, "description": "<one line>"}],
-  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the behaviour this codifies + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
+  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "vs_doc": "<novel | refines: <rule gist> | instance-of: <rule gist>>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the behaviour this codifies + which trajectories show it>", "source_tasks": ["task_id_1", "task_id_2"]}]
 }
 "source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 
@@ -487,7 +511,7 @@ to success while the failing one(s) went wrong.
 ## Output — only this JSON object (no fences, no prose)
 {
   "divergence": "<one line: what the passing rollout did that the failing did not>",
-  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the divergence this codifies, citing both paths>", "source_tasks": ["task_id_1", "task_id_2"]}]
+  "edits": [{"op": "...", "subject": "<section name — new for add_section, existing otherwise>", "anchor": "<refinement ops only: the spot inside the section>", "vs_doc": "<novel | refines: <rule gist> | instance-of: <rule gist>>", "body": "<markdown, one theme, no heading lines; omit for remove_*>", "rationale": "<the divergence this codifies, citing both paths>", "source_tasks": ["task_id_1", "task_id_2"]}]
 }
 "source_tasks": list of task_ids from the trajectories above that this edit is derived from."""
 

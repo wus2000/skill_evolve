@@ -234,6 +234,26 @@ def run_burst(
         accept_rate=node.step_buffer.accept_rate(),
         accept_slope=node.accept_slope(cfg.W),
     ))
+
+    # ── Burst-end document metabolism (design docs/L0_document_metabolism.md
+    # §3): one whole-document tidy-up of the node's inheritable rules, gated
+    # non-inferior. Placed AFTER the burst reward is recorded (its neutral
+    # score wobble must not enter the L1 selection signal) and BEFORE the
+    # skill snapshot (the tree inherits the tidied document). A failed or
+    # rejected tidy-up leaves the document untouched; a crashed one must not
+    # kill the burst.
+    if (getattr(cfg, "consolidation_enabled", False)
+            and getattr(cfg, "edit_pipeline", "v2") == "v3"):
+        from css.optimizer.editpipe3.consolidate import run_burst_consolidation
+        try:
+            run_burst_consolidation(
+                node, env, val_items, target_client, optimizer_client, cfg,
+                burst_dir(out_dir, node.node_id, burst_index, "consolidation"),
+                decision_index=decision_index)
+        except Exception:  # noqa: BLE001 — metabolism must not kill the burst
+            _log.exception("consolidation failed (document unchanged, "
+                           "continuing)")
+
     _save_skill_snapshot(out_dir, node, decision_index)
 
     result = BurstResult(

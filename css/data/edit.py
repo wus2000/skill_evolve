@@ -93,6 +93,10 @@ class Edit:
     # mixed position/identity pointer that v2 splits into these two):
     subject: str = ""   # identity — the section this edit defines or modifies
     anchor: str = ""    # point ops — the in-section text it targets
+    # Analyst coverage self-claim ("novel" | "refines: ..." | "instance-of:
+    # ..."). Advisory SIGNAL for the downstream differential drafter — never
+    # gated on; empty on legacy data.
+    vs_doc: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> "Edit":
@@ -110,6 +114,7 @@ class Edit:
             source_tasks=[str(t) for t in raw_tasks if t],
             subject=str(d.get("subject", "") or ""),
             anchor=str(d.get("anchor", "") or ""),
+            vs_doc=str(d.get("vs_doc", "") or ""),
         )
 
     def to_dict(self) -> dict:
@@ -130,6 +135,8 @@ class Edit:
             d["reason"] = self.reason
         if self.source_tasks:
             d["source_tasks"] = list(self.source_tasks)
+        if self.vs_doc:
+            d["vs_doc"] = self.vs_doc
         return d
 
 

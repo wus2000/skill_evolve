@@ -113,6 +113,16 @@ def main() -> None:
         gate_screen_k=3,
         gate_escalation_k=3,
 
+        # Burst-end document metabolism (user rulings 2026-07-08, design
+        # docs/L0_document_metabolism.md): live audit measured 17K->112K rules
+        # growth over 10 steps with zero gain past the step-4 best — one
+        # whole-document tidy-up per burst, accepted only through the
+        # symmetric-fresh non-inferiority gate (margin 1.5pp ~ 1 sigma of the
+        # val mean; bullet budget 15 as the curation trigger signal).
+        consolidation_enabled=True,
+        consolidation_margin=0.015,
+        l0_section_bullet_budget=15,
+
         # ── L1 TREE SEARCH (mechanism default since 2026-07-06; design:
         #    L1_tree_mechanism_design.md — run_css delegates to the
         #    burst-granular tree loop; legacy L0/L1 knobs below are inert) ──

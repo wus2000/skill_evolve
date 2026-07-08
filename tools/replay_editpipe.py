@@ -342,6 +342,67 @@ def run_legacy(case, seed_tag):
     return metrics, detail
 
 
+def run_consolidate(rules_path, seed_tag):
+    """Offline smoke of the burst-end consolidation on a REAL rules.md.
+
+    Runs plan -> mechanical build -> lossless identifier check (NO gate:
+    offline has no env). Writes the tidied document + plan + audit next to
+    the metrics for human review — the smoke acceptance step before the
+    mechanism goes live.
+
+    Usage: python tools/replay_editpipe.py consolidate <path/to/rules.md>
+    """
+    from css.optimizer.editpipe3 import consolidate as cm
+    from css.optimizer.editpipe3.docmodel import RulesDocV3
+    from css.optimizer.editpipe3.pipeline import _top_bullet_count
+
+    with open(rules_path, encoding="utf-8") as f:
+        src = f.read()
+    doc = RulesDocV3.parse(src)
+    client = QwenClient(temperature=0.3)
+    audit = []
+    t0 = time.time()
+    plan = cm._make_plan(client, doc, cm._size_note(doc, 15), audit)
+    detail = {"audit": audit}
+    metrics = {
+        "pipeline": "consolidate", "case": os.path.basename(rules_path),
+        "tag": seed_tag, "chars_before": len(src),
+        "sections_before": len(doc.sections),
+        "bullets_before": sum(_top_bullet_count(s.body)
+                              for s in doc.sections),
+    }
+    if plan is None:
+        metrics["error"] = "plan failed"
+        return metrics, detail
+    tidied = cm._build_output(doc, plan["sections"], audit)
+    lost = cm._doc_lost_identifiers(src, tidied,
+                                    plan.get("dropped_facts") or [])
+    out_doc = RulesDocV3.parse(tidied)
+    ops = {}
+    for s in plan["sections"]:
+        ops[s.get("op", "?")] = ops.get(s.get("op", "?"), 0) + 1
+    metrics.update({
+        "chars_after": len(tidied),
+        "compression": round(len(tidied) / max(1, len(src)), 3),
+        "sections_after": len(out_doc.sections),
+        "bullets_after": sum(_top_bullet_count(s.body)
+                             for s in out_doc.sections),
+        "plan_ops": ops,
+        "dropped_facts": plan.get("dropped_facts") or [],
+        "lost_identifiers": lost,
+        "would_abandon": bool(lost),
+        "llm_calls": client.n_calls, "llm_s": round(client.total_s, 1),
+        "wall_s": round(time.time() - t0, 1),
+    })
+    base = os.path.join(OUT_DIR, seed_tag)
+    with open(base + "_tidied.md", "w", encoding="utf-8") as f:
+        f.write(tidied)
+    with open(base + "_plan.json", "w", encoding="utf-8") as f:
+        json.dump(plan, f, ensure_ascii=False, indent=1)
+    print("tidied document:", base + "_tidied.md")
+    return metrics, detail
+
+
 def main():
     which = sys.argv[1] if len(sys.argv) > 1 else "v2"
     case = sys.argv[2] if len(sys.argv) > 2 else "appworld_step1"
@@ -351,10 +412,11 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
 
     runner = {"v2": run_v2, "v3": run_v3, "legacy": run_legacy,
-              "inject": run_v2_inject}[which]
+              "inject": run_v2_inject, "consolidate": run_consolidate}[which]
     for c in cases:
         for r in range(repeats):
-            tag = f"{which}_{c}_r{r}_{int(time.time())}"
+            c_name = os.path.splitext(os.path.basename(c))[0]
+            tag = f"{which}_{c_name}_r{r}_{int(time.time())}"
             print("=" * 70)
             print("RUN", tag)
             try:

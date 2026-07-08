@@ -57,7 +57,8 @@ if TYPE_CHECKING:
 _log = logging.getLogger("css")
 
 __all__ = [
-    "PairedGateResult", "run_paired_gate", "binom_sf_half", "perm_sf_signflip",
+    "PairedGateResult", "run_paired_gate", "run_noninferiority_gate",
+    "binom_sf_half", "perm_sf_signflip",
 ]
 
 
@@ -213,6 +214,161 @@ def _seed_ledger_from_predictions(
             ledger[iid] = {"passes": passes, "trials": trials}
             seeded += 1
     return seeded
+
+
+def run_noninferiority_gate(
+    env: "TaskEnv",
+    node: "TreeNode",
+    incumbent_rules: str,
+    candidate_rules: str,
+    val_items: list[dict],
+    target_client: "LLMClient",
+    cfg: "CSSConfig",
+    out_dir: str,
+) -> PairedGateResult:
+    """Symmetric-fresh NON-INFERIORITY gate for the burst-end consolidation.
+
+    The consolidation candidate is a reorganization of ``incumbent_rules``
+    (typically ``node.best_rules``): its payoff is on the COST side (a smaller
+    document), so the acceptance question is "not worse", never "better".
+    Differences from :func:`run_paired_gate`:
+
+      * BOTH sides are screened FRESH on the full val set (no ledger reads —
+        the incumbent here may differ from ``node.rules``, whose measurements
+        the ledger carries, and a paired comparison wants symmetric variance).
+      * Two-layer non-inferiority decision (user ruling 2026-07-08):
+          Layer 1 (binary):    n_lost <= n_gained on the escalated per-item
+                               verdicts — no net solvability regression;
+          Layer 2 (continuous): cand_mean >= inc_mean - margin
+                               (``cfg.consolidation_margin``, default 1.5pp
+                               ~= 1 sigma of the val mean) — a plain
+                               "not lower than before" point comparison would
+                               falsely kill ~half of all truly lossless
+                               reorganizations.
+        ACCEPT requires both.
+      * On ACCEPT ``node.val_ledger`` is reset to the candidate's fresh
+        measurements (screen + escalations) — the tidied document is the new
+        incumbent, same transition as the paired gate.
+
+    The sign-flip permutation p is computed as telemetry only, as elsewhere.
+    """
+    from css.skill_document import SkillDocument
+
+    screen_k = max(1, getattr(cfg, "gate_screen_k", 1))
+    esc_k = max(1, getattr(cfg, "gate_escalation_k", 3))
+    margin = float(getattr(cfg, "consolidation_margin", 0.015))
+
+    inc_text = SkillDocument(
+        skill_dir="", strategy=node.strategy or "", rules=incumbent_rules or ""
+    ).combined_skill_text()
+    cand_text = SkillDocument(
+        skill_dir="", strategy=node.strategy or "", rules=candidate_rules or ""
+    ).combined_skill_text()
+
+    item_by_id = {_item_id(it): it for it in val_items if _item_id(it)}
+    items = list(item_by_id.values())
+
+    # ── Stage 1: symmetric fresh screen on the full val set ──────────────
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_cand = pool.submit(
+            _roll_items, env, cand_text, items, target_client, screen_k,
+            os.path.join(out_dir, "gate_screen_cand"), cfg)
+        fut_inc = pool.submit(
+            _roll_items, env, inc_text, items, target_client, screen_k,
+            os.path.join(out_dir, "gate_screen_inc"), cfg)
+        cand_screen = fut_cand.result()
+        inc_screen = fut_inc.result()
+
+    def _mean(screen: dict) -> float:
+        rates = [p / t for (p, t) in screen.values() if t > 0]
+        return sum(rates) / len(rates) if rates else 0.0
+
+    cand_mean = _mean(cand_screen)
+    inc_mean = _mean(inc_screen)
+
+    # ── discordance (same resolution rule as the paired gate) ────────────
+    discordant: list[str] = []
+    for iid in item_by_id:
+        c = cand_screen.get(iid)
+        l = inc_screen.get(iid)
+        if not c or not l or c[1] <= 0 or l[1] <= 0:
+            continue
+        if screen_k > 1:
+            differs = c[0] * l[1] != l[0] * c[1]
+        else:
+            differs = (c[0] * 2 > c[1]) != (l[0] * 2 > l[1])
+        if differs:
+            discordant.append(iid)
+
+    # ── Stage 2: one symmetric fresh escalation round ─────────────────────
+    cand_acc: dict[str, list[int]] = {iid: [0, 0] for iid in discordant}
+    inc_acc: dict[str, list[int]] = {iid: [0, 0] for iid in discordant}
+    p_value = 1.0
+    n_pos = n_neg = 0
+    if discordant:
+        d_items = [item_by_id[i] for i in discordant]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_cand = pool.submit(
+                _roll_items, env, cand_text, d_items, target_client, esc_k,
+                os.path.join(out_dir, "gate_esc_cand_r1"), cfg)
+            fut_inc = pool.submit(
+                _roll_items, env, inc_text, d_items, target_client, esc_k,
+                os.path.join(out_dir, "gate_esc_inc_r1"), cfg)
+            esc_cand = fut_cand.result()
+            esc_inc = fut_inc.result()
+        for iid, (p, t) in esc_cand.items():
+            cand_acc[iid][0] += p
+            cand_acc[iid][1] += t
+        for iid, (p, t) in esc_inc.items():
+            inc_acc[iid][0] += p
+            inc_acc[iid][1] += t
+        deltas = []
+        for iid in discordant:
+            cp, ct = cand_acc[iid]
+            ip, it = inc_acc[iid]
+            if ct <= 0 or it <= 0:
+                continue
+            deltas.append(cp - ip)
+            if cp > ip:
+                n_pos += 1
+            elif ip > cp:
+                n_neg += 1
+        p_value = perm_sf_signflip(deltas)  # telemetry only
+
+    layer1 = n_neg <= n_pos
+    layer2 = cand_mean >= inc_mean - margin
+    accept = layer1 and layer2
+
+    _log.info(
+        "non-inferiority gate: screen_discordant=%d -> gained=%d lost=%d, "
+        "cand_mean=%.4f vs inc_mean=%.4f (margin=%.3f) -> %s "
+        "(layer1=%s layer2=%s, telemetry_p=%.4f)",
+        len(discordant), n_pos, n_neg, cand_mean, inc_mean, margin,
+        "ACCEPT" if accept else "reject", layer1, layer2, p_value)
+
+    if accept:
+        new_ledger: dict = {
+            iid: {"passes": p, "trials": t}
+            for iid, (p, t) in cand_screen.items() if t > 0
+        }
+        for iid, (p, t) in cand_acc.items():
+            if t > 0:
+                entry = new_ledger.setdefault(iid, {"passes": 0, "trials": 0})
+                entry["passes"] += p
+                entry["trials"] += t
+        node.val_ledger = new_ledger
+
+    return PairedGateResult(
+        accept=accept,
+        p_value=p_value,
+        n_pos=n_pos,
+        n_neg=n_neg,
+        n_screen_discordant=len(discordant),
+        cand_mean=cand_mean,
+        ledger_bootstrapped=0,
+        escalation_rounds=1,
+        inc_mean=inc_mean,
+    )
 
 
 def run_paired_gate(

@@ -40,10 +40,16 @@ class DraftEdit:
     content: str
     source_ids: "list[str]" = field(default_factory=list)
     rationale: str = ""
+    # Differential-drafting declarations (B stage): the edit's relation to the
+    # current document ({relation, vs, increment}) and the existing statements
+    # it explicitly retires. Advisory metadata — tolerated when absent.
+    delta: dict = field(default_factory=dict)
+    supersedes: "list[str]" = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {"op": self.op, "section": self.section, "content": self.content,
-                "source_ids": self.source_ids, "rationale": self.rationale}
+                "source_ids": self.source_ids, "rationale": self.rationale,
+                "delta": self.delta, "supersedes": self.supersedes}
 
 
 @dataclass
@@ -54,6 +60,10 @@ class AspectGroup:
     placement: str = ""
     edits: "list[DraftEdit]" = field(default_factory=list)
     dropped: "list[dict]" = field(default_factory=list)
+    # Sources the drafter declared already covered by an existing rule
+    # ([{ids, covered_by}]). A group may LEGALLY end with edits == [] and all
+    # members absorbed — that is the differential drafter's success state.
+    absorbed: "list[dict]" = field(default_factory=list)
     target_tasks: "list[str]" = field(default_factory=list)
     revision_note: str = ""
 
@@ -61,7 +71,8 @@ class AspectGroup:
         return {"gid": self.gid, "member_ids": self.member_ids,
                 "aspect": self.aspect, "placement": self.placement,
                 "edits": [e.to_dict() for e in self.edits],
-                "dropped": self.dropped, "target_tasks": self.target_tasks,
+                "dropped": self.dropped, "absorbed": self.absorbed,
+                "target_tasks": self.target_tasks,
                 "revision_note": self.revision_note}
 
 
@@ -132,6 +143,38 @@ def _bare_heading_lines(text: str) -> "list[str]":
     return bad
 
 
+def _strip_handle_title(title: str) -> str:
+    """Strip leaked protocol-handle text from a section title.
+
+    "[S#6] Sheet Structure" and "S#6 Sheet Structure" are the same section as
+    "Sheet Structure" — the handle is a per-run protocol address, never part
+    of a name. Mechanical normalization (lossless: handles carry no content);
+    returns the original when stripping would leave nothing.
+    """
+    stripped = re.sub(r"^\s*\[?\s*S#\d+\s*\]?\s*[-:—]?\s*", "", title or "")
+    return stripped.strip() or (title or "").strip()
+
+
+def _code_identifiers(text: str) -> "set[str]":
+    """Backtick-quoted identifiers of a section body (loss-check anchors).
+
+    These are the section's hard facts — API names, parameters, literal
+    values. A fusion that loses one without declaring it under
+    absorbed/dropped triggers the lossless-repair path.
+    """
+    out: "set[str]" = set()
+    for m in re.finditer(r"`([^`\n]{3,80})`", text or ""):
+        ident = m.group(1).strip()
+        if ident:
+            out.add(ident)
+    return out
+
+
+def _top_bullet_count(text: str) -> int:
+    """Top-level bullet count of a section body (curation trigger signal)."""
+    return len(re.findall(r"(?m)^[-*][ \t]", text or ""))
+
+
 def _normalize_structure(client: Any, title: str, content: str,
                          audit: "list[dict]") -> "list[tuple[str, str]]":
     """LLM structure call: content carrying its own "### " lines -> sections.
@@ -177,12 +220,14 @@ def _normalize_structure(client: Any, title: str, content: str,
 def _render_raw(rid: str, raw: dict) -> str:
     """Full-content rendering of one raw edit (rich, never truncated)."""
     tasks = ", ".join(str(t) for t in (raw.get("target_tasks") or []))
+    vs_doc = str(raw.get("vs_doc", "") or "").strip()
     return (
-        "[%s] section_hint=%s | kind=%s | tasks=%s | src=%s\n"
+        "[%s] section_hint=%s | kind=%s | tasks=%s | src=%s%s\n"
         "rationale: %s\n"
         "content:\n%s"
         % (rid, raw.get("section_target", "(none)"), raw.get("kind", "?"),
            tasks or "(none)", raw.get("src", "?"),
+           (" | analyst_coverage_claim=%s" % vs_doc) if vs_doc else "",
            str(raw.get("rationale", "") or "(none)"),
            str(raw.get("body", "") or "(empty)"))
     )
@@ -254,7 +299,9 @@ def _stage_a_group(client: Any, doc: RulesDocV3, raws: "dict[str, dict]",
                    audit: "list[dict]") -> "list[AspectGroup]":
     all_ids = sorted(raws, key=lambda r: int(r.split("#")[1]))
     raw_render = "\n\n".join(_render_raw(rid, raws[rid]) for rid in all_ids)
-    user = prompts.build_group_user(raw_render, doc.catalog())
+    # Full-document view (user ruling: judgment stages see the whole document
+    # so routing is decided against actual content, not titles).
+    user = prompts.build_group_user(raw_render, doc.render())
     obj = _call_json(client, prompts.GROUP_SYSTEM, user,
                      ok=lambda r: isinstance(r, dict) and "groups" in r,
                      stage="ep3_group", max_tokens=_GROUP_MAX_TOKENS)
@@ -333,6 +380,11 @@ def _check_draft(obj: Any, member_ids: "list[str]",
                 violations.append(
                     "edits[%d].section %r — a NEW section must be written "
                     "as 'NEW: <specific title>'" % (ei, section))
+            elif _HANDLE_RE.search(title):
+                violations.append(
+                    "edits[%d].section %r — a NEW title must not carry "
+                    "handle text ('S#k' is a protocol handle, not a name)"
+                    % (ei, section))
             if op in _OPS and op != "add_section":
                 violations.append(
                     "edits[%d]: op %r targets an EXISTING section — its "
@@ -358,11 +410,22 @@ def _check_draft(obj: Any, member_ids: "list[str]",
     for d in obj.get("dropped_ids") or []:
         if isinstance(d, dict) and str(d.get("id", "")) in members:
             accounted.add(str(d["id"]))
+    for ai, a in enumerate(obj.get("absorbed_as_covered") or []):
+        if not isinstance(a, dict):
+            continue
+        ids_in = [str(s) for s in (a.get("ids") or []) if str(s) in members]
+        if ids_in and not str(a.get("covered_by", "") or "").strip():
+            violations.append(
+                "absorbed_as_covered[%d] lacks \"covered_by\" — quote the "
+                "existing rule that already implies source(s) %s"
+                % (ai, ", ".join(ids_in)))
+        accounted.update(ids_in)
     unaccounted = sorted(members - accounted)
     if unaccounted:
         violations.append(
-            "member id(s) accounted for by NO edit's source_ids and NO "
-            "dropped_ids entry: %s — absorb each into an edit or drop it "
+            "member id(s) accounted for by NO edit's source_ids, NO "
+            "absorbed_as_covered entry, and NO dropped_ids entry: %s — "
+            "each member must be used, absorbed as covered, or dropped "
             "with a reason" % ", ".join(unaccounted))
     return violations
 
@@ -395,14 +458,20 @@ def _adopt_draft(group: AspectGroup, obj: dict, raws: "dict[str, dict]") -> None
             continue
         srcs = [str(s) for s in (e.get("source_ids") or [])
                 if str(s) in set(group.member_ids)]
+        delta = e.get("delta")
         group.edits.append(DraftEdit(
             op=str(e.get("op", "")).strip(),
             section=str(e.get("section", "") or "").strip(),
             content=str(e.get("content", "") or ""),
             source_ids=srcs,
-            rationale=str(e.get("rationale", "") or "")))
+            rationale=str(e.get("rationale", "") or ""),
+            delta=delta if isinstance(delta, dict) else {},
+            supersedes=[str(s) for s in (e.get("supersedes") or [])
+                        if str(s).strip()]))
     group.dropped = [d for d in (obj.get("dropped_ids") or [])
                      if isinstance(d, dict)]
+    group.absorbed = [a for a in (obj.get("absorbed_as_covered") or [])
+                      if isinstance(a, dict)]
     group.revision_note = str(obj.get("revision_note", "") or "")
     # target_tasks: RULE-SIDE union of the sources' tasks (LLM never writes it).
     tasks: "list[str]" = []
@@ -418,15 +487,13 @@ def _stage_b_draft_one(client: Any, doc: RulesDocV3, group: AspectGroup,
                        revision_block: str = "") -> None:
     members_render = "\n\n".join(_render_raw(rid, raws[rid])
                                  for rid in group.member_ids)
-    idx = doc.resolve(group.placement) if group.placement else None
-    if idx is not None:
-        section_render = "### [%s] %s\n%s" % (
-            doc.handle(idx), doc.sections[idx].title, doc.sections[idx].body)
-    else:
-        section_render = doc.render()
+    # Differential drafting sees the WHOLE document (user ruling): the net
+    # increment is computed against everything the document teaches, not the
+    # suggested section alone. The document leads the prompt so all draft
+    # calls of a step share one cacheable prefix.
     user = prompts.build_draft_user(
         group.aspect or "(single raw edit — polish it into deployable form)",
-        group.placement, members_render, section_render, revision_block)
+        group.placement, members_render, doc.render(), revision_block)
     obj = _call_json(client, prompts.DRAFT_SYSTEM, user,
                      ok=lambda r: isinstance(r, dict) and "edits" in r,
                      stage="ep3_draft", max_tokens=_DRAFT_MAX_TOKENS)
@@ -435,8 +502,10 @@ def _stage_b_draft_one(client: Any, doc: RulesDocV3, group: AspectGroup,
     if violations:
         repaired = _protocol_repair(
             client, "Draft the definitive edit(s) for one change-aspect.",
-            "edits: [{op, section, content, source_ids, rationale}] + "
-            "dropped_ids; union(source_ids)+dropped = group members.",
+            "edits: [{op, section, content, source_ids, rationale, delta, "
+            "supersedes}] + absorbed_as_covered + dropped_ids; "
+            "union(source_ids)+absorbed+dropped = group members; an empty "
+            "edits list with every member absorbed is valid.",
             obj, violations,
             ok=lambda r: isinstance(r, dict) and "edits" in r,
             stage="ep3_draft")
@@ -562,13 +631,19 @@ def _stage_c_review(client: Any, doc: RulesDocV3,
 
 # ── APPLY: per-section semantic fusion ────────────────────────────────────────
 def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
-                 audit: "Optional[list]" = None) -> "tuple[str, list[dict]]":
+                 audit: "Optional[list]" = None,
+                 bullet_budget: int = 15) -> "tuple[str, list[dict]]":
     """Apply the groups' edits to ``rules_md``; returns (new_text, deferred).
 
     Rule code owns structure: NEW sections and removals are mechanical; every
-    touched EXISTING section gets ONE Section Applier call (LLM fusion; its
-    output is adopted as-is — no apply-side guards, per user ruling). Edits
-    the applier returns as ``unapplied`` are deferred with its reason.
+    touched EXISTING section gets ONE Section Applier call (LLM fusion — the
+    section's curator, authorized to merge redundant existing bullets). A
+    fusion that loses a backtick identifier without declaring it under
+    absorbed/dropped gets ONE lossless-repair call, then degrades to the
+    conservative append form (old body + edit contents) — content is never
+    silently lost. Edits the applier returns as ``unapplied`` are deferred
+    with its reason. ``bullet_budget`` is a curation TRIGGER signal (an
+    over-budget section gets an aggressive-merge note), never a cap.
     """
     audit = audit if audit is not None else []
     doc = RulesDocV3.parse(rules_md)
@@ -590,6 +665,7 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
             if e.op == "add_section" or e.section.upper().startswith("NEW"):
                 title = e.section.split(":", 1)[1].strip() \
                     if ":" in e.section else ""
+                title = _strip_handle_title(title)
                 if not title:
                     deferred.append({
                         "id": aid, "gid": g.gid, "edit": e.to_dict(),
@@ -650,19 +726,36 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
         title_idx = {k: (i - 1 if i > idx else i)
                      for k, i in title_idx.items() if k != removed_key}
 
+    def _render_entries(entries: "list[tuple[str, DraftEdit]]") -> str:
+        return "\n\n".join(
+            "[%s] op=%s\nintended content:\n%s\n(rationale: %s)%s"
+            % (aid, e.op, e.content, e.rationale or "none",
+               ("\nsupersedes (retire these statements): "
+                + " | ".join(e.supersedes)) if e.supersedes else "")
+            for aid, e in entries)
+
     def _fuse(idx: int, entries: "list[tuple[str, DraftEdit]]"):
         section = doc.sections[idx]
-        edits_render = "\n\n".join(
-            "[%s] op=%s\nintended content:\n%s\n(rationale: %s)"
-            % (aid, e.op, e.content, e.rationale or "none")
-            for aid, e in entries)
+        edits_render = _render_entries(entries)
+        n_bullets = _top_bullet_count(section.body)
+        note = (prompts.build_curation_note(n_bullets, bullet_budget)
+                if bullet_budget > 0 and n_bullets > bullet_budget else "")
         user = prompts.build_applier_user(section.title, section.body,
-                                          edits_render)
+                                          edits_render, note)
         obj = _call_json(client, prompts.APPLIER_SYSTEM, user,
                          ok=lambda r: isinstance(r, dict)
                          and "new_section_text" in r,
                          stage="ep3_applier", max_tokens=_APPLIER_MAX_TOKENS)
         return idx, entries, obj
+
+    def _lost_identifiers(old_body: str, obj: dict) -> "list[str]":
+        """Old-section identifiers absent from the fusion AND undeclared."""
+        new_text = str(obj.get("new_section_text", "") or "")
+        declared = json.dumps(
+            [obj.get("absorbed") or [], obj.get("dropped") or []],
+            ensure_ascii=False)
+        return [i for i in sorted(_code_identifiers(old_body))
+                if i not in new_text and i not in declared]
 
     results = []
     if by_section:
@@ -683,6 +776,40 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
             audit.append({"apply": "section_fusion_failed",
                           "section": doc.sections[idx].title})
             continue
+        # Lossless backstop (repair chain, not a gate): identifiers of the
+        # old body must survive or be declared. One repair call names the
+        # losses; a still-lossy result degrades to conservative append.
+        old_body = doc.sections[idx].body
+        missing = _lost_identifiers(old_body, obj)
+        if missing:
+            repaired = _call_json(
+                client, prompts.APPLIER_SYSTEM,
+                prompts.build_applier_repair_user(
+                    doc.sections[idx].title, old_body,
+                    _render_entries(entries),
+                    json.dumps(obj, ensure_ascii=False, indent=1), missing),
+                ok=lambda r: isinstance(r, dict) and "new_section_text" in r,
+                stage="ep3_applier_lossless_repair",
+                max_tokens=_APPLIER_MAX_TOKENS)
+            if isinstance(repaired, dict) and not _lost_identifiers(
+                    old_body, repaired):
+                obj = repaired
+                audit.append({"apply": "lossless_repaired",
+                              "section": doc.sections[idx].title,
+                              "restored": missing})
+            else:
+                fused = (old_body.rstrip() + "\n\n" + "\n\n".join(
+                    e.content.strip() for _, e in entries
+                    if e.content.strip())).strip()
+                obj = {"new_section_text": fused,
+                       "unapplied": obj.get("unapplied") or [],
+                       "absorbed": [], "dropped": [],
+                       "application_notes": "lossless degradation: fusion "
+                       "kept losing identifiers; conservative append of the "
+                       "edit contents onto the unchanged old body"}
+                audit.append({"apply": "lossless_degraded_to_append",
+                              "section": doc.sections[idx].title,
+                              "lost": missing})
         unapplied_ids = {str(u.get("id", "")) for u in
                          (obj.get("unapplied") or []) if isinstance(u, dict)}
         for aid, e in entries:
@@ -719,10 +846,20 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
                                   "title": p_title,
                                   "from": doc.sections[idx].title})
         doc.replace_body(idx, fused_text)
+        dropped_decl = [d for d in (obj.get("dropped") or [])
+                        if isinstance(d, dict)]
+        if dropped_decl:
+            _log.warning("editpipe3 applier DROPPED content in section %r: %s",
+                         doc.sections[idx].title,
+                         "; ".join(str(d.get("text", ""))[:80]
+                                   for d in dropped_decl))
         audit.append({"apply": "section_fused",
                       "section": doc.sections[idx].title,
                       "edits": [aid for aid, _ in entries],
                       "unapplied": sorted(unapplied_ids),
+                      "absorbed": [a for a in (obj.get("absorbed") or [])
+                                   if isinstance(a, dict)],
+                      "dropped": dropped_decl,
                       "notes": str(obj.get("application_notes", ""))})
 
     return doc.serialize(), deferred
@@ -758,8 +895,21 @@ def consolidate(client: Any, rules_md: str, raw_edits: "list[dict]",
 
     _stage_c_review(client, doc, groups, raws, res.audit)
 
+    # A group whose material is fully covered by the document ends with zero
+    # edits — the differential drafter's SUCCESS state, recorded, not dropped
+    # silently.
+    n_absorbed_ids = 0
+    for g in groups:
+        n_absorbed_ids += sum(len(a.get("ids") or []) for a in g.absorbed)
+        if not g.edits and (g.absorbed or g.dropped):
+            res.audit.append({"stage": "B", "gid": g.gid,
+                              "action": "group_fully_absorbed",
+                              "member_ids": g.member_ids,
+                              "absorbed": g.absorbed,
+                              "dropped": g.dropped})
     res.groups = [g for g in groups if g.edits]
     n_edits = sum(len(g.edits) for g in res.groups)
-    _log.info("editpipe3: %d raw -> %d aspect group(s) -> %d drafted edit(s)",
-              len(raws), len(res.groups), n_edits)
+    _log.info("editpipe3: %d raw -> %d aspect group(s) -> %d drafted edit(s), "
+              "%d source(s) absorbed as already covered",
+              len(raws), len(res.groups), n_edits, n_absorbed_ids)
     return res
