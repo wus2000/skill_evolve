@@ -94,6 +94,25 @@ def test_alerts_repeat_and_flat_tail():
     assert "actions produced no page change" in block2
 
 
+def test_no_change_streak():
+    h = _hist()
+    h.append(turn=1, action="click [1]", url="u", effect="navigated to /b",
+             page_changed=True)
+    assert h.no_change_streak() == 0, "a page-changing step resets the streak"
+    for t in (2, 3, 4):
+        h.append(turn=t, action="click [9]", url="u",
+                 effect="no visible page change", page_changed=False)
+    assert h.no_change_streak() == 3
+    h.append(turn=5, action="scroll [down]", url="u",
+             effect="URL unchanged; page updated (+3/-0 lines)",
+             page_changed=True)
+    assert h.no_change_streak() == 0, "any real change resets it"
+    # invalid / failed steps count as no-change (page untouched)
+    h.append(turn=6, action="stop {bad}", url="u",
+             effect="INVALID action (not executed)", page_changed=False)
+    assert h.no_change_streak() == 1
+
+
 def test_render_empty_and_header():
     h = _hist()
     assert h.render(turn_now=1, max_turns=30) == ""

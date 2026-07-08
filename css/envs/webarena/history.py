@@ -126,6 +126,23 @@ class TrajectoryHistory:
                 seen.append(rec.url)
         return " -> ".join(seen)
 
+    def no_change_streak(self) -> int:
+        """Trailing count of consecutive steps that changed nothing on the page.
+
+        A step's effect is 'no visible page change' when the action was invalid,
+        failed, or executed but moved neither the URL nor any observation line
+        (effect_signature). A run of these is the loop pathology the 2026-07-08
+        probes showed (24-28 identical no-op steps). The agent SEES this via the
+        alerts below; run_episode uses the same count to hard-stop a stuck
+        episode (OpAgent's RDT redundancy signal, but AXTree-line based rather
+        than SSIM, and used for termination rather than a step reward)."""
+        n = 0
+        for rec in reversed(self.records):
+            if rec.page_changed:
+                break
+            n += 1
+        return n
+
     def _alerts(self) -> list[str]:
         out: list[str] = []
         tail_same = 0
@@ -136,11 +153,7 @@ class TrajectoryHistory:
         if tail_same >= 3:
             out.append(f"alert: '{self.records[-1].action}' repeated "
                        f"{tail_same} times with no page change")
-        tail_flat = 0
-        for rec in reversed(self.records):
-            if rec.page_changed:
-                break
-            tail_flat += 1
+        tail_flat = self.no_change_streak()
         if tail_flat >= _NO_CHANGE_ALERT and tail_flat > tail_same:
             out.append(f"alert: the last {tail_flat} actions produced "
                        "no page change")

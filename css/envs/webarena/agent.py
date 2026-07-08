@@ -102,6 +102,12 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
     har_content = str(extra.get("webarena_har_content", "omit"))
     nav_timeout_ms = int(extra.get("webarena_nav_timeout_ms", 30000))
     scribe_on = bool(extra.get("webarena_scribe", True))
+    # Stuck-stop: end the episode after this many consecutive steps that change
+    # nothing on the page (invalid/failed/no-effect actions). The loop
+    # pathology (2026-07-08 probes: 24-28 no-op steps burning to max_turns) is
+    # both wasted budget and a fake capability signal. OpAgent's RDT flags the
+    # same redundancy per step; we use it to terminate. 0 disables.
+    stuck_stop = int(extra.get("webarena_stuck_stop_steps", 5))
 
     # Authentication (css/envs/webarena/auth.py). Over half the benchmark acts
     # as a logged-in user: cookie jars for shopping/reddit/gitlab, an auto-login
@@ -239,6 +245,20 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
                          "scribe": scribe_io})
                 prev_effect, prev_facts = effect, list(rec.facts)
                 if stopped:
+                    break
+                # Hard-stop a stuck episode: N consecutive no-effect steps means
+                # the agent is looping and will not recover on its own (it has
+                # already seen the repeat alerts in the history block). End it
+                # here rather than burn the rest of max_turns.
+                streak = history.no_change_streak()
+                if stuck_stop and streak >= stuck_stop:
+                    _log.info("webarena/agent — stuck-stop at turn %d "
+                              "(%d consecutive no-change steps)", n_turns, streak)
+                    stop_payload = {
+                        "task_type": "retrieve", "status": "UNKNOWN_ERROR",
+                        "retrieved_data": None,
+                        "error_details": (f"early stop: {streak} consecutive "
+                                          "steps with no page change")}
                     break
                 obs = obs_after
         finally:

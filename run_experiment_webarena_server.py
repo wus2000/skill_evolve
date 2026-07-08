@@ -201,6 +201,13 @@ def main() -> None:
             # adviser prompt — facts/intent only, never advice. Part of the
             # ENVIRONMENT: baselines keep it too, so skill-document gains are
             # measured on top of it. False = ablation arm.
+            # Stuck-stop: end an episode after N consecutive steps that change
+            # nothing on the page (invalid / failed / no-effect actions). The
+            # loop pathology burned 24-28 no-op steps to max_turns in the
+            # 2026-07-08 probes. 5 (> official's parsing/repeating th of 3)
+            # gives a briefly-confused agent room to recover on the coarser
+            # AXTree-line change signal while still cutting real loops early.
+            "webarena_stuck_stop_steps": 5,
             "webarena_scribe": True,
             # Telemetry-only alert when the rendered history block exceeds
             # this token count (tokens-not-chars ruling). NO truncation ever
