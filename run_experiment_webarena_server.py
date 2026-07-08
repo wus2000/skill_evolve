@@ -50,7 +50,10 @@ def _stack_urls(n: int) -> "dict[str, str]":
             for site, port in _BASE_PORT.items()}
 
 
-N_STACKS = int(os.environ.get("WEBARENA_STACKS", "3"))
+# 6 replica stacks provisioned on 162 (2026-07-08): 24 containers, all sites
+# healthy + authenticated, base_url isolated per stack. Grow with
+# tools/webarena/scale_pool.sh <N> then WEBARENA_STACKS=<N>.
+N_STACKS = int(os.environ.get("WEBARENA_STACKS", "6"))
 STACKS = {f"s{n}": _stack_urls(n) for n in range(1, N_STACKS + 1)}
 
 # The stack origins WITHOUT any path suffix — health probes, cookie jars and
