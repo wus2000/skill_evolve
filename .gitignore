@@ -40,3 +40,4 @@ env_candidates/
 .playwright-mcp/
 reports/
 webarena_traj_samples/
+truncation_forensics_*/
