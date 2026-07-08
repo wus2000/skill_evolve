@@ -22,7 +22,7 @@ from css.tree_search import BurstResult, SpawnOutcome, run_css_tree
 # ── harness (mirrors test_tree_search_loop's fakes) ─────────────────────────
 def _cfg(**kw) -> CSSConfig:
     base = dict(
-        n_train=4, n_val=2, n_test=2,
+        n_train=4, n_val=200, n_test=2,
         burst_steps=5, l0_stall_steps=8, N=5,
         node_degree=3, max_decisions=8,
         test_eval_on_new_best=False,
@@ -53,9 +53,11 @@ def _fake_burst(plans: dict):
         gain = gain[idx] if idx < len(gain) else 0.0
         for s in range(cfg.burst_steps):
             action = "accept_new_best" if (s == 0 and gain > 0) else "reject"
+            after = node.val_score + (gain if action == "accept_new_best"
+                                      else 0.0)
             node.step_buffer.append(StepBufferEntry(
                 step=node.n_steps, action=action,
-                score_before=node.val_score, score_after=node.val_score))
+                score_before=node.val_score, score_after=after))
         before = node.val_score
         node.val_score = before + max(0.0, gain)
         node.best_rules = node.rules or node.best_rules

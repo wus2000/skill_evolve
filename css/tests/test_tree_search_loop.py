@@ -19,7 +19,7 @@ from css.tree_search import BurstResult, SpawnOutcome, node_stalled, run_css_tre
 
 def _cfg(**kw) -> CSSConfig:
     base = dict(
-        n_train=4, n_val=2, n_test=2,
+        n_train=4, n_val=200, n_test=2,
         burst_steps=5, l0_stall_steps=8, N=5,
         node_degree=3, max_decisions=8,
         test_eval_on_new_best=False,
@@ -54,9 +54,11 @@ def _fake_burst(plans: dict):
         gain = gain[idx] if idx < len(gain) else 0.0
         for s in range(cfg.burst_steps):
             action = "accept_new_best" if (s == 0 and gain > 0) else "reject"
+            after = node.val_score + (gain if action == "accept_new_best"
+                                      else 0.0)
             node.step_buffer.append(StepBufferEntry(
                 step=node.n_steps, action=action,
-                score_before=node.val_score, score_after=node.val_score))
+                score_before=node.val_score, score_after=after))
         before = node.val_score
         node.val_score = before + max(0.0, gain)
         node.best_rules = node.rules or node.best_rules
@@ -88,10 +90,17 @@ def _spawner(strategy="## Mechanism A\ndo things differently", decline_ids=()):
 
 
 # ── no-new-best saturation semantics (user ruling 2026-07-06) ───────────────
-def _push_steps(node, actions):
+def _push_steps(node, actions, gain=0.05):
+    """Append fake steps; an accept_new_best carries ``gain`` so it clears the
+    meaningful-delta clock (2026-07-08 ruling) unless the test passes a
+    sub-delta gain to model a noise-level new best."""
+    score = 0.0
     for a in actions:
+        after = score + (gain if a == "accept_new_best" else 0.0)
         node.step_buffer.append(StepBufferEntry(
-            step=node.n_steps, action=a, score_before=0, score_after=0))
+            step=node.n_steps, action=a, score_before=score,
+            score_after=after))
+        score = after
 
 
 def test_single_dry_burst_does_not_saturate():
@@ -114,12 +123,26 @@ def test_plain_accept_does_not_reset_the_streak():
     assert node_stalled(node, cfg)
 
 
-def test_new_best_resets_the_streak():
+def test_meaningful_new_best_resets_the_streak():
     cfg = _cfg()
     node = TreeNode(node_id="n0000")
     _push_steps(node, ["reject"] * 5)
     _push_steps(node, ["reject", "reject", "accept_new_best", "reject", "reject"])
     assert not node_stalled(node, cfg)         # streak is 2, not >= 10
+
+
+def test_noise_new_best_does_not_reset_the_streak():
+    """2026-07-08 ruling: the paired gate's mean tie-break mints noise-level
+    new bests (measured live: +0.05pp); only a best clearing
+    meaningful_delta resets the saturation clock."""
+    cfg = _cfg()                               # n_val=200 -> delta = 1pp floor
+    node = TreeNode(node_id="n0000")
+    _push_steps(node, ["reject"] * 5)
+    _push_steps(node, ["reject", "reject", "accept_new_best", "reject",
+                       "reject"], gain=0.0005)     # +0.05pp, below delta
+    assert node.step_buffer.steps_since_new_best() == 2, "bookkeeping counter"
+    assert node.step_buffer.steps_since_meaningful_best(0.01) >= 10
+    assert node_stalled(node, cfg), "noise anb must not postpone saturation"
 
 
 def test_dry_streak_judged_across_bursts_in_loop(tmp_path, monkeypatch):

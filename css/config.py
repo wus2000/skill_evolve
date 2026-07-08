@@ -107,6 +107,39 @@ class CSSConfig:
                                          # — small val sets buy DEPTH where width is capped
     gate_shadow_log: bool = True         # paired mode also logs the counterfactual mean decision
 
+    # ── L1 action layer (user rulings 2026-07-08: saturation on MEANINGFUL
+    #    new bests; soft-unlock spawn with supply-driven arbitration;
+    #    fragile-aware NEW supply with maturity-ordered evidence) ──────────
+    saturation_meaningful_tasks: int = 2   # delta = max(k/n_val, floor): a new best
+                                           # must clear >= k net tasks to reset the
+                                           # stall clock (k=2 mirrors the verify
+                                           # min_net_flips>=2 anti-noise ruling;
+                                           # measured: a +0.05pp tie-break anb reset
+                                           # the clock and delayed saturation a burst)
+    saturation_meaningful_floor: float = 0.01  # delta floor for large val sets
+    spawn_soft_bursts: int = 1             # W_soft: bursts without a meaningful best
+                                           # before the node UNLOCKS spawn arbitration
+                                           # (W_hard = saturation_dry_bursts stays the
+                                           # forced-spawn backstop; user ruling: B is
+                                           # absorbed into S3, hard window stays 2)
+    spawn_supply_lambda: float = 0.05      # spawn_score = lambda * supply fraction;
+                                           # 0.05 <=> 20% open supply outweighs a
+                                           # 1pp/burst exploitation pace
+    coverage_recent_len: int = 12          # ring buffer of recent attempts per
+                                           # (node, task): (decision, step_in_burst,
+                                           # kind, passed) — raw grain stored, policy
+                                           # applied at read time
+    fragile_rate: float = 0.4              # pass_rate < this = fragile (user ruling:
+                                           # under half is not stable; 0.4 final)
+    fragile_mature_step: int = 2           # maturity gate: only attempts at
+                                           # step_in_burst >= 2 count as mature
+                                           # evidence (early-burst failures reflect
+                                           # an unsettled agent, not a hard task —
+                                           # user's timing ruling; no first-burst
+                                           # exclusion per user ruling)
+    fragile_mature_min: int = 3            # min mature attempts for the recent path
+    fragile_hist_attempts: int = 4         # fallback: whole-history attempts floor
+
     # ── L0 document metabolism (burst-end consolidation, editpipe v3) ─────
     consolidation_enabled: bool = False  # run the burst-end whole-document tidy-up
                                          # (design docs/L0_document_metabolism.md; v3 only;

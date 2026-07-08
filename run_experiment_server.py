@@ -142,7 +142,21 @@ def main() -> None:
         #    L1_tree_mechanism_design.md — run_css delegates to the
         #    burst-granular tree loop; legacy L0/L1 knobs below are inert) ──
         burst_steps=5,              # one tree visit = 5 L0 steps (agreed)
-        saturation_dry_bursts=2,    # 2 consecutive zero-accept bursts => saturated (user ruling 2026-07-05)
+        saturation_dry_bursts=2,    # W_hard: 2 bursts with NO MEANINGFUL new best
+                                    # => saturated (2026-07-08 ruling lineage:
+                                    # zero-accept -> no-anb -> no-MEANINGFUL-anb)
+        # ── L1 action layer (user rulings 2026-07-08) ──
+        saturation_meaningful_tasks=2,   # delta = max(2/n_val, 1pp): a new best
+                                         # must clear >= 2 net val tasks
+        saturation_meaningful_floor=0.01,
+        spawn_soft_bursts=1,             # W_soft: 1 dry burst unlocks spawn
+                                         # arbitration (supply vs recent pace)
+        spawn_supply_lambda=0.05,        # 20% open supply ~ 1pp/burst pace
+        fragile_rate=0.4,                # mature pass rate < 0.4 = fragile
+        fragile_mature_step=2,           # attempts at step>=2 in a burst count
+        fragile_mature_min=3,
+        fragile_hist_attempts=4,
+        coverage_recent_len=12,
         node_degree=3,              # REFINE children per strategy node; root unlimited (user ruling)
         max_decisions=40,           # decision budget; NOT fingerprinted — resume may extend
         verify_mode="harm_veto",    # per-edit probe only vetoes measured net harm (fix 2026-07-05)

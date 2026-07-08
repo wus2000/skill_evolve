@@ -342,7 +342,7 @@ def _unwired_spawner(ctx: SpawnContext) -> SpawnOutcome:  # pragma: no cover
     )
 
 
-def root_spawn_mode(coverage, cfg: "CSSConfig") -> str:
+def root_spawn_mode(coverage, cfg: "CSSConfig", n_nodes: int = 1) -> str:
     """Root three-way dispatch (L1_actions_redesign §3): NEW vs MERGE.
 
     NEW while an unsolved frontier (or any uncharted blind spot) remains;
@@ -360,29 +360,97 @@ def root_spawn_mode(coverage, cfg: "CSSConfig") -> str:
         return "NEW"
     if coverage.global_unsolved() or coverage.uncharted():
         return "NEW"
+    if coverage.fragile_set(
+            rate_lt=getattr(cfg, "fragile_rate", 0.4),
+            mature_step=getattr(cfg, "fragile_mature_step", 2),
+            mature_min=getattr(cfg, "fragile_mature_min", 3),
+            hist_attempts=getattr(cfg, "fragile_hist_attempts", 4)):
+        # Solved-once is not solved-reliably: while any task's mature pass
+        # rate sits under the fragile threshold there is still a NEW frontier
+        # (user ruling 2026-07-08 — measured: AW hit union-unsolved=0 while a
+        # task passed 2/18).
+        return "NEW"
+    if n_nodes < 2:
+        # A one-node tree has no MERGE matrix (degenerate by construction —
+        # the pipeline would only DECLINE); force NEW instead of burning the
+        # decision (user ruling 2026-07-08).
+        return "NEW"
     return "MERGE"
 
 
-def node_stalled(node: "TreeNode", cfg: "CSSConfig") -> bool:
-    """Saturation judgement at the burst boundary — NO NEW BEST for the last
-    ``saturation_dry_bursts`` bursts' worth of steps.
+def meaningful_delta(cfg: "CSSConfig") -> float:
+    """delta = max(k / n_val, floor) — a new best must clear >= k net val
+    tasks to count as MEANINGFUL (user ruling 2026-07-08: the unit of
+    substance is tasks, scaled by the val set; k=2 mirrors the verify
+    min_net_flips>=2 anti-noise ruling; the floor keeps large val sets from
+    degrading the threshold into noise)."""
+    k = max(1, int(getattr(cfg, "saturation_meaningful_tasks", 2)))
+    n_val = max(1, int(getattr(cfg, "n_val", 0) or 0))
+    floor = float(getattr(cfg, "saturation_meaningful_floor", 0.01))
+    return max(k / n_val, floor)
 
-    User ruling 2026-07-06 (supersedes the zero-ACCEPT-burst rule of
-    2026-07-05): a noise-limited paired gate keeps producing small item-win
-    ACCEPTS indefinitely at a basin's flat top (measured live: AppWorld
-    bursts [3,1,2] accepts while best sat unmoved for 10+ steps — under the
-    zero-accept rule, P(two consecutive dry bursts) ~1-2%/pair, so the root
-    would burn the whole decision budget without ever spawning). Content
-    churn without height gain is NOT basin yield; only ``accept_new_best``
-    resets the streak. Implemented on the persistent cross-burst
-    ``steps_since_new_best`` counter (no new state; resume-safe; bursts cut
-    short by hard errors count their actual steps). False-saturation odds
-    stay ~3% (a 2-burst window, same as the superseded rule).
-    ``burst_accepts`` remains as telemetry.
+
+def node_stalled(node: "TreeNode", cfg: "CSSConfig") -> bool:
+    """Saturation judgement at the burst boundary — no MEANINGFUL new best
+    for the last ``saturation_dry_bursts`` bursts' worth of steps.
+
+    Lineage of the signal (each supersedes the previous by user ruling):
+    2026-07-05 zero-accept bursts -> 2026-07-06 no accept_new_best (a
+    noise-limited paired gate keeps minting small item-win accepts at a
+    basin's flat top) -> 2026-07-08 no MEANINGFUL new best: the gate's mean
+    tie-break also mints noise-level new bests (measured live: a +0.05pp anb
+    reset the stall clock and delayed saturation a full burst), so only a
+    best that clears :func:`meaningful_delta` resets the clock. Bookkeeping
+    best still updates on every anb. Resume-safe, no new state.
     """
     k = max(1, getattr(cfg, "saturation_dry_bursts", 2))
     window = k * max(1, getattr(cfg, "burst_steps", 5))
-    return node.step_buffer.steps_since_new_best() >= window
+    return node.step_buffer.steps_since_meaningful_best(
+        meaningful_delta(cfg)) >= window
+
+
+def spawn_unlocked(node: "TreeNode", cfg: "CSSConfig") -> bool:
+    """W_soft (S3, user ruling 2026-07-08): one burst without a meaningful
+    new best unlocks spawn ARBITRATION on an active node — a plateau hint
+    opens the option; the hard window (:func:`node_stalled`) stays the
+    forced-spawn backstop."""
+    soft = max(1, getattr(cfg, "spawn_soft_bursts", 1))
+    window = soft * max(1, getattr(cfg, "burst_steps", 5))
+    return node.step_buffer.steps_since_meaningful_best(
+        meaningful_delta(cfg)) >= window
+
+
+def supply_fraction(coverage, cfg: "CSSConfig") -> float:
+    """Open-frontier fraction: |unsolved ∪ uncharted ∪ fragile| / registered."""
+    if coverage is None or not coverage.registered_count():
+        return 0.0
+    supply = (coverage.global_unsolved() | coverage.uncharted()
+              | coverage.fragile_set(
+                  rate_lt=getattr(cfg, "fragile_rate", 0.4),
+                  mature_step=getattr(cfg, "fragile_mature_step", 2),
+                  mature_min=getattr(cfg, "fragile_mature_min", 3),
+                  hist_attempts=getattr(cfg, "fragile_hist_attempts", 4)))
+    return len(supply) / float(coverage.registered_count())
+
+
+def spawn_arbitration(node: "TreeNode", coverage, cfg: "CSSConfig") -> "tuple[bool, dict]":
+    """S3 action arbitration on an unlocked ACTIVE node: keep exploiting or
+    spawn now?
+
+    burst_score = mean meaningful gain of the last two bursts (a reward
+    below delta counts as zero — churn is not yield); spawn_score =
+    lambda * open-supply fraction. Ties keep exploiting. Returns
+    (spawn_now, telemetry).
+    """
+    delta = meaningful_delta(cfg)
+    rewards = list(getattr(node, "burst_rewards", []) or [])[-2:]
+    gains = [r if r >= delta else 0.0 for r in rewards]
+    burst_score = (sum(gains) / len(gains)) if gains else 0.0
+    spawn_score = (float(getattr(cfg, "spawn_supply_lambda", 0.05))
+                   * supply_fraction(coverage, cfg))
+    return spawn_score > burst_score, {
+        "burst_score": round(burst_score, 6),
+        "spawn_score": round(spawn_score, 6), "delta": round(delta, 6)}
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -467,7 +535,8 @@ def run_css_tree(
     from css.coverage import CoverageLedger, coverage_path
     coverage = CoverageLedger.load(
         coverage_path(out_dir),
-        min_attempts=int(getattr(cfg, "ledger_min_attempts", 1)))
+        min_attempts=int(getattr(cfg, "ledger_min_attempts", 1)),
+        recent_len=int(getattr(cfg, "coverage_recent_len", 12)))
     coverage.path = coverage_path(out_dir)
     # Register the FULL train universe (the uncharted domain). Silent failure
     # here would collapse uncharted() to empty and let root_spawn_mode declare
@@ -574,7 +643,24 @@ def run_css_tree(
 
         record: dict = {"index": decision_index, "node_id": node.node_id}
 
-        if node.status == "active":
+        # ── S3 action arbitration (user ruling 2026-07-08): an ACTIVE node
+        # past the soft window may spawn NOW when the open supply outweighs
+        # its recent meaningful exploitation pace. The hard window
+        # (node_stalled) below remains the forced backstop.
+        spawn_now = False
+        if node.status == "active" and spawn_unlocked(node, cfg):
+            spawn_now, arb = spawn_arbitration(node, coverage, cfg)
+            record.update(arbitration=arb, soft_unlocked=True)
+            if spawn_now:
+                _log.info(
+                    "S3 arbitration — node %s spawns from ACTIVE: "
+                    "spawn_score=%.4f > burst_score=%.4f (delta=%.4f)",
+                    node.node_id, arb["spawn_score"], arb["burst_score"],
+                    arb["delta"])
+                log_event("s3_spawn_from_active", node_id=node.node_id,
+                          decision_index=decision_index, **arb)
+
+        if node.status == "active" and not spawn_now:
             br = do_burst(tree, node, env, target_client, optimizer_client,
                           cfg=cfg, out_dir=out_dir, decision_index=decision_index,
                           ledger=ledger, coverage=coverage)
@@ -591,14 +677,20 @@ def run_css_tree(
                                    "(continuing)", node.node_id, br.burst_index)
             if node_stalled(node, cfg):
                 node.status = "saturated"
-                _log.info("Node %s SATURATED at burst boundary (last %d bursts "
-                          "zero-accept)", node.node_id,
-                          getattr(cfg, "saturation_dry_bursts", 2))
+                stall = node.step_buffer.steps_since_meaningful_best(
+                    meaningful_delta(cfg))
+                _log.info("Node %s SATURATED at burst boundary — no "
+                          "MEANINGFUL new best (delta=%.4f) for %d steps "
+                          "(window=%d)", node.node_id, meaningful_delta(cfg),
+                          stall, max(1, getattr(cfg, "saturation_dry_bursts", 2))
+                          * max(1, getattr(cfg, "burst_steps", 5)))
                 log_event("node_saturated", node_id=node.node_id,
                           decision_index=decision_index,
+                          stall_meaningful=stall,
                           burst_accepts=list(node.burst_accepts))
-        else:  # saturated -> spawn + first burst (atomic)
-            mode = root_spawn_mode(coverage, cfg) if node.is_root else "REFINE"
+        else:  # saturated (or S3-arbitrated) -> spawn + first burst (atomic)
+            mode = (root_spawn_mode(coverage, cfg, n_nodes=len(tree.nodes))
+                    if node.is_root else "REFINE")
             ctx = SpawnContext(
                 tree=tree, parent=node, mode=mode, new_node_id=tree.new_node_id(),
                 cfg=cfg, env=env, target_client=target_client,
@@ -613,9 +705,18 @@ def run_css_tree(
                 log_event("spawn_none", decision_index=decision_index,
                           node_id=node.node_id, mode=mode,
                           decline=outcome.decline, reason=outcome.reason)
-                if outcome.decline and not node.is_root:
+                if outcome.decline and not node.is_root \
+                        and node.status != "active":
                     node.status = "terminal"
                     _log.info("Node %s TERMINAL — REFINE declined: %s",
+                              node.node_id, outcome.reason)
+                elif outcome.decline and node.status == "active":
+                    # S3 path: a soft-unlocked ACTIVE node keeps exploiting —
+                    # a declined spawn is a world-state verdict on the spawn,
+                    # never a death sentence for a node that can still burst.
+                    node.spawn_block_T = total_bursts(tree) + 1
+                    _log.info("S3 spawn from ACTIVE node %s declined (%s) — "
+                              "node stays active, spawn blocked one burst",
                               node.node_id, outcome.reason)
                 elif outcome.decline:
                     # Root decline = world-state says the action is pointless
@@ -652,7 +753,7 @@ def run_css_tree(
                                       fail_count=node.spawn_fail_count,
                                       block_extra=extra,
                                       decision_index=decision_index)
-                        else:
+                        elif node.status != "active":
                             node.status = "terminal"
                             _log.info("Node %s TERMINAL — %d spawns produced "
                                       "no child (last: %s)", node.node_id,
@@ -660,6 +761,12 @@ def run_css_tree(
                             log_event("node_terminal", node_id=node.node_id,
                                       reason="spawn_exhausted",
                                       decision_index=decision_index)
+                        else:
+                            _log.warning(
+                                "S3 spawn from ACTIVE node %s failed %d "
+                                "times (last: %s) — node stays active, "
+                                "spawn blocked", node.node_id,
+                                node.spawn_fail_count, outcome.reason)
                     else:
                         _log.warning(
                             "Spawn produced no child (%s) — node %s blocked "

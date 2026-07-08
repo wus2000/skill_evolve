@@ -89,9 +89,12 @@ def main() -> None:
         max_turns=50,          # mirrors appworld_max_interactions (generic field)
         k_rollouts=3,
 
-        # L0 exploitation. batch = 45 (half the 90-task pool per step,
-        # difficulty-weighted sampling; agreed 2026-07-05 — replaces the
-        # initial full-pool-90 setting to double step throughput).
+        # L0 exploitation. batch = 45 (half the 90-task pool per step;
+        # agreed 2026-07-05 — replaces the initial full-pool-90 setting to
+        # double step throughput). Batches are UNIFORM shuffle partitions
+        # (per-node independent streams, user ruling 2026-07-08); the
+        # difficulty-weighted sampling once noted here was never wired in
+        # and stays off — weighting would bias the fragile statistics.
         batch_size=45,
         # Per-edit verification floor: ABSOLUTE 8 tasks (agreed 2026-07-05;
         # replaces the derived batch//8 which would give 5 at batch=45).
@@ -145,7 +148,21 @@ def main() -> None:
         #    L1_tree_mechanism_design.md — run_css delegates to the
         #    burst-granular tree loop; legacy L0 budget knobs are inert) ──
         burst_steps=5,              # one tree visit = 5 L0 steps (agreed)
-        saturation_dry_bursts=2,    # 2 consecutive zero-accept bursts => saturated (user ruling 2026-07-05)
+        saturation_dry_bursts=2,    # W_hard: 2 bursts with NO MEANINGFUL new best
+                                    # => saturated (2026-07-08 ruling lineage:
+                                    # zero-accept -> no-anb -> no-MEANINGFUL-anb)
+        # ── L1 action layer (user rulings 2026-07-08) ──
+        saturation_meaningful_tasks=2,   # delta = max(2/n_val, 1pp): a new best
+                                         # must clear >= 2 net val tasks
+        saturation_meaningful_floor=0.01,
+        spawn_soft_bursts=1,             # W_soft: 1 dry burst unlocks spawn
+                                         # arbitration (supply vs recent pace)
+        spawn_supply_lambda=0.05,        # 20% open supply ~ 1pp/burst pace
+        fragile_rate=0.4,                # mature pass rate < 0.4 = fragile
+        fragile_mature_step=2,           # attempts at step>=2 in a burst count
+        fragile_mature_min=3,
+        fragile_hist_attempts=4,
+        coverage_recent_len=12,
         node_degree=3,              # REFINE children per strategy node; root unlimited (user ruling)
         max_decisions=40,           # decision budget; NOT fingerprinted — resume may extend
         verify_mode="harm_veto",    # per-edit probe only vetoes measured net harm (fix 2026-07-05)

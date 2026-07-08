@@ -69,15 +69,18 @@ class CoverageLedger:
     """Cumulative per-(node, task) train outcomes with derived global sets."""
 
     def __init__(self, task_ids: Iterable[str] = (), *, min_attempts: int = 1,
-                 path: str = "") -> None:
+                 path: str = "", recent_len: int = 12) -> None:
         self.min_attempts = max(1, int(min_attempts))
+        self.recent_len = max(1, int(recent_len))
         self.path = path
         # RLock: public readers take the lock too (the verify-era fanout
         # taught us reads can overlap worker writes), and derived-set
         # methods call each other, so the lock must be re-entrant.
         self._lock = threading.RLock()
         # node_id -> task_id -> {"attempts": int, "passes": int,
-        #                        "kinds": {kind: n}, "last_decision": int}
+        #                        "kinds": {kind: n}, "last_decision": int,
+        #                        "recent": [[decision, step_in_burst, kind,
+        #                                    passed], ...]}  (ring, newest last)
         self._nodes: dict[str, dict[str, dict]] = {}
         self._registered: set[str] = {str(t) for t in task_ids if str(t)}
 
@@ -89,7 +92,8 @@ class CoverageLedger:
 
     # ── writes ────────────────────────────────────────────────────────────
     def record(self, node_id: str, task_id: str, passed: bool, *,
-               kind: str = "", decision_index: int = -1) -> None:
+               kind: str = "", decision_index: int = -1,
+               step_in_burst: int = -1) -> None:
         node_id = str(node_id or "")
         task_id = str(task_id or "")
         if not node_id or not task_id:
@@ -98,7 +102,7 @@ class CoverageLedger:
             self._registered.add(task_id)
             cell = self._nodes.setdefault(node_id, {}).setdefault(
                 task_id, {"attempts": 0, "passes": 0, "kinds": {},
-                          "last_decision": -1})
+                          "last_decision": -1, "recent": []})
             cell["attempts"] += 1
             if passed:
                 cell["passes"] += 1
@@ -107,9 +111,18 @@ class CoverageLedger:
             if decision_index >= 0:
                 cell["last_decision"] = max(int(cell["last_decision"]),
                                             int(decision_index))
+            # Maturity-ordered evidence ring (user ruling 2026-07-08): keep
+            # the RAW grain — (decision, step_in_burst, kind, passed) — and
+            # apply policy (which attempts count as mature) at read time.
+            rec = cell.setdefault("recent", [])
+            rec.append([int(decision_index), int(step_in_burst),
+                        str(kind), bool(passed)])
+            if len(rec) > self.recent_len:
+                del rec[: len(rec) - self.recent_len]
 
     def record_groups(self, node_id: str, groups: Iterable[Any], *,
-                      kind: str = "", decision_index: int = -1) -> int:
+                      kind: str = "", decision_index: int = -1,
+                      step_in_burst: int = -1) -> int:
         """Fold every rollout of ``groups`` (TaskRolloutGroup) in; return count."""
         n = 0
         for g in groups or []:
@@ -118,7 +131,8 @@ class CoverageLedger:
                 if not tid:
                     continue
                 self.record(node_id, tid, bool(getattr(r, "passed", False)),
-                            kind=kind, decision_index=decision_index)
+                            kind=kind, decision_index=decision_index,
+                            step_in_burst=step_in_burst)
                 n += 1
         return n
 
@@ -208,6 +222,52 @@ class CoverageLedger:
         mine = self.solved_set(me)
         return {t for t in mine if all(n == me for n in self.solvers(t))}
 
+    def fragile_set(self, *, rate_lt: float = 0.4, mature_step: int = 2,
+                    mature_min: int = 3, hist_attempts: int = 4) -> set[str]:
+        """Tasks whose MATURE evidence says they are not reliably solved.
+
+        Fragile is a property of (task x mature agent), NOT of the task's
+        whole history (user ruling 2026-07-08): an attempt's evidential value
+        depends on where in a burst it ran — early-burst failures reflect an
+        unsettled agent (fresh edits, un-gated rules), so only attempts at
+        ``step_in_burst >= mature_step`` with ``kind == "l0"`` (deployed,
+        gate-vetted rules; verify runs candidate configurations) count as
+        mature evidence. With ``>= mature_min`` mature attempts the recent
+        pass rate decides; otherwise fall back to the whole-history rate
+        (a task not drawn recently must not lose frontier status). Pooled
+        across nodes. Old ledgers without ``recent`` degrade to the fallback.
+
+        NEW supply reads this; the MERGE phase transition keeps the union
+        solved-once semantics (:meth:`global_unsolved`) — the two uses ask
+        different temporal questions and are deliberately decoupled.
+        """
+        with self._lock:
+            per_task: dict[str, dict] = {}
+            for cells in self._nodes.values():
+                for tid, c in cells.items():
+                    agg = per_task.setdefault(
+                        tid, {"attempts": 0, "passes": 0, "m_att": 0,
+                              "m_pass": 0})
+                    agg["attempts"] += int(c.get("attempts", 0))
+                    agg["passes"] += int(c.get("passes", 0))
+                    for rec in c.get("recent", []) or []:
+                        try:
+                            _dec, step, kind, passed = rec
+                        except (TypeError, ValueError):
+                            continue
+                        if str(kind) == "l0" and int(step) >= mature_step:
+                            agg["m_att"] += 1
+                            agg["m_pass"] += 1 if passed else 0
+            out: set[str] = set()
+            for tid, a in per_task.items():
+                if a["m_att"] >= mature_min:
+                    if a["m_pass"] / a["m_att"] < rate_lt:
+                        out.add(tid)
+                elif a["attempts"] >= hist_attempts:
+                    if a["passes"] / a["attempts"] < rate_lt:
+                        out.add(tid)
+            return out
+
     def failure_weight(self, task_id: str) -> int:
         """Total failed attempts across nodes (priority signal for targeting)."""
         with self._lock:
@@ -265,8 +325,10 @@ class CoverageLedger:
         return p
 
     @classmethod
-    def load(cls, path: str, *, min_attempts: int = 1) -> "CoverageLedger":
-        led = cls(min_attempts=min_attempts, path=path)
+    def load(cls, path: str, *, min_attempts: int = 1,
+             recent_len: int = 12) -> "CoverageLedger":
+        led = cls(min_attempts=min_attempts, path=path,
+                  recent_len=recent_len)
         try:
             with open(path, encoding="utf-8") as f:
                 d = json.load(f)
@@ -282,11 +344,17 @@ class CoverageLedger:
                 for tid, c in cells.items():
                     if not isinstance(c, dict):
                         continue
+                    recent = []
+                    for rec in c.get("recent", []) or []:
+                        if isinstance(rec, (list, tuple)) and len(rec) == 4:
+                            recent.append([int(rec[0]), int(rec[1]),
+                                           str(rec[2]), bool(rec[3])])
                     clean[str(tid)] = {
                         "attempts": int(c.get("attempts", 0)),
                         "passes": int(c.get("passes", 0)),
                         "kinds": dict(c.get("kinds", {})),
                         "last_decision": int(c.get("last_decision", -1)),
+                        "recent": recent,
                     }
                 led._nodes[str(nid)] = clean
         return led

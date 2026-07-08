@@ -246,6 +246,35 @@ class StepBuffer:
             count += 1
         return count
 
+    def steps_since_meaningful_best(self, delta: float) -> int:
+        """Steps since the last MEANINGFUL new best — an ``accept_new_best``
+        whose ``score_after`` cleared the prior running best by more than
+        ``delta``.
+
+        User ruling 2026-07-08: the paired gate's mean tie-break can mint
+        noise-level new bests (measured: +0.05pp), which must keep updating
+        the BOOKKEEPING best but must NOT reset the tree's saturation clock —
+        only substance does. ``delta <= 0`` degrades to the plain counter.
+        An ``epoch_reset`` sentinel stops the count, as in
+        :meth:`steps_since_new_best`. The running best is rebuilt from the
+        entry scores, so the judgement is resume-safe with no new state.
+        """
+        if delta <= 0:
+            return self.steps_since_new_best()
+        last_meaningful = -1
+        running_best = None
+        for i, e in enumerate(self.entries):
+            if e.action == "epoch_reset":
+                last_meaningful = i
+                continue
+            if running_best is None:
+                running_best = float(e.score_before)
+            if e.action == "accept_new_best":
+                if float(e.score_after) > running_best + delta:
+                    last_meaningful = i
+                running_best = max(running_best, float(e.score_after))
+        return len(self.entries) - 1 - last_meaningful
+
     def is_saturated(self, n_threshold: int, stall_threshold: int = 0) -> bool:
         """Saturated when the last ``n_threshold`` steps were all rejects, OR —
         when ``stall_threshold`` > 0 — when ``stall_threshold`` consecutive

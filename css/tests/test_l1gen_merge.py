@@ -25,7 +25,7 @@ from css.tree_search import BurstResult, SpawnContext, SpawnOutcome, root_spawn_
 
 
 def _cfg(**kw) -> CSSConfig:
-    base = dict(n_train=4, n_val=2, n_test=2, burst_steps=5, l0_stall_steps=8,
+    base = dict(n_train=4, n_val=200, n_test=2, burst_steps=5, l0_stall_steps=8,
                 N=5, node_degree=3, max_decisions=8, ledger_min_attempts=1)
     base.update(kw)
     return CSSConfig(**base)
@@ -130,16 +130,34 @@ def test_root_spawn_mode_three_way(tmp_path):
 
     led = CoverageLedger(["t1", "t2"], min_attempts=1, path=coverage_path(out))
     led.record("nA", "t1", False)              # unsolved frontier -> NEW
-    assert root_spawn_mode(led, _cfg()) == "NEW"
+    assert root_spawn_mode(led, _cfg(), n_nodes=2) == "NEW"
 
     led.record("nA", "t1", True)               # t1 solved, t2 uncharted -> NEW
-    assert root_spawn_mode(led, _cfg()) == "NEW"
+    assert root_spawn_mode(led, _cfg(), n_nodes=2) == "NEW"
 
     led.record("nB", "t2", True)               # true full coverage -> MERGE
-    assert root_spawn_mode(led, _cfg()) == "MERGE"
+    assert root_spawn_mode(led, _cfg(), n_nodes=2) == "MERGE"
+    # 2026-07-08 rulings: a one-node tree has no MERGE matrix -> NEW even at
+    # full coverage; a fragile task (mature pass rate < 0.4) also re-opens NEW.
+    assert root_spawn_mode(led, _cfg(), n_nodes=1) == "NEW"
 
     led.record("nB", "t9", False)              # regression re-opens -> NEW again
-    assert root_spawn_mode(led, _cfg()) == "NEW"
+    assert root_spawn_mode(led, _cfg(), n_nodes=2) == "NEW"
+
+
+def test_root_spawn_mode_fragile_blocks_merge(tmp_path):
+    """Solved-once is not solved-reliably: mature evidence below the fragile
+    rate keeps the spawn mode at NEW even under union full coverage."""
+    led = CoverageLedger(["t1"], min_attempts=1,
+                         path=coverage_path(str(tmp_path)))
+    # One early pass (union-solved) then mature-stage failures.
+    led.record("nA", "t1", True, kind="l0", decision_index=0, step_in_burst=0)
+    for d in (1, 1, 2):
+        led.record("nA", "t1", False, kind="l0", decision_index=d,
+                   step_in_burst=3)
+    assert led.global_unsolved() == set() and led.uncharted() == set()
+    assert "t1" in led.fragile_set(rate_lt=0.4, mature_min=3)
+    assert root_spawn_mode(led, _cfg(), n_nodes=2) == "NEW"
 
 
 # ── matrix ───────────────────────────────────────────────────────────────────
@@ -335,9 +353,10 @@ def test_merge_coverage_check_kept_lost_unattempted(tmp_path):
 
 
 # ── tree-loop integration: dispatch + rules preservation ────────────────────
-def test_tree_loop_dispatches_merge_and_keeps_child_rules(tmp_path, monkeypatch):
+def test_tree_loop_first_spawn_is_new_on_single_node_tree(tmp_path, monkeypatch):
+    """2026-07-08 ruling: a one-node tree never dispatches MERGE — full union
+    coverage still routes the first spawn to NEW (and NEW starts blank)."""
     out = str(tmp_path)
-    # Pre-seed TRUE full coverage before the run starts.
     led = CoverageLedger(["t1"], min_attempts=1, path=coverage_path(out))
     led.record("n0000", "t1", True)
     led.save()
@@ -348,6 +367,39 @@ def test_tree_loop_dispatches_merge_and_keeps_child_rules(tmp_path, monkeypatch)
 
     def spawner(ctx):
         seen_modes.append(ctx.mode)
+        child = TreeNode(node_id=ctx.new_node_id, branch_type=ctx.mode,
+                         strategy="## S\nroute.\n",
+                         rules=_RULES_A, best_rules=_RULES_A)
+        return SpawnOutcome(child=child, mode=ctx.mode)
+
+    burst = _fake_burst({"n0000": [0.1, 0.0, 0.0], "n0001": [0.05]})
+    result = run_css_tree(None, None, None, cfg=_cfg(max_decisions=5),
+                          out_dir=out, spawner=spawner, burst_fn=burst)
+    assert seen_modes and seen_modes[0] == "NEW"
+    child = result.tree.get("n0001")
+    assert child is not None and child.branch_type == "NEW"
+    assert child.rules == "" and child.best_rules == "", \
+        "NEW starts blank (zero inheritance ruling)"
+
+
+def test_tree_loop_merge_keeps_child_rules(tmp_path, monkeypatch):
+    """The MERGE path must NOT zero the pipeline's selectively-assembled
+    rules; the loop must hand root_spawn_mode the LIVE tree size."""
+    out = str(tmp_path)
+    led = CoverageLedger(["t1"], min_attempts=1, path=coverage_path(out))
+    led.record("n0000", "t1", True)
+    led.save()
+
+    monkeypatch.setattr(ts, "measure_initial_val",
+                        _fake_measure({"n0000": 0.6, "n0001": 0.7}))
+    seen_n_nodes = []
+
+    def fake_mode(coverage, cfg, n_nodes=1):
+        seen_n_nodes.append(n_nodes)
+        return "MERGE"      # dispatch itself is unit-tested separately
+    monkeypatch.setattr(ts, "root_spawn_mode", fake_mode)
+
+    def spawner(ctx):
         child = TreeNode(node_id=ctx.new_node_id, branch_type="MERGE",
                          strategy="## Fused\nroute.\n",
                          rules="### Carried\nverbatim section\n",
@@ -357,12 +409,13 @@ def test_tree_loop_dispatches_merge_and_keeps_child_rules(tmp_path, monkeypatch)
     burst = _fake_burst({"n0000": [0.1, 0.0, 0.0], "n0001": [0.05]})
     result = run_css_tree(None, None, None, cfg=_cfg(max_decisions=5),
                           out_dir=out, spawner=spawner, burst_fn=burst)
-    assert seen_modes and seen_modes[0] == "MERGE"
     child = result.tree.get("n0001")
     assert child is not None
     assert child.branch_type == "MERGE"
     assert child.rules == "### Carried\nverbatim section\n", (
         "the loop must NOT zero a MERGE child's rules (only NEW starts blank)")
+    assert seen_n_nodes and seen_n_nodes[0] == 1, \
+        "the loop passes the live tree size into the dispatch"
 
 
 def _fake_measure(baselines: dict):
@@ -382,9 +435,11 @@ def _fake_burst(plans: dict):
         gain = gain[idx] if idx < len(gain) else 0.0
         for s in range(cfg.burst_steps):
             action = "accept_new_best" if (s == 0 and gain > 0) else "reject"
+            after = node.val_score + (gain if action == "accept_new_best"
+                                      else 0.0)
             node.step_buffer.append(StepBufferEntry(
                 step=node.n_steps, action=action,
-                score_before=node.val_score, score_after=node.val_score))
+                score_before=node.val_score, score_after=after))
         before = node.val_score
         node.val_score = before + max(0.0, gain)
         node.n_bursts += 1
