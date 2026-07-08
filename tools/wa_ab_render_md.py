@@ -23,11 +23,14 @@ def main() -> None:
     w = lines.append
     w(f"# wa_{meta['task_id']:04d} context A/B probe — arm `{mode.upper()}`")
     w("")
-    title = ("all past observations retained in the prompt (current mechanism)"
-             if mode == "full" else
-             "only the CURRENT observation in the prompt; history = plain "
-             "action list (survey field standard)")
-    w(f"**Strategy:** {title}")
+    titles = {
+        "full": "all past observations retained in the prompt (retired mechanism)",
+        "latest": ("only the CURRENT observation in the prompt; history = plain "
+                   "action list (survey field standard)"),
+        "history": ("PRODUCTION agent: single-turn prompts + harness-maintained "
+                    "TRAJECTORY HISTORY (mechanical effects + env-side scribe)"),
+    }
+    w(f"**Strategy:** {titles[mode]}")
     w("")
     w(f"- intent: {meta['intent']}")
     exp = (meta.get("expected_for_reference_only") or [{}])[0].get(
@@ -45,11 +48,12 @@ def main() -> None:
     w("")
     w("## Per-call prompt size (tokens, from endpoint usage)")
     w("")
-    w("| call | prompt_tokens | completion_tokens | wall_s |")
-    w("|---|---|---|---|")
+    w("| call | stream | prompt_tokens | completion_tokens | wall_s |")
+    w("|---|---|---|---|---|")
     for c in calls:
         cu = c.get("usage", {})
-        w(f"| {c['call_index']} | {cu.get('prompt_tokens', 0):,} | "
+        w(f"| {c['call_index']} | {c.get('stream', 'agent')} | "
+          f"{cu.get('prompt_tokens', 0):,} | "
           f"{cu.get('completion_tokens', 0):,} | {c.get('t_wall_s')} |")
     w("")
 
@@ -88,31 +92,44 @@ def main() -> None:
     else:
         w("## Calls (verbatim, complete)")
         w("")
-        w("The LATEST arm rebuilds the prompt every call: [system, user]. "
-          "Each call's user message is printed in full below (they differ "
-          "call to call).")
+        w("The prompt is rebuilt every call: [system, user]. Each call's "
+          "user message is printed in full below (they differ call to "
+          "call). Scribe calls (env-side history bookkeeping) are labelled; "
+          "their system prompt differs from the agent's and is printed at "
+          "their first occurrence.")
         w("")
+        scribe_sys_shown = False
         for c in calls:
             k = c["call_index"]
+            stream = c.get("stream", "agent")
+            if stream == "scribe" and not scribe_sys_shown:
+                scribe_sys_shown = True
+                w("### Scribe system prompt (identical in every scribe call)")
+                w("")
+                w("````text")
+                w(c["request_messages"][0]["content"])
+                w("````")
+                w("")
             user = c["request_messages"][-1]["content"]
-            w(f"### Call {k} — user (verbatim)")
+            w(f"### Call {k} [{stream}] — user (verbatim)")
             w("")
             w("````text")
             w(user)
             w("````")
             w("")
-            w(f"### Call {k} — assistant response (verbatim)")
+            w(f"### Call {k} [{stream}] — response (verbatim)")
             w("")
             w("````text")
             w(c["response"])
             w("````")
             w("")
-        w("## Final action history (as accumulated by the agent)")
-        w("")
-        w("````text")
-        w("\n".join(meta.get("action_history", [])))
-        w("````")
-        w("")
+        if meta.get("action_history"):
+            w("## Final action history (as accumulated by the agent)")
+            w("")
+            w("````text")
+            w("\n".join(meta["action_history"]))
+            w("````")
+            w("")
 
     with open(out_md, "w") as f:
         f.write("\n".join(lines))
