@@ -281,6 +281,19 @@ def run_v3(case, seed_tag):
                 / max(1, len(cons.groups)), 1),
         },
         "dropped_by_draft": sum(len(g.dropped) for g in cons.groups),
+        "absorbed_as_covered": (
+            sum(len(a.get("ids") or [])
+                for g in cons.groups for a in (g.absorbed or []))
+            + sum(len(x.get("ids") or [])
+                  for a in cons.audit
+                  if a.get("action") == "group_fully_absorbed"
+                  for x in (a.get("absorbed") or []))),
+        "groups_fully_absorbed": sum(
+            1 for a in cons.audit
+            if a.get("action") == "group_fully_absorbed"),
+        "delta_relations": sorted(
+            str((e.delta or {}).get("relation", "?"))
+            for g in cons.groups for e in g.edits),
         "audit_actions": audit_actions,
         "n_deferred_apply": len(deferred),
         "signal_coverage": signal_coverage(edits_repr, case),

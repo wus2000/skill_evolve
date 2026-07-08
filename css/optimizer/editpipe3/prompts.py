@@ -483,6 +483,15 @@ Hard limits — all binding:
   * Keep the document's imperative, agent-addressed style; keep worked
     examples that teach (schematized); drop only true duplicates.
 
+Where to spend your effort: the mechanical size signals below name the
+sections that accumulated the bloat — those are this tidy-up's MANDATORY
+targets. A section named in the size signals must appear in a "rewrite" or
+"merge" decision, never in "keep": keeping it preserves the exact defect
+this stage exists to remove. Sections NOT named there are usually healthy —
+keep them unless they participate in a cross-section merge. Being surgical
+about healthy sections is the virtue; being conservative about the named
+ones is the defect.
+
 Output ONLY this JSON object. Every input handle must appear in EXACTLY ONE
 decision; order the "sections" list as the document should read afterwards:
 {
@@ -498,8 +507,46 @@ decision; order the "sections" list as the document should read afterwards:
   ],
   "dropped_facts": ["<any unique fact you could not place — expected EMPTY>"]
 }
-"keep" sections carry NO body — their text is preserved verbatim, so spend
-your output budget only on the sections you actually change."""
+"keep" sections carry NO body — their text is preserved verbatim. That is
+what frees your output budget for DEEP rewrites of the named targets: a
+68-bullet section rewritten to its minimal complete form is the single most
+valuable thing this call can produce."""
+
+
+def build_consolidate_repair_user(doc_render: str, size_note: str,
+                                  prev_plan_json: str,
+                                  lost: "list[str]",
+                                  kept_over_budget: "list[str]") -> str:
+    """Quality-repair retry: the previous plan lost identifiers and/or kept
+    the very sections the size signals named as mandatory targets."""
+    problems: "list[str]" = []
+    if lost:
+        problems.append(
+            "It LOST these identifiers — they appear in the input document"
+            " but neither in any new body nor in dropped_facts. Weave each"
+            " one's fact back into the relevant rewritten/merged body (or"
+            " declare it in dropped_facts with justification):\n"
+            + "\n".join("- `%s`" % x for x in lost))
+    if kept_over_budget:
+        problems.append(
+            "It KEPT these mandatory targets unchanged — the size signals"
+            " name them as the bloat carriers, so they must be rewritten"
+            " (or merged), stating each lesson once with case-specific"
+            " facts as exception entries:\n"
+            + "\n".join("- %s" % x for x in kept_over_budget))
+    return (
+        "## The rules document to tidy up (full, handle-annotated)\n"
+        + doc_render
+        + "\n\n## Mechanical size signals\n" + size_note
+        + "\n\n=== QUALITY REPAIR REQUIRED ===\n"
+          "Your previous plan (below) is structurally valid but fails the"
+          " tidy-up's quality bar:\n\n"
+        + "\n\n".join(problems)
+        + "\n\n## Your previous plan\n" + prev_plan_json
+        + "\n\nProduce the COMPLETE corrected plan (same JSON object, every"
+          " handle in exactly one decision). Respond with ONLY the JSON"
+          " object described."
+    )
 
 
 def build_consolidate_user(doc_render: str, size_note: str = "") -> str:

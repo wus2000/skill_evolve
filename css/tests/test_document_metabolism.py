@@ -302,6 +302,77 @@ def test_consolidation_accept_updates_node_and_replays(tmp_path, monkeypatch):
     assert node2.rules == node.rules and node2.best_score == 0.495
 
 
+def test_consolidation_quality_repair_recovers_lost(tmp_path, monkeypatch):
+    """Round 1 loses an identifier; the quality repair restores it."""
+    calls = {"n": 0}
+
+    def optimizer_fn(system, user):
+        calls["n"] += 1
+        if "QUALITY REPAIR REQUIRED" not in user:
+            return json.dumps({"plan": "merge", "sections": [
+                {"op": "rewrite", "handles": ["S#1"], "title": "Retrieval",
+                 "body": "- page via `page_index` until empty."},  # loses page_limit=20
+                {"op": "keep", "handles": ["S#2"]},
+                {"op": "keep", "handles": ["S#3"]}], "dropped_facts": []})
+        assert "page_limit=20" in user, "repair names the lost identifier"
+        return json.dumps({"plan": "repaired", "sections": [
+            {"op": "rewrite", "handles": ["S#1"], "title": "Retrieval",
+             "body": "- page via `page_index` until empty; `page_limit=20` "
+                     "on Spotify."},
+            {"op": "keep", "handles": ["S#2"]},
+            {"op": "keep", "handles": ["S#3"]}], "dropped_facts": []})
+
+    from css.evaluation import paired_gate as pg
+    monkeypatch.setattr(
+        pg, "run_noninferiority_gate",
+        lambda *a, **k: pg.PairedGateResult(
+            accept=True, p_value=1.0, n_pos=0, n_neg=0,
+            n_screen_discordant=0, cand_mean=0.5, ledger_bootstrapped=0,
+            inc_mean=0.5))
+    client = StubLLMClient(optimizer_fn=optimizer_fn)
+    node = _node()
+    out = cons_mod.run_burst_consolidation(
+        node, env=None, val_items=[], target_client=None,
+        optimizer_client=client, cfg=_cfg(), out_dir=str(tmp_path / "cq"))
+    assert calls["n"] == 2 and out.accepted
+    assert "page_limit=20" in node.rules
+
+
+def test_consolidation_depth_shortfall_accepted_losslessly(tmp_path,
+                                                           monkeypatch):
+    """A fat section kept through plan AND repair -> shallow tidy-up is
+    still accepted (lossless), audited as depth shortfall."""
+    fat = ("### Fat\n" + "\n".join("- rule %d" % i for i in range(20))
+           + "\n\n### B\nb-body.\n\n### C\nc-body.\n")
+
+    def optimizer_fn(system, user):
+        return json.dumps({"plan": "conservative", "sections": [
+            {"op": "keep", "handles": ["S#1"]},
+            {"op": "keep", "handles": ["S#2"]},
+            {"op": "keep", "handles": ["S#3"]}], "dropped_facts": []})
+
+    from css.evaluation import paired_gate as pg
+    monkeypatch.setattr(
+        pg, "run_noninferiority_gate",
+        lambda *a, **k: pg.PairedGateResult(
+            accept=True, p_value=1.0, n_pos=0, n_neg=0,
+            n_screen_discordant=0, cand_mean=0.5, ledger_bootstrapped=0,
+            inc_mean=0.5))
+    client = StubLLMClient(optimizer_fn=optimizer_fn)
+    node = _node(fat)
+    out = cons_mod.run_burst_consolidation(
+        node, env=None, val_items=[], target_client=None,
+        optimizer_client=client, cfg=_cfg(), out_dir=str(tmp_path / "cd"))
+    assert out.ran and out.accepted, "depth shortfall never blocks a "\
+        "lossless tidy-up"
+    audit = json.load(open(tmp_path / "cd" / "audit.json"))
+    assert any(a.get("action") == "depth_shortfall_kept" for a in audit)
+    assert any(a.get("action") == "repaired" or
+               a.get("action") == "repair_plan_invalid" or
+               a.get("stage") == "quality_repair" for a in audit), \
+        "the repair round was attempted"
+
+
 def test_consolidation_skips_tiny_document():
     out = cons_mod.run_burst_consolidation(
         _node("### Only\n- one\n"), env=None, val_items=[],

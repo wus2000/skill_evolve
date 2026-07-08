@@ -229,22 +229,84 @@ def _doc_lost_identifiers(old_md: str, new_md: str,
             if i not in new_md and i not in declared]
 
 
+def _over_budget_handles(doc: RulesDocV3,
+                         bullet_budget: int) -> "list[tuple[str, str, int]]":
+    """(handle, title, bullets) of sections over the curation budget.
+
+    Size proxies accumulated restatement; these are the tidy-up's MANDATORY
+    targets — a plan keeping one gets ONE quality-repair round (measured on
+    the real AW step11 document: without this the model kept every fat
+    section and compressed 6%)."""
+    if bullet_budget <= 0:
+        return []
+    out = []
+    for i, s in enumerate(doc.sections):
+        n = _top_bullet_count(s.body)
+        if n > bullet_budget:
+            out.append((doc.handle(i), s.title, n))
+    return out
+
+
 def _size_note(doc: RulesDocV3, bullet_budget: int) -> str:
-    over = ["[%s] %s (%d top-level bullets)"
-            % (doc.handle(i), s.title, _top_bullet_count(s.body))
-            for i, s in enumerate(doc.sections)
-            if bullet_budget > 0 and _top_bullet_count(s.body) > bullet_budget]
+    over = ["[%s] %s (%d top-level bullets)" % (h, t, n)
+            for h, t, n in _over_budget_handles(doc, bullet_budget)]
     lines = ["%d sections, %d chars total."
              % (len(doc.sections), len(doc.serialize()))]
     if over:
-        lines.append("Sections over the %d-bullet budget (prime merge "
-                     "candidates):\n%s" % (bullet_budget, "\n".join(over)))
+        lines.append("MANDATORY targets — over the %d-bullet budget; each "
+                     "must appear in a rewrite or merge decision, never in "
+                     "keep:\n%s" % (bullet_budget, "\n".join(over)))
     empties = ["[%s] %s" % (doc.handle(i), s.title)
                for i, s in enumerate(doc.sections) if not s.body.strip()]
     if empties:
         lines.append("Empty sections (structural debris): %s"
                      % ", ".join(empties))
     return "\n".join(lines)
+
+
+def _kept_over_budget(plan_sections: "list[dict]", doc: RulesDocV3,
+                      bullet_budget: int) -> "list[str]":
+    """Mandatory targets the plan left as 'keep' (depth-shortfall signal)."""
+    over = {h: "[%s] %s (%d top-level bullets)" % (h, t, n)
+            for h, t, n in _over_budget_handles(doc, bullet_budget)}
+    kept: "list[str]" = []
+    for s in plan_sections:
+        if str(s.get("op", "")).strip() != "keep":
+            continue
+        for h in (s.get("handles") or []):
+            if str(h).strip() in over:
+                kept.append(over[str(h).strip()])
+    return kept
+
+
+def _quality_repair(client: Any, doc: RulesDocV3, size_note: str,
+                    plan: dict, lost: "list[str]",
+                    kept_over: "list[str]",
+                    audit: "list[dict]") -> "Optional[dict]":
+    """ONE semantic repair round naming the losses / kept mandatory targets.
+
+    Protocol repair cannot do this (it must not alter semantic content);
+    this is a full re-plan with the defects named — same pattern as the
+    applier's lossless repair. Returns a validated plan dict or ``None``."""
+    all_handles = [doc.handle(i) for i in range(len(doc.sections))]
+    user = prompts.build_consolidate_repair_user(
+        doc.render(), size_note,
+        json.dumps(plan, ensure_ascii=False, indent=1),
+        lost, kept_over)
+    obj = _call_json(client, prompts.CONSOLIDATE_SYSTEM, user,
+                     ok=lambda r: isinstance(r, dict) and "sections" in r,
+                     stage="ep3_consolidate_quality_repair",
+                     max_tokens=_CONSOLIDATE_MAX_TOKENS)
+    violations = _check_plan(obj, doc, all_handles)
+    if violations:
+        audit.append({"stage": "quality_repair",
+                      "action": "repair_plan_invalid",
+                      "violations": violations})
+        return None
+    audit.append({"stage": "quality_repair", "action": "repaired",
+                  "lost": lost, "kept_over_budget": kept_over})
+    return {"sections": [s for s in obj["sections"] if isinstance(s, dict)],
+            "dropped_facts": list(obj.get("dropped_facts") or [])}
 
 
 # ── entry ─────────────────────────────────────────────────────────────────────
@@ -325,6 +387,30 @@ def run_burst_consolidation(
     # that lives nowhere else must abort the tidy-up, by design).
     lost = _doc_lost_identifiers(source_rules, tidied,
                                  plan.get("dropped_facts") or [])
+    kept_over = _kept_over_budget(plan["sections"], doc, bullet_budget)
+
+    # ONE quality-repair round when the plan lost identifiers or kept a
+    # mandatory target (both measured on the first real-document smoke).
+    if lost or kept_over:
+        repaired = _quality_repair(optimizer_client, doc,
+                                   _size_note(doc, bullet_budget),
+                                   plan, lost, kept_over, audit)
+        if repaired is not None:
+            re_audit: "list[dict]" = []
+            re_tidied = _build_output(doc, repaired["sections"], re_audit)
+            re_lost = _doc_lost_identifiers(
+                source_rules, re_tidied,
+                repaired.get("dropped_facts") or [])
+            if not re_lost:
+                plan, tidied, lost = repaired, re_tidied, []
+                kept_over = _kept_over_budget(plan["sections"], doc,
+                                              bullet_budget)
+                audit.extend(re_audit)
+            else:
+                audit.append({"stage": "quality_repair",
+                              "action": "repair_still_lossy",
+                              "lost": re_lost})
+
     if lost:
         outcome.reason = ("abandoned: %d identifier(s) would be lost (%s...)"
                           % (len(lost), ", ".join(lost[:5])))
@@ -333,6 +419,14 @@ def run_burst_consolidation(
         _persist(plan, {"applied": False, "reason": outcome.reason})
         _log.warning("consolidation: %s", outcome.reason)
         return outcome
+    if kept_over:
+        # Depth shortfall is NOT a loss: accept the shallow (lossless)
+        # tidy-up and let the next burst deepen it. Audited, never silent.
+        audit.append({"stage": "quality", "action": "depth_shortfall_kept",
+                      "kept_over_budget": kept_over})
+        _log.info("consolidation: shallow tidy-up (mandatory targets kept: "
+                  "%d) — accepted losslessly, next burst deepens",
+                  len(kept_over))
 
     outcome.chars_after = len(tidied)
     outcome.sections_after = len(RulesDocV3.parse(tidied).sections)
