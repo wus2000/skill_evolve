@@ -33,8 +33,7 @@ READY_TIMEOUT="${READY_TIMEOUT:-1200}"
 
 site_port()  { case "$1" in shopping) echo 7770;; shopping_admin) echo 7780;;
                reddit) echo 9999;; gitlab) echo 8023;; esac; }
-ctrl_port()  { case "$1" in shopping) echo 8783;; shopping_admin) echo 8781;;
-               reddit) echo 8782;; gitlab) echo 8784;; esac; }
+# ctrl port (8877) is reached via `docker exec env-ctrl`, never published.
 inner_port() { case "$1" in gitlab) echo 8023;; *) echo 80;; esac; }
 ready_path() { case "$1" in gitlab) echo "/explore";; *) echo "/";; esac; }
 
@@ -42,7 +41,6 @@ ready_path() { case "$1" in gitlab) echo "/explore";; *) echo "/";; esac; }
 # avoids the 18781 collision with another tenant by using 3,4,5,...
 stack_num()   { echo "${1#s}"; }
 prefix()      { local n; n="$(stack_num "$1")"; [ "$n" = 1 ] && echo "" || echo "$((n-1))"; }
-ctrl_prefix() { local n; n="$(stack_num "$1")"; [ "$n" = 1 ] && echo "" || echo "$((n+1))"; }
 
 golden_img() { case "$1" in shopping_admin) echo "$GOLDEN/admin:warm";;
                reddit) echo "am1n3e/webarena-verified-reddit:latest";;
@@ -69,13 +67,12 @@ repoint() {  # repoint <name> <site> <stack> — set the container's own base_ur
 
 start_site() {  # start_site <stack> <site>
     local stack="$1" site="$2" p cp name extra="" img
-    p="$(prefix "$stack")"; cp="$(ctrl_prefix "$stack")"
+    p="$(prefix "$stack")"
     name="wa_${site}_${stack}"; img="$(stack_img "$site" "$stack")"
     docker rm -f "$name" >/dev/null 2>&1
     [ "$site" = gitlab ] && extra="--shm-size=512m"
     docker run -d --name "$name" $extra \
         -p "${p}$(site_port "$site")":"$(inner_port "$site")" \
-        -p "${cp}$(ctrl_port "$site")":8877 \
         "$img" >/dev/null && echo "started $name ($img)"
     # gitlab from a baked per-stack image already carries the right external_url;
     # everything else is re-pointed live after it comes up.
