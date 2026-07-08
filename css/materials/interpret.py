@@ -188,6 +188,25 @@ def _interpret_one(
         "fail_reason": traj.result.fail_reason,
     }
 
+    if not render.strip():
+        # An empty transcript can only produce a hallucinated reading: the model
+        # has nothing to ground on, so it invents behavior and burns the whole
+        # completion budget doing it (2026-07-08: 1.47M tokens over 540 empty
+        # trajectories). Never spend a call on it — record the failure loudly.
+        _log.error(
+            "materials/interpret — %s: EMPTY trajectory (result.json carried no "
+            "messages); skipping the LLM call. This is a persister contract "
+            "violation, not a model failure.", traj.traj_id)
+        record = dict(meta)
+        record["interp"] = {"narrative": "", "outcome_causality": "",
+                            "anomalies": "", "behavior_signature": "",
+                            "adherence": [],
+                            "_error": "empty trajectory: result.json carried no "
+                                      "messages"}
+        record["interp_prose"] = ""
+        common.write_json_atomic(path, record)
+        return record
+
     # ── Pass 1 — free prose (zero schema; the reasoning-heavy pass) ────────
     prose_user = prompts.build_interpret_prose_user(
         strategy, section_names, render, _outcome_line(traj))

@@ -56,8 +56,10 @@ def _chunk(items: list["TaskResult"], size: int) -> list[list["TaskResult"]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-# Proposer output reservation (8192 hit its ceiling ~1-1.5% of calls, 2026-07-05).
-_PROPOSER_MAX_TOKENS = 12288
+# Proposer output reservation. 8192 hit its ceiling ~1-1.5% of calls
+# (2026-07-05); 12288 still truncated 6 proposer calls (2026-07-08 audit).
+# Also the output reservation subtracted from the trajectory budget below.
+_PROPOSER_MAX_TOKENS = 16384  # 16K completion floor (user ruling 2026-07-08)
 # Per-message elision floor for budget decay: typical action/reasoning text is
 # shorter than this, so D7's "never clip reasoning/action" holds in practice
 # even at the floor; only oversized observations keep shrinking.

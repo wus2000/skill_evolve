@@ -274,7 +274,7 @@ def _call_narrator(optimizer_client: Any, system: str, user: str, tool_trunc: in
     """
     # Size the completion to the trajectory: a faithful ~1-sentence-per-turn
     # account of a long rollout still needs room.
-    max_tokens = max(2048, min(16384, tool_trunc))
+    max_tokens = 16384  # 16K completion floor (user ruling 2026-07-08)
     try:
         text, _usage = optimizer_client.complete_optimizer(system, user, max_tokens=max_tokens)
     except Exception:  # noqa: BLE001 — fall through to the stub guarantee

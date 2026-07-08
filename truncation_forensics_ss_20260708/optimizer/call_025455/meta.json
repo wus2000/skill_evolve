@@ -1,0 +1,31 @@
+{
+ "call_id": "call_025455",
+ "ts": 1783511785.352351,
+ "role": "optimizer",
+ "method": "complete_optimizer",
+ "model": "qwen3.6-35b-a3b",
+ "stage": "optimizer",
+ "duration_s": 309.068,
+ "usage": {
+  "prompt_tokens": 920,
+  "completion_tokens": 16384,
+  "total_tokens": 17304
+ },
+ "kind": "interpret",
+ "system_chars": 3556,
+ "user_chars": 327,
+ "response_chars": 63129,
+ "trajectory_block_chars": 0,
+ "matched_traj_id": "s2_48924_r0",
+ "matched_task_id": "48924",
+ "matched_step": 2,
+ "matched_rollout": 0,
+ "matched_outcome": {
+  "passed": false,
+  "hard": 0,
+  "soft": 0.0,
+  "fail_reason": "eval-mismatch: value@Sheet1!C2: pred='2021-12-04 00:00:00' (did not match)"
+ },
+ "trajectory_dir": "runs/spreadsheetbench_20260708_154932/nodes/n0000/burst_0000/exploit/step2/rollout/predictions/48924/r0",
+ "conversation_messages": 8
+}

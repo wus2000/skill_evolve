@@ -44,12 +44,12 @@ from css.tree_search import SpawnContext, SpawnOutcome, dossier_dir, node_dir
 
 _log = logging.getLogger("css.l1gen")
 
-_CAUSE_MAX = 6144
-_PLAN_MAX = 10240
-_CONFRONT_MAX = 4096
-_COHERENCE_MAX = 6144
-_RATIONALE_MAX = 4096
-_INHERIT_MAX = 8192
+_CAUSE_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_PLAN_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_CONFRONT_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_COHERENCE_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_RATIONALE_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_INHERIT_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
 
 _CONTENT_OP_TYPES = frozenset({"replace_section", "add_section", "rewrite_section_for_adherence"})
 _TARGET_OP_TYPES = frozenset({"replace_section", "remove_section", "rewrite_section_for_adherence"})

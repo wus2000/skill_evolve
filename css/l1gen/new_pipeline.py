@@ -34,10 +34,10 @@ from css.tree_search import SpawnContext, SpawnOutcome, dossier_dir, node_dir
 
 _log = logging.getLogger("css.l1gen")
 
-_TARGET_MAX = 6144
-_CONCEPT_MAX = 6144
-_NOVELTY_MAX = 4096
-_DRAFT_MAX = 12288
+_TARGET_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_CONCEPT_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_NOVELTY_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_DRAFT_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
 
 
 def _render_rationale_md(rationale: dict, *, title: str) -> str:

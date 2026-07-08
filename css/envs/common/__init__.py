@@ -34,10 +34,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from typing import TYPE_CHECKING, Any  # noqa: F401 — Any kept for env imports
 
 from css.data.rollout import TaskResult
+
+_log = logging.getLogger("css.envs")
 
 if TYPE_CHECKING:
     from css.config import CSSConfig
@@ -132,6 +135,13 @@ def load_cached_result(
     this (task, rollout_index) AND it was produced under the SAME skill text
     (``skill_hash`` match — a changed skill invalidates the cache). Any error
     degrades to ``None`` (re-roll); the cache is never a failure source.
+
+    A cache entry that recorded turns but carries no trajectory is INCOMPLETE
+    and is rejected (re-roll) rather than substituted: reusing it would feed an
+    empty trajectory to every downstream analysis layer. This is the shape a
+    pre-2026-07-08 SpreadsheetBench ``result.json`` has (the conversation used
+    to be stripped out into a sibling file); such runs re-roll instead of
+    silently poisoning L1.
     """
     tid = item_id(item)
     if not tid:
@@ -147,6 +157,12 @@ def load_cached_result(
     except Exception:  # noqa: BLE001
         return None
     if not isinstance(d, dict) or d.get("skill_hash") != skill_hash:
+        return None
+    if int(d.get("n_turns") or 0) > 0 and not (
+            d.get("messages") or d.get("conversation")):
+        _log.warning(
+            "envs/common — incomplete cache entry (n_turns=%s, no trajectory): "
+            "%s — re-rolling", d.get("n_turns"), result_path)
         return None
     try:
         return TaskResult.from_dict(d)

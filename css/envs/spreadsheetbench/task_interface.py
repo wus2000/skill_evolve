@@ -34,56 +34,26 @@ Design notes
   imports nothing heavy.
 * **Per-rollout isolation.** Each rollout writes under
   ``<out_dir>/predictions/<task_id>/r<rollout_index>/`` so the K repeats of a
-  task never clobber each other's artifacts or ``conversation.json``.
+  task never clobber each other's artifacts.
+* **Trajectory lives in ``result.json``.** Like every other env, ``run_one``
+  puts the trajectory in ``result["conversation"]`` and persists through the
+  shared ``css.envs.common.persist_result``. This env used to strip the
+  conversation out of ``result.json`` (it kept a sibling ``conversation.json``
+  and re-hydrated on its own two read paths). That broke a THIRD reader —
+  ``css.materials.common.load_burst_trajectories`` reads ``result.json``
+  directly — so the whole L1 materials layer silently interpreted EMPTY
+  trajectories (2026-07-08 forensics: 540/540 empty, hallucinated readings).
+  ``result.json`` is a cross-module contract, not an env-private file.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import traceback
 from typing import Any
 
 from css.config import CSSConfig
 from css.data.rollout import TaskResult
-
-
-def _skill_hash(skill_text: str) -> str:
-    """Stable short hash of the skill text — the rollout-cache validity key.
-
-    A cached rollout result may only be reused when it was produced under the
-    exact same skill document; otherwise the cached trajectory belongs to a
-    different policy and must not be substituted.
-    """
-    return hashlib.sha256((skill_text or "").encode("utf-8")).hexdigest()[:16]
-
-
-# ── Trajectory hydration ────────────────────────────────────────────────────
-
-
-def hydrate_trajectory(result: dict, prediction_dir: str, task_id: str) -> dict:
-    """Populate ``result["conversation"]`` from a written ``conversation.json``.
-
-    ``run_one`` does not return the conversation in its result dict; it
-    *writes* it to ``<prediction_dir>/conversation.json`` (and re-writes an
-    enriched copy after evaluation). CSS needs the trajectory in the result so
-    ``TaskResult.from_dict`` can map it onto ``messages``.
-
-    If the file is present and decodes to a list, it is attached under the
-    ``"conversation"`` key (which ``TaskResult.from_dict`` already understands).
-    Missing / unreadable files leave ``result`` untouched. Returns ``result``.
-    """
-    conv_path = os.path.join(prediction_dir, "conversation.json")
-    if not os.path.exists(conv_path):
-        return result
-    try:
-        with open(conv_path, encoding="utf-8") as f:
-            conversation = json.load(f)
-    except Exception:  # noqa: BLE001 - corrupt/partial file: leave result as-is
-        return result
-    if isinstance(conversation, list):
-        result["conversation"] = conversation
-    return result
+from css.envs import common
 
 
 # ── Concrete SpreadsheetBench environment ───────────────────────────────────
@@ -268,8 +238,13 @@ class SpreadsheetBenchEnv:
             "n_turns": 0,
             "cases": [],
             "error": "",
+            # The trajectory. Bound here (not at the end) because _finalize is
+            # also reached from the no-test-cases early return and the except
+            # branch, where the agent never ran: those must persist an explicit
+            # empty trajectory rather than omit the key.
+            "conversation": [],
             # Rollout-cache key: which skill document produced this result.
-            "skill_hash": _skill_hash(skill_text),
+            "skill_hash": common.skill_hash(skill_text),
         }
 
         prediction_dir = os.path.join(
@@ -287,7 +262,7 @@ class SpreadsheetBenchEnv:
             if not cases:
                 result["fail_reason"] = "no-test-cases"
                 return self._finalize(
-                    result, prediction_dir, task_id, rollout_index, epoch, node_id
+                    result, prediction_dir, rollout_index, epoch, node_id
                 )
 
             first_input = cases[0][1]
@@ -379,6 +354,10 @@ class SpreadsheetBenchEnv:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task_prompt},
             ]
+            # Same list object: every later append (turns below, and the
+            # post-evaluation verification note) is reflected in the result
+            # that _finalize persists. No file round-trip, no re-hydration.
+            result["conversation"] = conversation
 
             def _append_turns(steps: list, start: int = 0) -> None:
                 # ``step.thought`` is the agent's raw response (its reasoning AND
@@ -405,10 +384,6 @@ class SpreadsheetBenchEnv:
                     )
                     result["n_turns"] = retry_result.total_turns
                     _append_turns(retry_result.steps, agent_result.total_turns)
-
-            # ── Save conversation ─────────────────────────────────────────
-            with open(os.path.join(prediction_dir, "conversation.json"), "w") as f:
-                json.dump(conversation, f, ensure_ascii=False, indent=2)
 
             # ── Eval: copy agent output to prediction slots and evaluate ──
             output_exists = os.path.exists(work_output)
@@ -471,8 +446,6 @@ class SpreadsheetBenchEnv:
                             ),
                         }
                     )
-                    with open(os.path.join(prediction_dir, "conversation.json"), "w") as f:
-                        json.dump(conversation, f, ensure_ascii=False, indent=2)
             else:
                 if not result["fail_reason"]:
                     result["fail_reason"] = "output-not-found"
@@ -485,14 +458,14 @@ class SpreadsheetBenchEnv:
             if result["ok"]:
                 result["fail_reason"] = ""
             return self._finalize(
-                result, prediction_dir, task_id, rollout_index, epoch, node_id
+                result, prediction_dir, rollout_index, epoch, node_id
             )
 
         except Exception as e:  # noqa: BLE001
             result["fail_reason"] = f"unexpected: {type(e).__name__}: {e}"
             result["error"] = traceback.format_exc()
             return self._finalize(
-                result, prediction_dir, task_id, rollout_index, epoch, node_id
+                result, prediction_dir, rollout_index, epoch, node_id
             )
 
     @staticmethod
@@ -518,29 +491,19 @@ class SpreadsheetBenchEnv:
     def _finalize(
         result: dict,
         prediction_dir: str,
-        task_id: str,
         rollout_index: int,
         epoch: int,
         node_id: str,
     ) -> TaskResult:
-        """Hydrate the trajectory, stamp provenance, persist, and build the TaskResult.
+        """Stamp provenance, persist the FULL result, and build the TaskResult.
 
-        Writes ``result.json`` (the full computed result minus the bulky
-        ``conversation``, which already lives in ``conversation.json``) so a
-        resumed run can load the rollout instead of re-executing it. Best-effort:
-        a persistence failure never blocks returning the result.
+        Delegates to the shared persister so this env's ``result.json`` carries
+        the trajectory exactly like every other env's — it is the cross-module
+        contract that ``css.materials`` and the resume cache both read.
         """
-        hydrate_trajectory(result, prediction_dir, task_id)
-        result["rollout_index"] = rollout_index
-        result["epoch"] = epoch
-        result["node_id"] = node_id
-        try:
-            slim = {k: v for k, v in result.items() if k != "conversation"}
-            with open(os.path.join(prediction_dir, "result.json"), "w", encoding="utf-8") as f:
-                json.dump(slim, f, ensure_ascii=False, indent=2, default=str)
-        except Exception:  # noqa: BLE001 - persistence is best-effort
-            pass
-        return TaskResult.from_dict(result)
+        return common.persist_result(
+            result, prediction_dir,
+            rollout_index=rollout_index, epoch=epoch, node_id=node_id)
 
     def load_cached_result(
         self,
@@ -550,34 +513,14 @@ class SpreadsheetBenchEnv:
         rollout_index: int,
         skill_hash: str,
     ) -> "TaskResult | None":
-        """Load a previously-computed rollout result for resume, or ``None``.
+        """The resume fast-path — the shared implementation, no env-local copy.
 
-        Returns a reconstructed :class:`TaskResult` only when a ``result.json``
-        exists for this (task, rollout_index) under ``out_dir`` AND it was
-        produced under the SAME skill (``skill_hash`` match) — otherwise the
-        cached trajectory belongs to a different policy and must be re-rolled.
-        The conversation is re-hydrated from ``conversation.json``. Any error
-        degrades to ``None`` (re-roll), so the cache is never a failure source.
+        Same (task, rollout) layout and the same ``skill_hash`` validity key as
+        every other env; a legacy ``result.json`` written before the trajectory
+        moved back into it is rejected as an incomplete cache entry (re-roll).
         """
-        task_id = str(item.get("task_id", item.get("id", "")))
-        if not task_id:
-            return None
-        prediction_dir = os.path.join(out_dir, "predictions", task_id, f"r{rollout_index}")
-        result_path = os.path.join(prediction_dir, "result.json")
-        if not os.path.exists(result_path):
-            return None
-        try:
-            with open(result_path, encoding="utf-8") as f:
-                d = json.load(f)
-        except Exception:  # noqa: BLE001
-            return None
-        if not isinstance(d, dict) or d.get("skill_hash") != skill_hash:
-            return None
-        hydrate_trajectory(d, prediction_dir, task_id)
-        try:
-            return TaskResult.from_dict(d)
-        except Exception:  # noqa: BLE001
-            return None
+        return common.load_cached_result(
+            item, out_dir, rollout_index=rollout_index, skill_hash=skill_hash)
 
 
 # ── Test double ──────────────────────────────────────────────────────────────

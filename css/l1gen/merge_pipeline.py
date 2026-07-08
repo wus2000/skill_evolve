@@ -50,11 +50,11 @@ from css.tree_search import SpawnContext, SpawnOutcome, dossier_dir, node_dir
 
 _log = logging.getLogger("css.l1gen")
 
-_CONCEPT_MAX = 8192
-_NOVELTY_MAX = 4096
-_DRAFT_MAX = 12288
-_RULES_SELECT_MAX = 6144
-_RULES_CONSOLIDATE_MAX = 6144
+_CONCEPT_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_NOVELTY_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_DRAFT_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_RULES_SELECT_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
+_RULES_CONSOLIDATE_MAX = 16384  # 16K completion floor (user ruling 2026-07-08)
 
 # Probe menu cap for the conflict-detection session: representatives of every
 # source's exclusive coverage (the director contrasts across them).

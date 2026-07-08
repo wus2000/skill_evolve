@@ -177,6 +177,7 @@ def load_burst_trajectories(exploit_dir: str) -> list[LoadedTraj]:
     from css.data.rollout import TaskResult
 
     out: list[LoadedTraj] = []
+    empty: list[str] = []
     if not exploit_dir or not os.path.isdir(exploit_dir):
         return out
     steps = sorted(
@@ -194,13 +195,16 @@ def load_burst_trajectories(exploit_dir: str) -> list[LoadedTraj]:
                 continue
             for rdir in sorted(os.listdir(task_dir),
                                key=lambda s: _ord_suffix(s, "r")):
-                d = read_json(os.path.join(task_dir, rdir, "result.json"))
+                path = os.path.join(task_dir, rdir, "result.json")
+                d = read_json(path)
                 if not isinstance(d, dict):
                     continue
                 try:
                     tr = TaskResult.from_dict(d)
                 except Exception:  # noqa: BLE001
                     continue
+                if not tr.messages:
+                    empty.append(path)
                 k = tr.rollout_index
                 out.append(LoadedTraj(
                     traj_id=f"s{step}_{safe_id(task_id)}_r{k}",
@@ -209,6 +213,17 @@ def load_burst_trajectories(exploit_dir: str) -> list[LoadedTraj]:
                     step=step,
                     result=tr,
                 ))
+    if empty:
+        # ``result.json`` MUST carry the trajectory (``messages`` or
+        # ``conversation``) — the whole materials layer reads it from there.
+        # An env that persists it elsewhere makes every reading below a
+        # hallucination over an empty transcript (2026-07-08: 540/540 on
+        # SpreadsheetBench). Loud, with a sample path, never silent.
+        _log.error(
+            "materials — CONTRACT VIOLATION: %d/%d loaded rollouts carry NO "
+            "trajectory in result.json (e.g. %s). Downstream interpretation of "
+            "these is meaningless; fix the env's persister.",
+            len(empty), len(out), empty[0])
     return out
 
 

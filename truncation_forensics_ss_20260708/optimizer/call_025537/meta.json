@@ -1,0 +1,18 @@
+{
+ "call_id": "call_025537",
+ "ts": 1783512427.9334233,
+ "role": "optimizer",
+ "method": "complete_optimizer",
+ "model": "qwen3.6-35b-a3b",
+ "stage": "optimizer",
+ "duration_s": 186.454,
+ "usage": {
+  "prompt_tokens": 55897,
+  "completion_tokens": 16384,
+  "total_tokens": 72281
+ },
+ "kind": "json-repair",
+ "system_chars": 4404,
+ "user_chars": 192300,
+ "response_chars": 55559
+}
