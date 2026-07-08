@@ -25,9 +25,12 @@ from css.orchestrator import run_css
 FARM = "/data3/wushang/skills_evolve/webarena/scripts/farm.sh"
 FARM_SSH = f"ssh -p 5102 -o BatchMode=yes haoyang@10.77.110.162 {FARM}"
 
-# Three golden-image stacks on 162, reached via localhost forwards on this
-# host (s1 = base ports, s2 = 1-prefixed, s3 = 2-prefixed; cron ensurer keeps
-# the forwards mounted). Site keys MUST match the dataset's `sites` labels.
+# Replica stacks on 162, reached via localhost forwards on this host. Each
+# stack sN uses a port prefix (s1="" s2=1 s3=2 ...; sN -> N-1), matching
+# farm.sh's prefix() and wa_forwards_ensure.sh. Concurrency scales with the
+# stack count: set WEBARENA_STACKS=N (env) to grow the pool — provision the
+# replicas first with tools/webarena_scale.sh N, which builds/starts sN,
+# mounts forwards, and logs in. Site keys MUST match the dataset's `sites`.
 #
 # shopping_admin carries the "/admin" suffix because that IS the site's base
 # URL upstream: WebArena's browser_env/env_config.py defines
@@ -36,20 +39,19 @@ FARM_SSH = f"ssh -p 5102 -o BatchMode=yes haoyang@10.77.110.162 {FARM}"
 # ``__SHOPPING_ADMIN__`` placeholder expands to the storefront and all 182
 # admin tasks start on the wrong page (2026-07-08 probe: 7780/ is "Home Page",
 # 7780/admin is "Magento Admin").
-STACKS = {
-    "s1": {"shopping": "http://localhost:7770",
-           "shopping_admin": "http://localhost:7780/admin",
-           "reddit": "http://localhost:9999",
-           "gitlab": "http://localhost:8023"},
-    "s2": {"shopping": "http://localhost:17770",
-           "shopping_admin": "http://localhost:17780/admin",
-           "reddit": "http://localhost:19999",
-           "gitlab": "http://localhost:18023"},
-    "s3": {"shopping": "http://localhost:27770",
-           "shopping_admin": "http://localhost:27780/admin",
-           "reddit": "http://localhost:29999",
-           "gitlab": "http://localhost:28023"},
-}
+_BASE_PORT = {"shopping": 7770, "shopping_admin": 7780,
+              "reddit": 9999, "gitlab": 8023}
+_ADMIN_SUFFIX = {"shopping_admin": "/admin"}
+
+
+def _stack_urls(n: int) -> "dict[str, str]":
+    pfx = "" if n == 1 else str(n - 1)          # s1="" s2=1 s3=2 ...
+    return {site: f"http://localhost:{pfx}{port}{_ADMIN_SUFFIX.get(site, '')}"
+            for site, port in _BASE_PORT.items()}
+
+
+N_STACKS = int(os.environ.get("WEBARENA_STACKS", "3"))
+STACKS = {f"s{n}": _stack_urls(n) for n in range(1, N_STACKS + 1)}
 
 # The stack origins WITHOUT any path suffix — health probes, cookie jars and
 # the evaluator's URL normalizer all key on origin, not on the task's entry
