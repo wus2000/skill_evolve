@@ -1,0 +1,9 @@
+{
+ "call": 2,
+ "max_tokens": 16384,
+ "finish_reason": "stop",
+ "prompt_tokens": 22033,
+ "completion_tokens": 4867,
+ "seconds": 53.8,
+ "system_head": "You are the curator of an agent's rules document. The document has grown through many smal"
+}

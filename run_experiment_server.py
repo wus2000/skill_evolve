@@ -119,7 +119,15 @@ def main() -> None:
         # whole-document tidy-up per burst, accepted only through the
         # symmetric-fresh non-inferiority gate (margin 1.5pp ~ 1 sigma of the
         # val mean; bullet budget 15 as the curation trigger signal).
-        consolidation_enabled=True,
+        # DISABLED (user ruling 2026-07-08 evening): three real-document
+        # smoke rounds showed the single burst-end tidy-up call cannot yet
+        # deliver deep lossless compression (best round: -37% but 97 lost-
+        # identifier flags, mostly checker false positives; SS: rewrite
+        # bodies re-split by the ### self-heal). Code kept for later
+        # revisiting; bloat control now rests on the differential upstream
+        # chain (REFLECT coverage test / DRAFT four-way classification /
+        # REVIEW redundant_with_doc / APPLIER minimal-complete rewrite).
+        consolidation_enabled=False,
         consolidation_margin=0.015,
         l0_section_bullet_budget=15,
         # Token-based size budgets (user ruling: accounting is tokens, never

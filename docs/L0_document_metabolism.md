@@ -1,6 +1,14 @@
 # L0 Document Metabolism — differential drafting + burst-end consolidation
 
 Status: implemented 2026-07-08 (branch `feat/l1-actions-redesign`).
+UPDATE (2026-07-08 evening, user ruling): the burst-end consolidation (§4)
+is DISABLED in both launchers after three real-document smoke rounds — the
+single tidy-up call could not yet deliver deep lossless compression (best:
+-37% with 97 lost-identifier flags, mostly checker false positives — see
+§7a; SS rewrite bodies were re-split by the ### self-heal). The code stays
+(config-gated off) for later revisiting; bloat control rests on the
+upstream differential chain (§3), which passed its real-data smoke
+(14 groups fully absorbed, amend ops emitted, 7/7 signal coverage).
 Companion to `docs/editpipe_v3_design.md` (the v3 pipeline this extends).
 
 ## 1. Problem (measured live, 2026-07-08)
@@ -147,3 +155,20 @@ share rising with step index; consolidation change-rate falling per burst.
   document may be adopted directly — "smoke as production").
 * The pre-change steps of both live runs stand as the no-metabolism
   control arm for the paper narrative.
+
+## 7a. Smoke findings archive (2026-07-08, for the revisit)
+
+Round 1 (conservative prompt): model kept every fat section, -6%; 11 lost
+identifiers correctly abandoned. Round 2 (mandatory targets): rewrite
+appeared but the fattest section escaped the bullet-only trigger (68
+bullets nested, 13 top-level) — token budget added. Round 3 (full chain:
+token budgets, sliced planning, tolerant scope filter, scoped quality
+repair): AW -37%, mandatory targets all executed, BUT 97 lost-identifier
+flags — inspection shows three false-positive classes: (a) backtick-quoted
+prose fragments counted as identifiers; (b) schematisation replacements
+(real emails/phones/tickers the prompt itself orders replaced) flagged as
+losses; (c) full call signatures rewritten into merged phrasing. SS: -26%,
+15->35 sections (rewrite bodies carried ### lines; needs the STRUCTURE
+normalization pass on consolidation output). Raw I/O of one full run:
+consolidation_io_samples/aw_step11/. Open design questions parked with
+these findings; upstream chain is the active bloat-control path.

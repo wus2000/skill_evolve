@@ -1,0 +1,47 @@
+{
+ "wall_s": 377.5,
+ "n_calls": 3,
+ "calls": [
+  {
+   "call": 1,
+   "max_tokens": 16384,
+   "finish_reason": "stop",
+   "prompt_tokens": 22044,
+   "completion_tokens": 13381,
+   "seconds": 139.8,
+   "system_head": "You are the curator of an agent's rules document. The document has grown through many smal"
+  },
+  {
+   "call": 2,
+   "max_tokens": 16384,
+   "finish_reason": "stop",
+   "prompt_tokens": 22033,
+   "completion_tokens": 4867,
+   "seconds": 53.8,
+   "system_head": "You are the curator of an agent's rules document. The document has grown through many smal"
+  },
+  {
+   "call": 3,
+   "max_tokens": 16384,
+   "finish_reason": "stop",
+   "prompt_tokens": 33954,
+   "completion_tokens": 11770,
+   "seconds": 183.9,
+   "system_head": "You are the curator of an agent's rules document. The document has grown through many smal"
+  }
+ ],
+ "outcome": {
+  "chars_before": 88072,
+  "chars_after": 67194,
+  "compression": 0.763,
+  "n_lost_identifiers": 26,
+  "would_abandon": true,
+  "kept_over_budget": [],
+  "plan_ops": {
+   "keep": 9,
+   "merge": 2,
+   "rewrite": 4,
+   "delete": 2
+  }
+ }
+}
