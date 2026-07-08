@@ -275,7 +275,12 @@ class Scribe:
                                    action_str=action_str, effect=effect)
         t0 = time.time()
         try:
-            reply = self._client.complete_target(P.SCRIBE_SYSTEM, user)
+            # The scribe is environment bookkeeping, not a rollout: it must be
+            # greedy like every other non-rollout call (user ruling 2026-07-08).
+            # It runs on the TARGET client only because the optimizer path would
+            # inject the ground-truth firewall preamble into a clerk's prompt.
+            reply = self._client.complete_target(P.SCRIBE_SYSTEM, user,
+                                                 temperature=0.0)
         except Exception as exc:  # noqa: BLE001 — scribe failure must not hurt the episode
             _log.warning("webarena/scribe — call failed, empty contribution: %s",
                          exc)

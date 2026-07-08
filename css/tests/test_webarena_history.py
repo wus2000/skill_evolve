@@ -134,6 +134,20 @@ def test_parse_scribe_reply_shapes():
     assert many == ["f0", "f1", "f2"], "structural count cap at 3"
 
 
+def test_scribe_is_greedy_not_a_rollout():
+    """The scribe is env bookkeeping: greedy like every non-rollout call, and
+    it must never inherit the rollout sampling temperature."""
+    seen = {}
+
+    class Spy:
+        def complete_target(self, system, user, **kw):
+            seen.update(kw)
+            return "INTENT: x"
+    Scribe(Spy()).transcribe(objective="o", url="u", observation="x",
+                             reasoning="r", action_str="a", effect="e")
+    assert seen.get("temperature") == 0.0
+
+
 def test_scribe_failure_is_an_empty_contribution():
     class Boom:
         def complete_target(self, *a, **k):
