@@ -91,7 +91,7 @@ def run_scienceworld_agent(
     goal: str,
     subgoals: "list[str]",
     skill_text: str,
-    max_tokens: int = 512,
+    max_tokens: int = 16384,
     temperature: float = 0.4,
     deadline_s: float = 540.0,
 ) -> "dict[str, Any]":

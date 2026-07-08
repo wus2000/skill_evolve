@@ -387,7 +387,7 @@ def annotate_trajectory(
         with stage_context(client, "layer1_annotate"):
             obs_list = complete_optimizer_json(
                 client, system, user, parse=_parse_obs_list,
-                max_tokens=8192, stage="obs",
+                max_tokens=16384, stage="obs",
             )
     except Exception:
         return []

@@ -42,6 +42,11 @@ if TYPE_CHECKING:
 
 
 @runtime_checkable
+# max_tokens floor (user ruling 2026-07-08): every LLM call in the
+# mechanism defaults to >= 16384 completion tokens — measured truncation
+# incidents (optimizer JSON cut mid-object, agent code cut mid-block)
+# all trace to sub-16K caps. A cap is an upper bound, not a target:
+# short outputs stay short; only the truncation cliff moves.
 class LLMClient(Protocol):
     """A client that can call both the target and the optimizer models.
 
@@ -50,13 +55,13 @@ class LLMClient(Protocol):
     """
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         """Single-shot target (frozen task agent) completion -> text."""
         ...
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         """Multi-turn target completion -> text."""
         ...
@@ -67,7 +72,7 @@ class LLMClient(Protocol):
         tools: list[dict],
         *,
         tool_choice: str = "auto",
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
         temperature: float = 0.0,
     ) -> dict:
         """Multi-turn target completion with OpenAI function-calling.
@@ -79,13 +84,13 @@ class LLMClient(Protocol):
         ...
 
     def complete_optimizer(
-        self, system: str, user: str, *, max_tokens: int = 4096
+        self, system: str, user: str, *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         """Single-shot optimizer completion -> (text, usage)."""
         ...
 
     def complete_optimizer_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096
+        self, messages: list[dict], *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         """Multi-turn optimizer completion -> (text, usage)."""
         ...
@@ -145,7 +150,7 @@ class RouterLLMClient:
         return importlib.import_module(f"skillopt.model.{mod_name}")
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         del temperature  # SkillOpt target backends do not take a temperature arg.
         backend = self._resolve_backend()
@@ -161,7 +166,7 @@ class RouterLLMClient:
         return text
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         del temperature
         backend = self._resolve_backend()
@@ -181,7 +186,7 @@ class RouterLLMClient:
         tools: list[dict],
         *,
         tool_choice: str = "auto",
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
         temperature: float = 0.0,
     ) -> dict:
         raise NotImplementedError(
@@ -190,7 +195,7 @@ class RouterLLMClient:
         )
 
     def complete_optimizer(
-        self, system: str, user: str, *, max_tokens: int = 4096
+        self, system: str, user: str, *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         backend = self._resolve_backend()
         if hasattr(backend, "set_optimizer_deployment"):
@@ -204,7 +209,7 @@ class RouterLLMClient:
         return text, usage
 
     def complete_optimizer_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096
+        self, messages: list[dict], *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         backend = self._resolve_backend()
         if hasattr(backend, "set_optimizer_deployment"):
@@ -237,13 +242,13 @@ class StubLLMClient:
         self.target_tools_fn = target_tools_fn
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         del max_tokens, temperature
         return self.target_fn(system, user)
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         del max_tokens, temperature
         system = "\n".join(
@@ -260,7 +265,7 @@ class StubLLMClient:
         tools: list[dict],
         *,
         tool_choice: str = "auto",
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
         temperature: float = 0.0,
     ) -> dict:
         del tool_choice, max_tokens, temperature
@@ -270,14 +275,14 @@ class StubLLMClient:
         return {"content": "stub-target-tools-response", "tool_calls": None}
 
     def complete_optimizer(
-        self, system: str, user: str, *, max_tokens: int = 4096
+        self, system: str, user: str, *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         del max_tokens
         text = self.optimizer_fn(system, user)
         return text, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def complete_optimizer_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096
+        self, messages: list[dict], *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         del max_tokens
         # Flatten messages into a single (system, user) pair for the stub.
@@ -302,14 +307,14 @@ class TargetOnlyClient:
         self._inner = inner
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         return self._inner.complete_target(
             system, user, max_tokens=max_tokens, temperature=temperature
         )
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         return self._inner.complete_target_messages(
             messages, max_tokens=max_tokens, temperature=temperature
@@ -321,7 +326,7 @@ class TargetOnlyClient:
         tools: list[dict],
         *,
         tool_choice: str = "auto",
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
         temperature: float = 0.0,
     ) -> dict:
         return self._inner.complete_target_tools(
@@ -448,14 +453,14 @@ class OptimizerOnlyClient:
         self._inner = inner
 
     def complete_optimizer(
-        self, system: str, user: str, *, max_tokens: int = 4096
+        self, system: str, user: str, *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         return self._inner.complete_optimizer(
             _inject_firewall_system(system), user, max_tokens=max_tokens
         )
 
     def complete_optimizer_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096
+        self, messages: list[dict], *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         return self._inner.complete_optimizer_messages(
             _inject_firewall_messages(messages), max_tokens=max_tokens
@@ -738,7 +743,7 @@ class OpenAICompatLLMClient:
         return None
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         text, usage = self._call(messages, self.target_model, max_tokens, temperature)
@@ -746,7 +751,7 @@ class OpenAICompatLLMClient:
         return text
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         text, usage = self._call(list(messages), self.target_model, max_tokens, temperature)
         self._tls.last_usage = usage
@@ -758,7 +763,7 @@ class OpenAICompatLLMClient:
         tools: list[dict],
         *,
         tool_choice: str = "auto",
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
         temperature: float = 0.0,
     ) -> dict:
         """Target-path multi-turn completion with native OpenAI function-calling.
@@ -808,7 +813,7 @@ class OpenAICompatLLMClient:
         }
 
     def complete_optimizer(
-        self, system: str, user: str, *, max_tokens: int = 4096
+        self, system: str, user: str, *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         return self._call(
@@ -818,7 +823,7 @@ class OpenAICompatLLMClient:
 
 
     def complete_optimizer_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096
+        self, messages: list[dict], *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         return self._call(
             list(messages), self.optimizer_model, max_tokens, self.temperature,

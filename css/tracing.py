@@ -301,7 +301,7 @@ class TracingLLMClient:
         return getattr(self._inner, "optimizer_model", "")
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 4096, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         t0 = time.time()
         error = ""
@@ -326,7 +326,7 @@ class TracingLLMClient:
             )
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
     ) -> str:
         t0 = time.time()
         error = ""
@@ -356,7 +356,7 @@ class TracingLLMClient:
         tools: list[dict],
         *,
         tool_choice: str = "auto",
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
         temperature: float = 0.0,
     ) -> dict:
         t0 = time.time()
@@ -383,7 +383,7 @@ class TracingLLMClient:
             )
 
     def complete_optimizer(
-        self, system: str, user: str, *, max_tokens: int = 4096
+        self, system: str, user: str, *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         t0 = time.time()
         error = ""
@@ -432,7 +432,7 @@ class TracingLLMClient:
             )
 
     def complete_optimizer_messages(
-        self, messages: list[dict], *, max_tokens: int = 4096
+        self, messages: list[dict], *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         t0 = time.time()
         error = ""

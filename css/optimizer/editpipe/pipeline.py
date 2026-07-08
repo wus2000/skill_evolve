@@ -106,7 +106,7 @@ def make_section_resolver(client: Any) -> Resolver:
             user += f"\n\n## Feedback on your previous attempt\n{feedback}"
         try:
             text, _usage = client.complete_optimizer(
-                _RESOLVER_SYSTEM, user, max_tokens=8192)
+                _RESOLVER_SYSTEM, user, max_tokens=16384)
         except Exception:
             _log.warning("editpipe.resolver: LLM call failed", exc_info=True)
             return None

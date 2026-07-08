@@ -22,9 +22,9 @@ from css.optimizer.editpipe3.docmodel import RulesDocV3
 
 _log = logging.getLogger("css.optimizer.editpipe3")
 
-_GROUP_MAX_TOKENS = 8192
+_GROUP_MAX_TOKENS = 16384
 _DRAFT_MAX_TOKENS = 16384
-_REVIEW_MAX_TOKENS = 8192
+_REVIEW_MAX_TOKENS = 16384
 _APPLIER_MAX_TOKENS = 16384
 _REPAIR_MAX_TOKENS = 16384
 _MAX_GROUP_SIZE = 6

@@ -128,7 +128,7 @@ def run_bfcl_agent(
     skill_text: str,
     *,
     max_steps_per_turn: int = 20,
-    max_tokens: int = 1024,
+    max_tokens: int = 16384,
     temperature: float = 0.4,
     deadline_s: float = 540.0,
 ) -> dict:

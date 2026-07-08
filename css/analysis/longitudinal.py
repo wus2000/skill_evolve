@@ -163,7 +163,7 @@ def _confirm_merge_llm(
         f"  description: {duplicate.description}\n"
     )
     try:
-        text, _usage = client.complete_optimizer(system, user, max_tokens=128)
+        text, _usage = client.complete_optimizer(system, user, max_tokens=16384)
     except Exception:
         return True
     return _parse_same_flag(text)

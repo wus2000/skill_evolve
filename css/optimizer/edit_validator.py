@@ -379,7 +379,7 @@ def _semantic_check(
 
     try:
         text, _usage = client.complete_optimizer(
-            _VALIDATOR_SYSTEM, user, max_tokens=4096
+            _VALIDATOR_SYSTEM, user, max_tokens=16384
         )
     except Exception:
         _log.warning(

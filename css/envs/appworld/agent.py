@@ -137,7 +137,7 @@ def run_appworld_agent(
     ground_truth_mode: str = "minimal",
     max_interactions: int = 50,
     obs_max_chars: int = 6000,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     temperature: float = 0.4,
     deadline_s: float = 1740.0,
     worker_script: str = "",

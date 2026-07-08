@@ -23,8 +23,8 @@ from css.l1gen import _llm, prompts
 
 _log = logging.getLogger("css.l1gen")
 
-_GATE_MAX_TOKENS = 2048
-_SCREEN_MAX_TOKENS = 4096
+_GATE_MAX_TOKENS = 16384
+_SCREEN_MAX_TOKENS = 16384
 
 
 # ── External screen discovery (materials package owns the canonical screen) ───

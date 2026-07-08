@@ -49,8 +49,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _log = logging.getLogger("css.materials")
 
-_PROSE_MAX_TOKENS = 8192
-_EXTRACT_MAX_TOKENS = 4096
+_PROSE_MAX_TOKENS = 16384
+_EXTRACT_MAX_TOKENS = 16384
 
 _VERDICTS = frozenset({"followed", "partial", "ignored", "inapplicable"})
 

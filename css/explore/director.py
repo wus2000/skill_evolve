@@ -144,7 +144,7 @@ def run_director_session(
         action = complete_optimizer_json(
             optimizer_client, system, convo,
             parse=_parse_action, ok=_action_ok,
-            max_tokens=12288, stage="explore_director",
+            max_tokens=16384, stage="explore_director",
         )
         if not _action_ok(action):
             append_jsonl(transcript_path, {"turn": n_turns, "role": "director",

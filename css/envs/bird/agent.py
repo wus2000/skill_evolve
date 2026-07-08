@@ -63,7 +63,7 @@ def run_bird_agent(
     *,
     max_turns: int = 10,
     exec_timeout: float = 30.0,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     temperature: float = 0.0,
 ) -> dict:
     """Run the function-calling ReAct agent on one Bird item.

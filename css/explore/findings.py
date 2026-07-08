@@ -97,7 +97,7 @@ def _judge(system: str, findings: str, optimizer_client: Any,
         result = complete_optimizer_json(
             optimizer_client, system, findings,
             parse=_parse_obj, ok=_has_verdict,
-            max_tokens=8192, stage=stage,
+            max_tokens=16384, stage=stage,
         )
     except Exception:  # noqa: BLE001
         _log.warning("[explore:%s] screen call failed; optimistic pass", stage)

@@ -132,7 +132,7 @@ def complete_optimizer_json(
     parse: Callable[[str], Any],
     ok: Callable[[Any], bool] | None = None,
     required: Callable[[Any], list] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     repair_max_tokens: int = DEFAULT_REPAIR_MAX_TOKENS,
     stage: str = "",
 ) -> Any:
