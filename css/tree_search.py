@@ -244,7 +244,7 @@ def run_burst(
     # kill the burst.
     if (getattr(cfg, "consolidation_enabled", False)
             and getattr(cfg, "edit_pipeline", "v2") == "v3"):
-        from css.optimizer.editpipe3.consolidate import run_burst_consolidation
+        from css.optimizer.editpipe3.metabolism import run_burst_consolidation
         try:
             run_burst_consolidation(
                 node, env, val_items, target_client, optimizer_client, cfg,

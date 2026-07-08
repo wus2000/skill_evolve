@@ -352,7 +352,7 @@ def run_consolidate(rules_path, seed_tag):
 
     Usage: python tools/replay_editpipe.py consolidate <path/to/rules.md>
     """
-    from css.optimizer.editpipe3 import consolidate as cm
+    from css.optimizer.editpipe3 import metabolism as cm
     from css.optimizer.editpipe3.docmodel import RulesDocV3
     from css.optimizer.editpipe3.pipeline import _top_bullet_count
 

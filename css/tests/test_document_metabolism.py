@@ -20,7 +20,7 @@ import os
 from types import SimpleNamespace
 
 from css.model.client import StubLLMClient
-import css.optimizer.editpipe3.consolidate as cons_mod
+import css.optimizer.editpipe3.metabolism as cons_mod
 from css.optimizer.editpipe3.docmodel import RulesDocV3
 from css.optimizer.editpipe3.pipeline import (
     AspectGroup,

@@ -82,7 +82,7 @@ of a step share one cacheable prefix (vLLM APC; infra note, not mechanism).
 
 ## 4. Downstream (D): burst-end consolidation
 
-`css/optimizer/editpipe3/consolidate.py::run_burst_consolidation`, hooked in
+`css/optimizer/editpipe3/metabolism.py::run_burst_consolidation`, hooked in
 `tree_search.py::run_burst` AFTER the burst reward is recorded (its neutral
 wobble must not enter L1 selection signals) and BEFORE the skill snapshot
 (the tree inherits the tidied document).
