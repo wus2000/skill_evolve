@@ -315,7 +315,12 @@ class SpreadsheetBenchEnv:
             bash_timeout = int(getattr(self.cfg, "bash_timeout_s", 180))
 
             # temperature: None -> the client's agreed rollout temperature.
-            adapter = CSSLLMClientAdapter(target_client, max_tokens=16384)
+            # Target (task-agent) completion cap is per-env (launcher extra); the
+            # optimizer keeps the 16K floor. 8K trims the decoding-collapse waste
+            # per generation while comfortably covering real ReAct steps.
+            tgt_max = int((getattr(self.cfg, "extra", {}) or {}).get(
+                "spreadsheet_max_tokens", 8192))
+            adapter = CSSLLMClientAdapter(target_client, max_tokens=tgt_max)
             bash_tool = create_bash_tool(
                 working_dir,
                 timeout=bash_timeout,

@@ -183,6 +183,11 @@ def main() -> None:
                          "http://127.0.0.1:8889/v1"),
             "api_key": "token-abc123",
             "max_tokens": 24576,  # client CEILING (clamp), not a request: raised 16384->24576 on 2026-07-05 — the merger requests 20480 and was being silently clamped (one measured truncation); callers still request less
+            # Target (task-agent) completion cap. 8K (user ruling 2026-07-09):
+            # trims per-generation decoding-collapse waste while covering real
+            # ReAct steps; the OPTIMIZER keeps the 16K floor. NOT in the resume
+            # fingerprint, so lowering it does not invalidate cached rollouts.
+            "spreadsheet_max_tokens": 8192,
             # Two sampling domains (user ruling 2026-07-08):
             #  - rollouts sample (0.6) so the K repeats of a task actually
             #    differ; contrastive groups and the paired gate's variance

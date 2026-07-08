@@ -220,7 +220,12 @@ def main() -> None:
             # Agent-turn completion cap: 16384 (user ruling 2026-07-06 —
             # unify target-agent caps at 16K across arms; supersedes the
             # 4096 runaway bound).
-            "appworld_max_tokens": 16384,
+            # Target (task-agent) completion cap. 8K (user ruling 2026-07-09):
+            # trims per-generation decoding-collapse waste while covering real
+            # ReAct steps; the OPTIMIZER keeps the 16K floor (client ceiling
+            # below stays 24576). NOT in the resume fingerprint, so lowering it
+            # does not invalidate cached rollouts.
+            "appworld_max_tokens": 8192,
             # Agreed 2026-07-05: NO observation truncation for AppWorld (the
             # provisional 6000-char cap is retired). 0 = unlimited — the
             # worker passes outputs through verbatim; the prompt still
