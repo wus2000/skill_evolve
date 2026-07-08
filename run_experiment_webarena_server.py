@@ -156,6 +156,19 @@ def main() -> None:
             "webarena_refresh_concurrency": 3,
             "webarena_har_content": "omit",  # URLs+status suffice for evaluator
             "webarena_nav_timeout_ms": 30000,
+            # ── Trajectory history (agreed 2026-07-08: single-turn prompts
+            # + two-layer harness history; wa_0784 A/B probe evidence) ──
+            # Env-side scribe: one extra LLM call per PAGE-CHANGING step
+            # (no-change steps fold mechanically and skip it). Clerk-not-
+            # adviser prompt — facts/intent only, never advice. Part of the
+            # ENVIRONMENT: baselines keep it too, so skill-document gains are
+            # measured on top of it. False = ablation arm.
+            "webarena_scribe": True,
+            # Telemetry-only alert when the rendered history block exceeds
+            # this token count (tokens-not-chars ruling). NO truncation ever
+            # (rich-content ruling): bloat control is structural — <=3 facts
+            # per step, empty-by-default scribe output, mechanical folding.
+            "webarena_history_budget_tokens": 3000,
         },
     )
 
