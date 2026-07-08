@@ -125,6 +125,13 @@ def main() -> None:
         consolidation_enabled=True,
         consolidation_margin=0.015,
         l0_section_bullet_budget=15,
+        # Token-based size budgets (user ruling: accounting is tokens, never
+        # chars). Section over 1500 tokens = mandatory tidy-up target (the
+        # bullet trigger alone missed the fattest nested-bullet section);
+        # plan calls slice above 15K document tokens (a single full-output
+        # call over a 28K-token document truncates at the 16K completion cap).
+        l0_section_token_budget=1500,
+        consolidation_split_tokens=15000,
 
         # ── L1 TREE SEARCH (mechanism default since 2026-07-06; design:
         #    L1_tree_mechanism_design.md — run_css delegates to the

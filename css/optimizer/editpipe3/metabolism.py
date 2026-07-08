@@ -48,6 +48,7 @@ from css.optimizer.editpipe3.pipeline import (
     _protocol_repair,
     _strip_handle_title,
     _top_bullet_count,
+    text_tokens,
 )
 
 _log = logging.getLogger("css")
@@ -129,19 +130,57 @@ def _check_plan(obj: Any, doc: RulesDocV3,
     return violations
 
 
+def _filter_to_scope(obj: dict, scope: "list[str]",
+                     audit: "list[dict]") -> dict:
+    """Tolerant scope filtering (measured failure: the model decides the
+    WHOLE document despite a scope instruction).
+
+    Out-of-scope decisions are simply dropped — the other slice owns them. A
+    decision straddling the scope boundary (a cross-slice merge) is dropped
+    whole and its in-scope handles fall back to keep: lossless (content
+    unchanged), and the next burst may still perform that merge."""
+    scope_set = set(scope)
+    kept_sections: "list[dict]" = []
+    fallback_keeps: "list[str]" = []
+    n_dropped = 0
+    for s in obj.get("sections") or []:
+        if not isinstance(s, dict):
+            continue
+        handles = [str(h).strip() for h in (s.get("handles") or [])]
+        inside = [h for h in handles if h in scope_set]
+        if not inside:
+            n_dropped += 1
+            continue
+        if len(inside) < len(handles):
+            fallback_keeps.extend(inside)
+            n_dropped += 1
+            continue
+        kept_sections.append(s)
+    for h in fallback_keeps:
+        kept_sections.append({"op": "keep", "handles": [h]})
+    if n_dropped or fallback_keeps:
+        audit.append({"stage": "plan", "action": "scope_filtered",
+                      "dropped_out_of_scope": n_dropped,
+                      "straddle_fallback_keeps": fallback_keeps})
+    return {"sections": kept_sections,
+            "dropped_facts": obj.get("dropped_facts")}
+
+
 def _plan_call(client: Any, doc: RulesDocV3, size_note: str,
                scope: "list[str]", audit: "list[dict]") -> "Optional[dict]":
     """One consolidation plan call over ``scope`` + protocol repair."""
     scope_note = ""
     if len(scope) < len(doc.sections):
         scope_note = ("\nDecide ONLY for these handles: %s. Every other "
-                      "section is kept as is by the system (do not list it)."
-                      % ", ".join(scope))
+                      "section is handled in a separate call (do not list "
+                      "it)." % ", ".join(scope))
     user = prompts.build_consolidate_user(doc.render(), size_note + scope_note)
     obj = _call_json(client, prompts.CONSOLIDATE_SYSTEM, user,
                      ok=lambda r: isinstance(r, dict) and "sections" in r,
                      stage="ep3_consolidate",
                      max_tokens=_CONSOLIDATE_MAX_TOKENS)
+    if isinstance(obj, dict):
+        obj = _filter_to_scope(obj, scope, audit)
     violations = _check_plan(obj, doc, scope)
     if not violations:
         return obj
@@ -152,6 +191,8 @@ def _plan_call(client: Any, doc: RulesDocV3, size_note: str,
         obj, violations,
         ok=lambda r: isinstance(r, dict) and "sections" in r,
         stage="ep3_consolidate")
+    if isinstance(repaired, dict):
+        repaired = _filter_to_scope(repaired, scope, audit)
     if repaired is not None and not _check_plan(repaired, doc, scope):
         audit.append({"stage": "plan", "action": "protocol_repaired",
                       "violations": violations})
@@ -161,35 +202,68 @@ def _plan_call(client: Any, doc: RulesDocV3, size_note: str,
     return None
 
 
-def _make_plan(client: Any, doc: RulesDocV3, size_note: str,
-               audit: "list[dict]") -> "Optional[dict]":
-    """Whole-document plan; on failure fall back to two half-scope calls.
+def _scope_slices(client: Any, doc: RulesDocV3,
+                  split_tokens: int) -> "list[list[str]]":
+    """Contiguous handle slices sized so each call's rewrite load fits the
+    output budget (measured failure: one full call over a 28K-token document
+    truncates). Greedy by per-section TOKEN size (user ruling: budgets are
+    token-based); always at least one slice."""
+    if split_tokens <= 0 or text_tokens(client, doc.serialize()) <= split_tokens:
+        return [[doc.handle(i) for i in range(len(doc.sections))]]
+    slices: "list[list[str]]" = []
+    cur: "list[str]" = []
+    cur_tokens = 0
+    for i, s in enumerate(doc.sections):
+        size = text_tokens(client, s.body) + text_tokens(client, s.title)
+        if cur and cur_tokens + size > split_tokens:
+            slices.append(cur)
+            cur, cur_tokens = [], 0
+        cur.append(doc.handle(i))
+        cur_tokens += size
+    if cur:
+        slices.append(cur)
+    return slices
 
-    Returns ``{"sections": [...], "dropped_facts": [...]}`` or ``None``. The
-    half-split self-heal keeps the tidy-up available when one full-output
-    call cannot carry all changed bodies (output-budget truncation shows up
-    as an unparseable/incomplete plan). Cross-half merges are lost in the
-    fallback — an accepted cost; the next burst can still perform them.
+
+def _make_plan(client: Any, doc: RulesDocV3, size_note: str,
+               audit: "list[dict]", split_tokens: int = 15000
+               ) -> "Optional[dict]":
+    """Sliced whole-document plan.
+
+    The document is split into contiguous slices sized to the output budget
+    (one slice for documents under ``split_tokens``); each slice gets its own
+    plan call over the SAME full-document rendering, deciding only its
+    handles. On a slice failure that slice retries once split in half;
+    a still-failing slice fails the plan (abandon — next burst retries).
+    Cross-slice merges are lost by construction — an accepted cost.
     """
-    all_handles = [doc.handle(i) for i in range(len(doc.sections))]
-    obj = _plan_call(client, doc, size_note, all_handles, audit)
-    if obj is not None:
-        return {"sections": [s for s in obj["sections"] if isinstance(s, dict)],
-                "dropped_facts": list(obj.get("dropped_facts") or [])}
-    mid = len(all_handles) // 2
-    halves = [all_handles[:mid], all_handles[mid:]]
+    slices = _scope_slices(client, doc, split_tokens)
+    if len(slices) > 1:
+        audit.append({"stage": "plan", "action": "sliced",
+                      "n_slices": len(slices),
+                      "sizes": [len(s) for s in slices]})
     merged: "list[dict]" = []
     dropped: "list" = []
-    for half in halves:
-        if not half:
-            continue
-        obj = _plan_call(client, doc, size_note, half, audit)
-        if obj is None:
-            audit.append({"stage": "plan", "action": "half_split_failed"})
+    for scope in slices:
+        obj = _plan_call(client, doc, size_note, scope, audit)
+        if obj is None and len(scope) > 1:
+            mid = len(scope) // 2
+            halves = [scope[:mid], scope[mid:]]
+            audit.append({"stage": "plan", "action": "slice_half_retry",
+                          "scope": len(scope)})
+            parts = [_plan_call(client, doc, size_note, h, audit)
+                     for h in halves if h]
+            if any(p is None for p in parts):
+                audit.append({"stage": "plan", "action": "slice_failed"})
+                return None
+            obj = {"sections": [s for p in parts for s in p["sections"]],
+                   "dropped_facts": [x for p in parts
+                                     for x in (p.get("dropped_facts") or [])]}
+        elif obj is None:
+            audit.append({"stage": "plan", "action": "slice_failed"})
             return None
         merged.extend(s for s in obj["sections"] if isinstance(s, dict))
         dropped.extend(obj.get("dropped_facts") or [])
-    audit.append({"stage": "plan", "action": "half_split_used"})
     return {"sections": merged, "dropped_facts": dropped}
 
 
@@ -229,33 +303,44 @@ def _doc_lost_identifiers(old_md: str, new_md: str,
             if i not in new_md and i not in declared]
 
 
-def _over_budget_handles(doc: RulesDocV3,
-                         bullet_budget: int) -> "list[tuple[str, str, int]]":
-    """(handle, title, bullets) of sections over the curation budget.
+def _over_budget_handles(client: Any, doc: RulesDocV3, bullet_budget: int,
+                         token_budget: int) -> "list[tuple[str, str, str]]":
+    """(handle, title, why) of sections over the curation budget.
 
-    Size proxies accumulated restatement; these are the tidy-up's MANDATORY
-    targets — a plan keeping one gets ONE quality-repair round (measured on
-    the real AW step11 document: without this the model kept every fat
-    section and compressed 6%)."""
-    if bullet_budget <= 0:
-        return []
+    TWO size signals, either marks a MANDATORY target: top-level bullet
+    count over ``bullet_budget``, or body TOKENS over ``token_budget``
+    (user ruling: budgets are token-based). Measured necessity (AW step11):
+    the fattest section (~6.4K tokens) carried its 68 bullets NESTED — only
+    13 top-level — so a bullet-only trigger missed the single biggest bloat
+    carrier."""
     out = []
     for i, s in enumerate(doc.sections):
         n = _top_bullet_count(s.body)
-        if n > bullet_budget:
-            out.append((doc.handle(i), s.title, n))
+        why = []
+        if bullet_budget > 0 and n > bullet_budget:
+            why.append("%d top-level bullets" % n)
+        if token_budget > 0:
+            n_tok = text_tokens(client, s.body)
+            if n_tok > token_budget:
+                why.append("%d tokens" % n_tok)
+        if why:
+            out.append((doc.handle(i), s.title, ", ".join(why)))
     return out
 
 
-def _size_note(doc: RulesDocV3, bullet_budget: int) -> str:
-    over = ["[%s] %s (%d top-level bullets)" % (h, t, n)
-            for h, t, n in _over_budget_handles(doc, bullet_budget)]
-    lines = ["%d sections, %d chars total."
-             % (len(doc.sections), len(doc.serialize()))]
+def _size_note(client: Any, doc: RulesDocV3, bullet_budget: int,
+               token_budget: int) -> str:
+    over = ["[%s] %s (%s)" % (h, t, why)
+            for h, t, why in
+            _over_budget_handles(client, doc, bullet_budget, token_budget)]
+    lines = ["%d sections, %d tokens total."
+             % (len(doc.sections), text_tokens(client, doc.serialize()))]
     if over:
-        lines.append("MANDATORY targets — over the %d-bullet budget; each "
-                     "must appear in a rewrite or merge decision, never in "
-                     "keep:\n%s" % (bullet_budget, "\n".join(over)))
+        lines.append("MANDATORY targets — over the size budget (%d "
+                     "top-level bullets or %d tokens per section); each must "
+                     "appear in a rewrite or merge decision, never in "
+                     "keep:\n%s" % (bullet_budget, token_budget,
+                                    "\n".join(over)))
     empties = ["[%s] %s" % (doc.handle(i), s.title)
                for i, s in enumerate(doc.sections) if not s.body.strip()]
     if empties:
@@ -264,49 +349,134 @@ def _size_note(doc: RulesDocV3, bullet_budget: int) -> str:
     return "\n".join(lines)
 
 
-def _kept_over_budget(plan_sections: "list[dict]", doc: RulesDocV3,
-                      bullet_budget: int) -> "list[str]":
-    """Mandatory targets the plan left as 'keep' (depth-shortfall signal)."""
-    over = {h: "[%s] %s (%d top-level bullets)" % (h, t, n)
-            for h, t, n in _over_budget_handles(doc, bullet_budget)}
-    kept: "list[str]" = []
+def _kept_over_budget(client: Any, plan_sections: "list[dict]",
+                      doc: RulesDocV3, bullet_budget: int,
+                      token_budget: int) -> "list[tuple[str, str]]":
+    """(handle, description) of mandatory targets the plan left as 'keep'."""
+    over = {h: "[%s] %s (%s)" % (h, t, why)
+            for h, t, why in
+            _over_budget_handles(client, doc, bullet_budget, token_budget)}
+    kept: "list[tuple[str, str]]" = []
     for s in plan_sections:
         if str(s.get("op", "")).strip() != "keep":
             continue
         for h in (s.get("handles") or []):
-            if str(h).strip() in over:
-                kept.append(over[str(h).strip()])
+            h = str(h).strip()
+            if h in over:
+                kept.append((h, over[h]))
     return kept
 
 
 def _quality_repair(client: Any, doc: RulesDocV3, size_note: str,
                     plan: dict, lost: "list[str]",
-                    kept_over: "list[str]",
+                    kept_over: "list[tuple[str, str]]",
                     audit: "list[dict]") -> "Optional[dict]":
     """ONE semantic repair round naming the losses / kept mandatory targets.
 
     Protocol repair cannot do this (it must not alter semantic content);
-    this is a full re-plan with the defects named — same pattern as the
-    applier's lossless repair. Returns a validated plan dict or ``None``."""
-    all_handles = [doc.handle(i) for i in range(len(doc.sections))]
+    this mirrors the applier's lossless-repair pattern. SCOPED to the
+    problem entries only — re-deciding the whole plan in one output was
+    measured to truncate on large documents; entries without a defect stand
+    as previously planned. Returns the merged plan dict or ``None``."""
+    lost_handles: "set[str]" = set()
+    for i, s in enumerate(doc.sections):
+        if any(ident in s.body or ident in s.title for ident in lost):
+            lost_handles.add(doc.handle(i))
+    problem = lost_handles | {h for h, _ in kept_over}
+    stand: "list[dict]" = []
+    scope: "list[str]" = []
+    insert_at = None
+    for s in plan["sections"]:
+        hs = [str(h).strip() for h in (s.get("handles") or [])]
+        if any(h in problem for h in hs):
+            if insert_at is None:
+                insert_at = len(stand)
+            scope.extend(hs)
+        else:
+            stand.append(s)
+    if not scope:
+        return None
+    scope_note = (size_note
+                  + "\nRepair scope: decide ONLY for these handles: %s. "
+                    "Every other decision of your previous plan stands "
+                    "unchanged (do not list it)." % ", ".join(scope))
     user = prompts.build_consolidate_repair_user(
-        doc.render(), size_note,
+        doc.render(), scope_note,
         json.dumps(plan, ensure_ascii=False, indent=1),
-        lost, kept_over)
+        lost, [d for _, d in kept_over])
     obj = _call_json(client, prompts.CONSOLIDATE_SYSTEM, user,
                      ok=lambda r: isinstance(r, dict) and "sections" in r,
                      stage="ep3_consolidate_quality_repair",
                      max_tokens=_CONSOLIDATE_MAX_TOKENS)
-    violations = _check_plan(obj, doc, all_handles)
+    if isinstance(obj, dict):
+        obj = _filter_to_scope(obj, scope, audit)
+    violations = _check_plan(obj, doc, scope)
     if violations:
         audit.append({"stage": "quality_repair",
                       "action": "repair_plan_invalid",
                       "violations": violations})
         return None
     audit.append({"stage": "quality_repair", "action": "repaired",
-                  "lost": lost, "kept_over_budget": kept_over})
-    return {"sections": [s for s in obj["sections"] if isinstance(s, dict)],
-            "dropped_facts": list(obj.get("dropped_facts") or [])}
+                  "lost": lost, "kept_over_budget": [d for _, d in kept_over],
+                  "scope": scope})
+    repaired_entries = [s for s in obj["sections"] if isinstance(s, dict)]
+    at = insert_at if insert_at is not None else len(stand)
+    merged_sections = stand[:at] + repaired_entries + stand[at:]
+    return {"sections": merged_sections,
+            "dropped_facts": (list(plan.get("dropped_facts") or [])
+                              + list(obj.get("dropped_facts") or []))}
+
+
+def tidy_document(client: Any, source_rules: str, *, bullet_budget: int,
+                  token_budget: int, split_tokens: int,
+                  audit: "list[dict]"
+                  ) -> "Optional[tuple[dict, str, list, list]]":
+    """The complete plan -> build -> quality-repair chain.
+
+    SHARED by the production path (:func:`run_burst_consolidation`) and the
+    offline smoke tool — the smoke must exercise exactly what ships. Returns
+    ``(plan, tidied_md, lost_identifiers, kept_over_budget)`` or ``None``
+    when planning failed entirely.
+
+    Lossless invariant: an identifier "survives" only by being in the OUTPUT
+    document or explicitly declared in dropped_facts; the audit archive of
+    deleted/merged originals is OUR backup, not the model's declaration, and
+    never satisfies the check. ``lost_identifiers`` non-empty means the
+    caller must NOT adopt the output; a non-empty ``kept_over_budget`` is a
+    depth shortfall only (adoptable, audited).
+    """
+    doc = RulesDocV3.parse(source_rules)
+    note = _size_note(client, doc, bullet_budget, token_budget)
+    plan = _make_plan(client, doc, note, audit, split_tokens)
+    if plan is None:
+        return None
+    tidied = _build_output(doc, plan["sections"], audit)
+    lost = _doc_lost_identifiers(source_rules, tidied,
+                                 plan.get("dropped_facts") or [])
+    kept_over = _kept_over_budget(client, plan["sections"], doc,
+                                  bullet_budget, token_budget)
+
+    # ONE quality-repair round when the plan lost identifiers or kept a
+    # mandatory target (both measured on the first real-document smoke).
+    if lost or kept_over:
+        repaired = _quality_repair(client, doc, note, plan, lost, kept_over,
+                                   audit)
+        if repaired is not None:
+            re_audit: "list[dict]" = []
+            re_tidied = _build_output(doc, repaired["sections"], re_audit)
+            re_lost = _doc_lost_identifiers(
+                source_rules, re_tidied,
+                repaired.get("dropped_facts") or [])
+            if not re_lost:
+                plan, tidied, lost = repaired, re_tidied, []
+                kept_over = _kept_over_budget(client, plan["sections"], doc,
+                                              bullet_budget, token_budget)
+                audit.extend(re_audit)
+            else:
+                audit.append({"stage": "quality_repair",
+                              "action": "repair_still_lossy",
+                              "lost": re_lost})
+    return plan, tidied, lost, kept_over
 
 
 # ── entry ─────────────────────────────────────────────────────────────────────
@@ -356,9 +526,6 @@ def run_burst_consolidation(
         f.write(source_rules)
 
     audit: "list[dict]" = []
-    bullet_budget = int(getattr(cfg, "l0_section_bullet_budget", 15))
-    plan = _make_plan(optimizer_client, doc,
-                      _size_note(doc, bullet_budget), audit)
     outcome = ConsolidationOutcome(
         ran=True, chars_before=len(source_rules),
         sections_before=len(doc.sections))
@@ -373,43 +540,18 @@ def run_burst_consolidation(
         with open(gate_path, "w", encoding="utf-8") as f:
             json.dump(gate_obj, f, ensure_ascii=False, indent=1)
 
-    if plan is None:
+    result = tidy_document(
+        optimizer_client, source_rules,
+        bullet_budget=int(getattr(cfg, "l0_section_bullet_budget", 15)),
+        token_budget=int(getattr(cfg, "l0_section_token_budget", 1500)),
+        split_tokens=int(getattr(cfg, "consolidation_split_tokens", 15000)),
+        audit=audit)
+    if result is None:
         outcome.reason = "plan failed (document unchanged)"
         _persist(None, {"applied": False, "reason": outcome.reason})
         _log.warning("consolidation: %s", outcome.reason)
         return outcome
-
-    tidied = _build_output(doc, plan["sections"], audit)
-    # Lossless check: an identifier "survives" only by being in the OUTPUT
-    # document or explicitly declared in dropped_facts. The audit archive of
-    # deleted/merged originals is OUR backup, not the model's declaration —
-    # it never satisfies this check (a delete carrying a unique identifier
-    # that lives nowhere else must abort the tidy-up, by design).
-    lost = _doc_lost_identifiers(source_rules, tidied,
-                                 plan.get("dropped_facts") or [])
-    kept_over = _kept_over_budget(plan["sections"], doc, bullet_budget)
-
-    # ONE quality-repair round when the plan lost identifiers or kept a
-    # mandatory target (both measured on the first real-document smoke).
-    if lost or kept_over:
-        repaired = _quality_repair(optimizer_client, doc,
-                                   _size_note(doc, bullet_budget),
-                                   plan, lost, kept_over, audit)
-        if repaired is not None:
-            re_audit: "list[dict]" = []
-            re_tidied = _build_output(doc, repaired["sections"], re_audit)
-            re_lost = _doc_lost_identifiers(
-                source_rules, re_tidied,
-                repaired.get("dropped_facts") or [])
-            if not re_lost:
-                plan, tidied, lost = repaired, re_tidied, []
-                kept_over = _kept_over_budget(plan["sections"], doc,
-                                              bullet_budget)
-                audit.extend(re_audit)
-            else:
-                audit.append({"stage": "quality_repair",
-                              "action": "repair_still_lossy",
-                              "lost": re_lost})
+    plan, tidied, lost, kept_over = result
 
     if lost:
         outcome.reason = ("abandoned: %d identifier(s) would be lost (%s...)"

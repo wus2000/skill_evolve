@@ -175,6 +175,23 @@ def _top_bullet_count(text: str) -> int:
     return len(re.findall(r"(?m)^[-*][ \t]", text or ""))
 
 
+def text_tokens(client: Any, text: str) -> int:
+    """TOKEN count of ``text`` — the unit of every size budget (user ruling:
+    accounting is token-based, never characters).
+
+    Uses the client's tokenizer when it exposes one; degrades to a chars/4
+    estimate (~4 chars/token English prose) when unavailable — the UNIT is
+    tokens on both paths, only the precision differs. Sizing must never
+    fail the pipeline."""
+    try:
+        n = client.count_tokens(text) if client is not None else None
+        if n:
+            return int(n)
+    except Exception:  # noqa: BLE001
+        pass
+    return max(1, len(text or "") // 4)
+
+
 def _normalize_structure(client: Any, title: str, content: str,
                          audit: "list[dict]") -> "list[tuple[str, str]]":
     """LLM structure call: content carrying its own "### " lines -> sections.
@@ -632,7 +649,9 @@ def _stage_c_review(client: Any, doc: RulesDocV3,
 # ── APPLY: per-section semantic fusion ────────────────────────────────────────
 def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
                  audit: "Optional[list]" = None,
-                 bullet_budget: int = 15) -> "tuple[str, list[dict]]":
+                 bullet_budget: int = 15,
+                 section_token_budget: int = 1500
+                 ) -> "tuple[str, list[dict]]":
     """Apply the groups' edits to ``rules_md``; returns (new_text, deferred).
 
     Rule code owns structure: NEW sections and removals are mechanical; every
@@ -738,8 +757,14 @@ def apply_groups(client: Any, rules_md: str, groups: "list[AspectGroup]",
         section = doc.sections[idx]
         edits_render = _render_entries(entries)
         n_bullets = _top_bullet_count(section.body)
-        note = (prompts.build_curation_note(n_bullets, bullet_budget)
-                if bullet_budget > 0 and n_bullets > bullet_budget else "")
+        n_tokens = text_tokens(client, section.body)
+        why = []
+        if bullet_budget > 0 and n_bullets > bullet_budget:
+            why.append("%d top-level bullets > %d" % (n_bullets,
+                                                      bullet_budget))
+        if section_token_budget > 0 and n_tokens > section_token_budget:
+            why.append("%d tokens > %d" % (n_tokens, section_token_budget))
+        note = prompts.build_curation_note(", ".join(why)) if why else ""
         user = prompts.build_applier_user(section.title, section.body,
                                           edits_render, note)
         obj = _call_json(client, prompts.APPLIER_SYSTEM, user,

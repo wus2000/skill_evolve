@@ -375,7 +375,11 @@ def run_consolidate(rules_path, seed_tag):
     client = QwenClient(temperature=0.3)
     audit = []
     t0 = time.time()
-    plan = cm._make_plan(client, doc, cm._size_note(doc, 15), audit)
+    # PRODUCTION chain (plan -> build -> quality repair), shared with
+    # run_burst_consolidation — the smoke exercises exactly what ships.
+    result = cm.tidy_document(client, src, bullet_budget=15,
+                              token_budget=1500, split_tokens=15000,
+                              audit=audit)
     detail = {"audit": audit}
     metrics = {
         "pipeline": "consolidate", "case": os.path.basename(rules_path),
@@ -384,12 +388,11 @@ def run_consolidate(rules_path, seed_tag):
         "bullets_before": sum(_top_bullet_count(s.body)
                               for s in doc.sections),
     }
-    if plan is None:
+    if result is None:
         metrics["error"] = "plan failed"
         return metrics, detail
-    tidied = cm._build_output(doc, plan["sections"], audit)
-    lost = cm._doc_lost_identifiers(src, tidied,
-                                    plan.get("dropped_facts") or [])
+    plan, tidied, lost, kept_over = result
+    metrics["kept_over_budget"] = kept_over
     out_doc = RulesDocV3.parse(tidied)
     ops = {}
     for s in plan["sections"]:

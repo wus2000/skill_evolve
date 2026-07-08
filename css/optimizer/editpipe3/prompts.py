@@ -395,16 +395,17 @@ def build_applier_user(section_title: str, section_body: str,
     )
 
 
-def build_curation_note(n_bullets: int, budget: int) -> str:
+def build_curation_note(why: str) -> str:
     """Over-budget trigger signal injected into the applier call (never a cap:
-    the instruction is to MERGE duplicate lessons, not to cut content)."""
+    the instruction is to MERGE duplicate lessons, not to cut content).
+    ``why`` names the tripped size signal(s), token-based per user ruling."""
     return (
         "\n\n## Curation signal\n"
-        "This section exceeds its bullet budget (%d top-level bullets > %d):"
-        " it has accumulated redundant restatements over many steps. While"
-        " applying, consolidate aggressively — merge duplicate lessons into"
-        " single general rules with exception entries. Merge, never truncate:"
-        " every unique fact must survive." % (n_bullets, budget)
+        "This section exceeds its size budget (%s): it has accumulated"
+        " redundant restatements over many steps. While applying, consolidate"
+        " aggressively — merge duplicate lessons into single general rules"
+        " with exception entries. Merge, never truncate: every unique fact"
+        " must survive." % why
     )
 
 
@@ -475,6 +476,10 @@ What to fix — the known growth defects, in priority order:
     two bullet levels, using "#### " sub-headings for the top split.
 
 Hard limits — all binding:
+  * A merge or rewrite must DEDUPLICATE, not concatenate: if the new body is
+    roughly the sum of its inputs' lengths, you have restacked the bloat
+    under one heading instead of removing it. State each lesson once; fold
+    the variants' unique facts into exception entries under it.
   * NEVER invent a rule, change what a rule commands, or alter its trigger
     conditions. This is reorganization, not authorship.
   * NEVER drop a unique fact: every API name, parameter, literal value,

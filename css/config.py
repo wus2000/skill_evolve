@@ -119,6 +119,16 @@ class CSSConfig:
     l0_section_bullet_budget: int = 15   # curation TRIGGER (never a cap): a section over
                                          # this many top-level bullets gets an aggressive-
                                          # merge note in its applier/consolidation calls
+    l0_section_token_budget: int = 1500  # second curation trigger, TOKEN-based (user
+                                         # ruling: budgets are tokens): a section body over
+                                         # this many tokens is a mandatory tidy-up target —
+                                         # bullet count alone missed the fattest section
+                                         # (68 bullets nested, 13 top-level, ~6.4K tokens)
+    consolidation_split_tokens: int = 15000  # consolidation plan-call slicing threshold:
+                                         # documents over this many tokens are planned in
+                                         # contiguous slices (one full-output call over a
+                                         # 28K-token document measurably truncates at the
+                                         # 16K completion cap)
 
     # ── Dataset-size subsets (knob >= split size OR <= 0  =>  use the WHOLE set;
     #    only when 0 < knob < split size is the set subsampled). Lets a large
