@@ -9,7 +9,6 @@ The composite-200 set is a SEALED probe: only its entries on the TEST indices
 AppWorld's test_challenge discipline (never in config paths).
 
 Env-specific knobs (``cfg.extra``, all optional):
-  bfcl_temperature        agent sampling temperature (default 0.4)
   bfcl_max_tokens         per-step completion cap (default 1024)
   bfcl_max_steps_per_turn per-turn tool-calling step cap (default 20 = official)
   bfcl_gt_mode            eval-annotation GT: "gold_calls" (default — per-turn
@@ -58,7 +57,8 @@ class BfclEnv:
         self.data_root = data_root or cfg.data_root
         self._items = common.resolve_items(items)
         extra = getattr(cfg, "extra", {}) or {}
-        self.temperature = float(extra.get("bfcl_temperature", 0.4))
+        # Rollout sampling temperature is a single agreed value owned by the
+        # client (user ruling 2026-07-08); no per-env override exists.
         self.max_tokens = int(extra.get("bfcl_max_tokens", 1024))
         self.max_steps_per_turn = int(extra.get("bfcl_max_steps_per_turn", 20))
         self.gt_mode = str(extra.get("bfcl_gt_mode", "gold_calls"))
@@ -147,7 +147,7 @@ class BfclEnv:
         result = run_bfcl_agent(
             target_client, item, skill_text,
             max_steps_per_turn=self.max_steps_per_turn,
-            max_tokens=self.max_tokens, temperature=self.temperature,
+      max_tokens=self.max_tokens, 
             deadline_s=deadline,
         )
 

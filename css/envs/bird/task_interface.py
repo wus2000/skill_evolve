@@ -159,7 +159,6 @@ class BirdEnv:
             max_turns=int(extra.get("bird_max_turns", 10)),
             exec_timeout=float(extra.get("bird_exec_timeout", 30.0)),
             max_tokens=int(extra.get("bird_max_tokens", 8192)),
-            temperature=float(extra.get("bird_temperature", 0.0)),
         )
 
         hard = int(agent_out["hard"])

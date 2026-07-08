@@ -96,8 +96,10 @@ class TestOpenAICompatLLMClient:
         assert len(captured["messages"]) == 4
         assert captured["model"] == "test-target"
 
-    def test_complete_optimizer_uses_configured_temperature(self):
-        c = self._make_client(temperature=0.9)
+    def test_optimizer_and_target_use_their_own_temperatures(self):
+        """Two sampling domains (user ruling 2026-07-08): optimizer calls are
+        greedy, rollouts sample — and neither reads the other's value."""
+        c = self._make_client(optimizer_temperature=0.0, target_temperature=0.6)
         captured = {}
 
         def mock_post(payload, timeout=None, **kwargs):
@@ -109,11 +111,20 @@ class TestOpenAICompatLLMClient:
 
         c._post = mock_post
         text, usage = c.complete_optimizer("sys", "usr")
-
         assert text == "opt reply"
-        assert captured["temperature"] == 0.9
+        assert captured["temperature"] == 0.0
         assert captured["model"] == "test-optimizer"
         assert usage["total_tokens"] == 10
+
+        captured.clear()
+        c.complete_target_messages([{"role": "user", "content": "hi"}])
+        assert captured["temperature"] == 0.6, "rollouts sample by default"
+        assert captured["model"] == "test-target"
+
+        captured.clear()
+        c.complete_target_messages([{"role": "user", "content": "hi"}],
+                                   temperature=0.0)
+        assert captured["temperature"] == 0.0, "an explicit value still wins"
 
     def test_complete_optimizer_messages(self):
         c = self._make_client()

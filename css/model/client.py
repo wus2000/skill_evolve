@@ -41,6 +41,46 @@ if TYPE_CHECKING:
     from css.config import CSSConfig
 
 
+# Decoding-collapse detector. A truncated completion has two very different
+# causes and they need different fixes, so the logs must tell them apart
+# (2026-07-08 forensics): either the model genuinely had more to say, or its
+# decoder fell into a repeat attractor and emitted one character (or a short
+# cycle) until the cap — e.g. 10,519 chars of real analysis followed by 220,612
+# tab characters. Raising max_tokens cannot help the second kind. We DIAGNOSE
+# only: the text is returned untouched (user ruling 2026-07-08 — no salvage
+# trimming), so downstream parsers/repair see exactly what the model produced.
+_TAIL_WINDOW = 800
+_TAIL_MAX_DISTINCT = 6      # <= this many distinct chars in the tail
+_TAIL_MIN_RUN = 40          # a single character repeated this many times
+_TAIL_MIN_CYCLE = 200       # a short unit repeated over this many chars
+
+
+def detect_degenerate_tail(text: str) -> "str | None":
+    """Describe the repeat pattern ending ``text``, or ``None`` if healthy."""
+    tail = (text or "")[-_TAIL_WINDOW:]
+    if len(tail) < 32:
+        return None
+    run = best = 1
+    for i in range(1, len(tail)):
+        run = run + 1 if tail[i] == tail[i - 1] else 1
+        best = max(best, run)
+    if best >= _TAIL_MIN_RUN:
+        return f"{best}x repeat of {tail[-1]!r}"
+    for unit_len in (2, 3, 4, 6, 8, 12, 20):
+        if len(tail) < unit_len * 10:
+            continue
+        unit = tail[-unit_len:]
+        reps = 0
+        while tail[-(reps + 1) * unit_len: len(tail) - reps * unit_len] == unit:
+            reps += 1
+        if reps * unit_len >= _TAIL_MIN_CYCLE:
+            return f"{reps}x cycle of {unit!r}"
+    distinct = len(set(tail))
+    if distinct <= _TAIL_MAX_DISTINCT:
+        return f"tail uses only {distinct} distinct character(s)"
+    return None
+
+
 @runtime_checkable
 # max_tokens floor (user ruling 2026-07-08): every LLM call in the
 # mechanism defaults to >= 16384 completion tokens — measured truncation
@@ -55,15 +95,23 @@ class LLMClient(Protocol):
     """
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
-        """Single-shot target (frozen task agent) completion -> text."""
+        """Single-shot target (frozen task agent) completion -> text.
+
+        ``temperature=None`` (the contract every env agent uses) means the
+        client's configured target temperature. Envs MUST NOT hard-code one:
+        the rollout sampling policy is a single agreed value, not a per-env
+        accident (2026-07-08 audit found 0.0/0.4 scattered across envs).
+        """
         ...
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
-        """Multi-turn target completion -> text."""
+        """Multi-turn target completion -> text (``None`` = client default)."""
         ...
 
     def complete_target_tools(
@@ -73,7 +121,7 @@ class LLMClient(Protocol):
         *,
         tool_choice: str = "auto",
         max_tokens: int = 16384,
-        temperature: float = 0.0,
+        temperature: "float | None" = None,
     ) -> dict:
         """Multi-turn target completion with OpenAI function-calling.
 
@@ -150,7 +198,8 @@ class RouterLLMClient:
         return importlib.import_module(f"skillopt.model.{mod_name}")
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         del temperature  # SkillOpt target backends do not take a temperature arg.
         backend = self._resolve_backend()
@@ -166,7 +215,8 @@ class RouterLLMClient:
         return text
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         del temperature
         backend = self._resolve_backend()
@@ -187,7 +237,7 @@ class RouterLLMClient:
         *,
         tool_choice: str = "auto",
         max_tokens: int = 16384,
-        temperature: float = 0.0,
+        temperature: "float | None" = None,
     ) -> dict:
         raise NotImplementedError(
             "function-calling target is not supported on the SkillOpt router "
@@ -242,13 +292,15 @@ class StubLLMClient:
         self.target_tools_fn = target_tools_fn
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         del max_tokens, temperature
         return self.target_fn(system, user)
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         del max_tokens, temperature
         system = "\n".join(
@@ -266,7 +318,7 @@ class StubLLMClient:
         *,
         tool_choice: str = "auto",
         max_tokens: int = 16384,
-        temperature: float = 0.0,
+        temperature: "float | None" = None,
     ) -> dict:
         del tool_choice, max_tokens, temperature
         if self.target_tools_fn is not None:
@@ -307,14 +359,16 @@ class TargetOnlyClient:
         self._inner = inner
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         return self._inner.complete_target(
             system, user, max_tokens=max_tokens, temperature=temperature
         )
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         return self._inner.complete_target_messages(
             messages, max_tokens=max_tokens, temperature=temperature
@@ -327,7 +381,7 @@ class TargetOnlyClient:
         *,
         tool_choice: str = "auto",
         max_tokens: int = 16384,
-        temperature: float = 0.0,
+        temperature: "float | None" = None,
     ) -> dict:
         return self._inner.complete_target_tools(
             messages,
@@ -507,7 +561,8 @@ class OpenAICompatLLMClient:
         optimizer_model: str,
         *,
         max_tokens: int = 16384,
-        temperature: float = 0.7,
+        target_temperature: float = 0.6,
+        optimizer_temperature: float = 0.0,
         timeout_seconds: float = 300,
         enable_thinking: bool = False,
         retries: int = 5,
@@ -520,7 +575,13 @@ class OpenAICompatLLMClient:
         self.target_model = target_model
         self.optimizer_model = optimizer_model
         self.max_tokens = max_tokens
-        self.temperature = temperature
+        # Two sampling domains (user ruling 2026-07-08). Rollouts sample so the
+        # K repeats of a task actually differ (contrastive groups and the paired
+        # gate's variance estimate depend on it — at temperature 0 the only
+        # spread left is vLLM's batching non-determinism). Every other call is
+        # greedy for reproducibility.
+        self.target_temperature = target_temperature
+        self.optimizer_temperature = optimizer_temperature
         self.timeout_seconds = timeout_seconds
         self.enable_thinking = enable_thinking
         self.retries = retries
@@ -692,23 +753,44 @@ class OpenAICompatLLMClient:
         choices = data.get("choices") or []
         if not choices:
             raise RuntimeError(f"OpenAI-compat API returned no choices: {data}")
-        if choices[0].get("finish_reason") == "length":
-            # Live truncation telemetry (measured 2026-07-05: proposer ~1-1.5%
-            # cap hits; each one silently loses edits) — forensics needed a
-            # 40k-line log scan before; now it is one grep.
-            _log.warning("completion TRUNCATED at max_tokens=%d (model=%s)",
-                         min(max_tokens, self.max_tokens), model)
         message = choices[0].get("message") or {}
         text = message.get("content") or ""
         if not isinstance(text, str):
             text = json.dumps(text, ensure_ascii=False)
+        # Live truncation telemetry (measured 2026-07-05: proposer ~1-1.5% cap
+        # hits; each one silently loses edits) — forensics needed a 40k-line log
+        # scan before; now it is one grep. Since 2026-07-08 the two causes are
+        # separated: a decoding collapse is an ERROR (raising max_tokens cannot
+        # fix it and the tokens are pure waste), a genuinely long answer stays a
+        # WARNING. The text itself is never modified.
+        truncated = choices[0].get("finish_reason") == "length"
+        collapse = detect_degenerate_tail(text) if truncated else None
+        if truncated and collapse:
+            _log.error("completion TRUNCATED at max_tokens=%d (model=%s) — "
+                       "DECODING COLLAPSE: %s; %d chars returned, the tail is "
+                       "wasted tokens (a higher cap will not help)",
+                       min(max_tokens, self.max_tokens), model, collapse,
+                       len(text))
+        elif truncated:
+            _log.warning("completion TRUNCATED at max_tokens=%d (model=%s) — "
+                         "long output, no repeat pattern in the tail",
+                         min(max_tokens, self.max_tokens), model)
         usage = data.get("usage") or {}
         usage_info = {
             "prompt_tokens": int(usage.get("prompt_tokens", 0)),
             "completion_tokens": int(usage.get("completion_tokens", 0)),
             "total_tokens": int(usage.get("total_tokens", 0)),
+            # Persisted into llm_calls.jsonl by css.tracing: `truncated` and
+            # `decoding_collapse` make the collapse rate a one-line query
+            # instead of a re-derivation from raw responses.
+            "truncated": truncated,
+            "decoding_collapse": collapse or "",
         }
         return text, usage_info
+
+    def _target_temp(self, temperature: "float | None") -> float:
+        """Rollout sampling temperature — the client owns it (see __init__)."""
+        return self.target_temperature if temperature is None else temperature
 
     def pop_last_usage(self) -> "dict | None":
         """Take (and clear) this thread's most recent target-call usage."""
@@ -743,17 +825,21 @@ class OpenAICompatLLMClient:
         return None
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        text, usage = self._call(messages, self.target_model, max_tokens, temperature)
+        text, usage = self._call(messages, self.target_model, max_tokens,
+                                 self._target_temp(temperature))
         self._tls.last_usage = usage
         return text
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
-        text, usage = self._call(list(messages), self.target_model, max_tokens, temperature)
+        text, usage = self._call(list(messages), self.target_model, max_tokens,
+                                 self._target_temp(temperature))
         self._tls.last_usage = usage
         return text
 
@@ -764,7 +850,7 @@ class OpenAICompatLLMClient:
         *,
         tool_choice: str = "auto",
         max_tokens: int = 16384,
-        temperature: float = 0.0,
+        temperature: "float | None" = None,
     ) -> dict:
         """Target-path multi-turn completion with native OpenAI function-calling.
 
@@ -777,7 +863,7 @@ class OpenAICompatLLMClient:
             "model": self.target_model,
             "messages": list(messages),
             "max_tokens": min(max_tokens, self.max_tokens),
-            "temperature": temperature,
+            "temperature": self._target_temp(temperature),
             "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
             "tools": tools,
             "tool_choice": tool_choice,
@@ -817,7 +903,7 @@ class OpenAICompatLLMClient:
     ) -> tuple[str, dict]:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         return self._call(
-            messages, self.optimizer_model, max_tokens, self.temperature,
+            messages, self.optimizer_model, max_tokens, self.optimizer_temperature,
             response_format=self._optimizer_response_format(),
         )
 
@@ -826,7 +912,7 @@ class OpenAICompatLLMClient:
         self, messages: list[dict], *, max_tokens: int = 16384
     ) -> tuple[str, dict]:
         return self._call(
-            list(messages), self.optimizer_model, max_tokens, self.temperature,
+            list(messages), self.optimizer_model, max_tokens, self.optimizer_temperature,
             response_format=self._optimizer_response_format(),
         )
 
@@ -844,7 +930,7 @@ class OpenAICompatLLMClient:
             "model": self.optimizer_model,
             "messages": messages,
             "max_tokens": min(max_tokens, self.max_tokens),
-            "temperature": self.temperature,
+            "temperature": self.optimizer_temperature,
             "tools": [tool],
             "tool_choice": {"type": "function", "function": {"name": func_name}},
         }
@@ -886,7 +972,9 @@ def build_clients(cfg: "CSSConfig") -> tuple["TargetOnlyClient", "OptimizerOnlyC
             target_model=cfg.target_model,
             optimizer_model=cfg.optimizer_model,
             max_tokens=int(extra.get("max_tokens", 16384)),
-            temperature=float(extra.get("temperature", 0.7)),
+            # Two agreed sampling domains (user ruling 2026-07-08).
+            target_temperature=float(extra.get("target_temperature", 0.6)),
+            optimizer_temperature=float(extra.get("optimizer_temperature", 0.0)),
             timeout_seconds=float(extra.get("timeout_seconds", 300)),
             enable_thinking=bool(extra.get("enable_thinking", False)),
             optimizer_json_mode=bool(extra.get("optimizer_json_mode", False)),

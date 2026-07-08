@@ -138,7 +138,7 @@ def run_appworld_agent(
     max_interactions: int = 50,
     obs_max_chars: int = 6000,
     max_tokens: int = 16384,
-    temperature: float = 0.4,
+    temperature: "float | None" = None,  # None = client default (0.6)
     deadline_s: float = 1740.0,
     worker_script: str = "",
     fetch_gold: bool = False,

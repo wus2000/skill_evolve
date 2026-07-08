@@ -129,7 +129,7 @@ def run_bfcl_agent(
     *,
     max_steps_per_turn: int = 20,
     max_tokens: int = 16384,
-    temperature: float = 0.4,
+    temperature: "float | None" = None,  # None = client default (0.6)
     deadline_s: float = 540.0,
 ) -> dict:
     """Play one BFCL multi-turn entry; return the RETURN CONTRACT dict.

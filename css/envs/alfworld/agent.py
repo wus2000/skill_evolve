@@ -175,7 +175,7 @@ def run_alfworld_agent(
     data_root: str,
     max_steps: int = 50,
     max_tokens: int = 16384,
-    temperature: float = 0.4,
+    temperature: "float | None" = None,  # None = client default (0.6)
     deadline_s: float = 1500.0,
 ) -> dict[str, Any]:
     """Play ONE episode; returns the RETURN CONTRACT dict."""

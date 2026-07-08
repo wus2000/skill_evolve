@@ -126,7 +126,14 @@ def main() -> None:
                          "http://127.0.0.1:8889/v1"),
             "api_key": "token-abc123",
             "max_tokens": 24576,   # client ceiling (clamp) — house value
-            "temperature": 0.7,    # house default across envs (pool-consistent)
+            # Two sampling domains (user ruling 2026-07-08):
+            #  - rollouts sample (0.6) so the K repeats of a task actually
+            #    differ; contrastive groups and the paired gate's variance
+            #    estimate depend on that spread. Previously each env picked its
+            #    own (0.0 / 0.4 / 0.7) — a silent, unowned divergence.
+            #  - every other call is greedy (0.0) for reproducibility.
+            "target_temperature": 0.6,
+            "optimizer_temperature": 0.0,
             "enable_thinking": False,
             "timeout_seconds": 1800,
             "optimizer_json_mode": True,

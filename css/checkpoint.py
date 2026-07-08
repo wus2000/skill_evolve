@@ -63,9 +63,19 @@ _FINGERPRINT_FIELDS = (
 )
 
 
+# Sampling policy lives in cfg.extra (it is a client construction argument),
+# but it decides the DISTRIBUTION every rollout is drawn from. Resuming across
+# a change would silently mix two policies inside one run: cached rollouts from
+# the old temperature, gate incumbents scored under it, new candidates under
+# the new one. Fingerprint it so such a resume is refused outright.
+_FINGERPRINT_EXTRA_FIELDS = ("target_temperature", "optimizer_temperature")
+
+
 def config_fingerprint(cfg: "CSSConfig") -> str:
     """A short hash of the compute-affecting config fields (resume guard)."""
     payload = {k: getattr(cfg, k, None) for k in _FINGERPRINT_FIELDS}
+    extra = getattr(cfg, "extra", None) or {}
+    payload["_sampling"] = {k: extra.get(k) for k in _FINGERPRINT_EXTRA_FIELDS}
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 

@@ -84,7 +84,7 @@ def run_template_agent(
     *,
     max_turns: int = 1,
     max_tokens: int = 16384,
-    temperature: float = 0.0,
+    temperature: "float | None" = None,  # None = client default (agreed 0.6)
 ) -> dict[str, Any]:
     """Execute ONE task rollout and return the RETURN CONTRACT dict.
 

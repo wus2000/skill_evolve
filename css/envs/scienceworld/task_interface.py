@@ -22,7 +22,6 @@ Env-specific knobs (``cfg.extra``, all optional):
   scienceworld_step_limit_agentboard  AgentBoard-track budget (default 30, fidelity)
   scienceworld_simplification         unified simplification string (default the
                                       AgentBoard set — NOT the ``easy`` preset)
-  scienceworld_temperature            agent sampling temperature (default 0.4)
   scienceworld_max_tokens             per-turn completion cap (default 512)
   scienceworld_pool_size              max live JVMs (default cfg.max_api_workers)
   scienceworld_pool_recycle_episodes  recycle an env every N episodes (default 200)
@@ -81,7 +80,8 @@ class ScienceworldEnv:
         self.step_limit_original = int(extra.get("scienceworld_step_limit_original", 50))
         self.step_limit_agentboard = int(extra.get("scienceworld_step_limit_agentboard", 30))
         self.simplification = str(extra.get("scienceworld_simplification", _AGENTBOARD_SIMPL))
-        self.temperature = float(extra.get("scienceworld_temperature", 0.4))
+        # Rollout sampling temperature is a single agreed value owned by the
+        # client (user ruling 2026-07-08); no per-env override exists.
         self.max_tokens = int(extra.get("scienceworld_max_tokens", 512))
         self.gt_mode = str(extra.get("scienceworld_gt_mode", "live"))
         pool_size = int(extra.get("scienceworld_pool_size", getattr(cfg, "max_api_workers", 128)))
@@ -215,7 +215,7 @@ class ScienceworldEnv:
                 simplification=self.simplification, step_budget=budget,
                 protocol=protocol, goal=goal, subgoals=subgoals,
                 skill_text=skill_text,
-                max_tokens=self.max_tokens, temperature=self.temperature,
+        max_tokens=self.max_tokens, 
                 deadline_s=deadline,
             )
             broken = bool(result.get("engine_broken"))

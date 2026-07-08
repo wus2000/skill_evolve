@@ -138,7 +138,7 @@ def log_llm_call(
     duration_s: float = 0.0,
     model: str = "",
     max_tokens: int = 0,
-    temperature: float = -1.0,
+    temperature: "float | None" = -1.0,
     node_id: str = "",
     round_index: int = -1,
     stage: str = "",
@@ -168,7 +168,9 @@ def log_llm_call(
         summary["usage"] = usage
     if max_tokens:
         summary["max_tokens"] = max_tokens
-    if temperature >= 0:
+    # ``None`` = "the client's configured temperature" (target path); there is
+    # nothing call-specific to record.
+    if temperature is not None and temperature >= 0:
         summary["temperature"] = temperature
     if error:
         summary["error"] = error
@@ -301,7 +303,8 @@ class TracingLLMClient:
         return getattr(self._inner, "optimizer_model", "")
 
     def complete_target(
-        self, system: str, user: str, *, max_tokens: int = 16384, temperature: float = 0.0
+        self, system: str, user: str, *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         t0 = time.time()
         error = ""
@@ -326,7 +329,8 @@ class TracingLLMClient:
             )
 
     def complete_target_messages(
-        self, messages: list[dict], *, max_tokens: int = 16384, temperature: float = 0.0
+        self, messages: list[dict], *, max_tokens: int = 16384,
+        temperature: "float | None" = None
     ) -> str:
         t0 = time.time()
         error = ""
@@ -357,7 +361,7 @@ class TracingLLMClient:
         *,
         tool_choice: str = "auto",
         max_tokens: int = 16384,
-        temperature: float = 0.0,
+        temperature: "float | None" = None,
     ) -> dict:
         t0 = time.time()
         error = ""

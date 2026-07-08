@@ -314,7 +314,8 @@ class SpreadsheetBenchEnv:
             # stall the run; legitimate spreadsheet code finishes in seconds.
             bash_timeout = int(getattr(self.cfg, "bash_timeout_s", 180))
 
-            adapter = CSSLLMClientAdapter(target_client, max_tokens=16384, temperature=0.0)
+            # temperature: None -> the client's agreed rollout temperature.
+            adapter = CSSLLMClientAdapter(target_client, max_tokens=16384)
             bash_tool = create_bash_tool(
                 working_dir,
                 timeout=bash_timeout,

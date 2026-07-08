@@ -13,7 +13,6 @@ Env-specific knobs (``cfg.extra``, all optional):
                           css process runs a Python without textworld;
                           default: sys.executable)
   alfworld_max_steps      episode step cap (default 50, community standard)
-  alfworld_temperature    agent sampling temperature (default 0.4)
   alfworld_max_tokens     per-call completion cap (default 16384)
   alfworld_gt_mode        eval-annotation ground-truth richness — the ablation
                           knob for WHAT the optimizer sees (the mechanism only
@@ -71,7 +70,8 @@ class AlfworldEnv:
         extra = getattr(cfg, "extra", {}) or {}
         self.python_exe = str(extra.get("alfworld_python", "") or sys.executable)
         self.max_steps = int(extra.get("alfworld_max_steps", 50))
-        self.temperature = float(extra.get("alfworld_temperature", 0.4))
+        # Rollout sampling temperature is a single agreed value owned by the
+        # client (user ruling 2026-07-08); no per-env override exists.
         self.max_tokens = int(extra.get("alfworld_max_tokens", 16384))
         self.gt_mode = str(extra.get("alfworld_gt_mode", "plan"))
         # Per-game gold-replay memo (deterministic env + deterministic expert
@@ -142,7 +142,6 @@ class AlfworldEnv:
             data_root=self.data_root,
             max_steps=self.max_steps,
             max_tokens=self.max_tokens,
-            temperature=self.temperature,
             deadline_s=deadline,
         )
 

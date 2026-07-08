@@ -182,7 +182,6 @@ class TemplateEnv:
             skill_text,
             max_turns=int(extra.get("template_max_turns", 1)),
             max_tokens=int(extra.get("template_max_tokens", 4096)),
-            temperature=float(extra.get("template_temperature", 0.0)),
         )
 
         # (2) Append the unified post-rollout eval annotation — the outcome +

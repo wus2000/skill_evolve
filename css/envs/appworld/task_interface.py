@@ -14,7 +14,6 @@ Env-specific knobs (``cfg.extra``, all optional):
   appworld_root             APPWORLD_ROOT data checkout (default: cfg.data_root)
   appworld_max_interactions episode interaction cap (default 50 — the official
                             minimal-ReAct notebook value, = our ALFWorld cap)
-  appworld_temperature      agent sampling temperature (default 0.4)
   appworld_max_tokens       per-call completion cap (default 4096)
   appworld_obs_max_chars    per-turn output truncation; 0 = unlimited
                             (agreed 2026-07-05 default: NO truncation)
@@ -84,7 +83,8 @@ class AppworldEnv:
         self.python_exe = str(extra.get("appworld_python", "") or sys.executable)
         self.appworld_root = str(extra.get("appworld_root", "") or self.data_root)
         self.max_interactions = int(extra.get("appworld_max_interactions", 50))
-        self.temperature = float(extra.get("appworld_temperature", 0.4))
+        # Rollout sampling temperature is a single agreed value owned by the
+        # client (user ruling 2026-07-08); no per-env override exists.
         self.max_tokens = int(extra.get("appworld_max_tokens", 4096))
         self.obs_max_chars = int(extra.get("appworld_obs_max_chars", 6000))
         self.gt_mode = str(extra.get("appworld_gt_mode", "solution"))
@@ -209,7 +209,6 @@ class AppworldEnv:
                 max_interactions=self.max_interactions,
                 obs_max_chars=self.obs_max_chars,
                 max_tokens=self.max_tokens,
-                temperature=self.temperature,
                 deadline_s=deadline,
                 fetch_gold=fetch_gold,
             )

@@ -214,7 +214,8 @@ class CSSLLMClientAdapter(LLMClient):
     post-hoc parsing of ``Observation:`` markers.
     """
 
-    def __init__(self, target_client, *, max_tokens: int = 16384, temperature: float = 0.0):
+    def __init__(self, target_client, *, max_tokens: int = 16384,
+                 temperature: "float | None" = None):
         self._client = target_client
         self._max_tokens = max_tokens
         self._temperature = temperature
@@ -222,11 +223,13 @@ class CSSLLMClientAdapter(LLMClient):
     def chat(self, messages: list[Message], settings: ModelSettings | None = None) -> str:
         dict_messages = [{"role": m.role, "content": m.content} for m in messages]
         max_tokens = self._max_tokens
+        # The vendored ReAct loop's ModelSettings carries its own temperature
+        # default (0.7). It must NOT override the agreed rollout temperature —
+        # that policy belongs to the client (user ruling 2026-07-08). Only
+        # max_tokens is honored from settings.
         temperature = self._temperature
-        if settings:
-            if settings.max_tokens:
-                max_tokens = settings.max_tokens
-            temperature = settings.temperature
+        if settings and settings.max_tokens:
+            max_tokens = settings.max_tokens
         try:
             return self._client.complete_target_messages(
                 dict_messages,

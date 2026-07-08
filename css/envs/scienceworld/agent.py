@@ -92,7 +92,7 @@ def run_scienceworld_agent(
     subgoals: "list[str]",
     skill_text: str,
     max_tokens: int = 16384,
-    temperature: float = 0.4,
+    temperature: "float | None" = None,  # None = client default (0.6)
     deadline_s: float = 540.0,
 ) -> "dict[str, Any]":
     """Play ONE episode on the given pooled env; return the RETURN CONTRACT dict.
