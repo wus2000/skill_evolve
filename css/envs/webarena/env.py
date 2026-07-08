@@ -17,6 +17,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from css.envs import common
+from css.envs.webarena import auth
 from css.envs.webarena.scheduler import MUTATING_TASK_TYPE, SiteLeaseManager
 from css.envs.webarena.scoring import VerifiedScorer
 from css.trajectory import eval_annotation_message
@@ -27,7 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover
 _log = logging.getLogger("css.webarena")
 
 
-def _build_refresh_fn(extra: dict):
+def _build_refresh_fn(extra: dict, stacks: "dict | None" = None):
     """Lane-refresh hook from config: a shell template with {stack}/{site}.
 
     Production value (agreed topology): an ssh into the farm host running
@@ -35,9 +36,16 @@ def _build_refresh_fn(extra: dict):
     golden image. Empty/missing template -> no-op refresh (single-stack P0).
     Blocking by design: the scheduler refreshes lazily, right before granting
     the next mutating lease on a dirty lane.
+
+    Recreating the container destroys the site's server-side session, so any
+    cookie jar we hold for it is dead. The hook logs back in before returning,
+    exactly as upstream re-runs ``auto_login.py`` after a reset (and as OpAgent's
+    ``ssh_connect_and_refreshweb`` regenerates cookies post-reset). Header-auth
+    sites (shopping_admin) are no-ops — that is the point of header auth.
     """
     template = str(extra.get("webarena_refresh_cmd", "") or "")
     timeout_s = int(extra.get("webarena_refresh_timeout_s", 300))
+    auth_dir = str(extra.get("webarena_auth_dir", "") or "")
     if not template:
         return None
 
@@ -55,6 +63,10 @@ def _build_refresh_fn(extra: dict):
         tail = (proc.stdout or "").strip().splitlines()
         _log.info("webarena/refresh — %s/%s done (%s)", stack, site,
                   tail[-1] if tail else "no output")
+        if auth_dir and stacks and site in auth.COOKIE_SITES:
+            base = (stacks.get(stack) or {}).get(site, "")
+            if base:
+                auth.refresh_login(stack, site, base, auth_dir)
     return refresh
 
 
@@ -90,7 +102,7 @@ class WebArenaEnv:
                     "cfg.extra['webarena_stacks'] required: "
                     "{stack_name: {site: base_url}}")
             self.leases = SiteLeaseManager(
-                stacks, refresh_fn=_build_refresh_fn(extra),
+                stacks, refresh_fn=_build_refresh_fn(extra, stacks),
                 refresh_concurrency=int(
                     extra.get("webarena_refresh_concurrency", 3)))
 
@@ -110,6 +122,7 @@ class WebArenaEnv:
         import threading
         self._browser_slots = threading.BoundedSemaphore(
             int(extra.get("webarena_max_browsers", 24)))
+        self._assert_sites_on_farm()
 
     # -- splits --------------------------------------------------------------
     @staticmethod
@@ -122,6 +135,25 @@ class WebArenaEnv:
             with open(path, encoding="utf-8") as f:
                 out[split] = json.load(f)
         return out
+
+    def _assert_sites_on_farm(self) -> None:
+        """A task whose site the farm does not host can never be solved: its
+        ``__SITE__`` placeholder stays literal and the episode navigates
+        nowhere. Fail loudly at construction rather than bleed permanent
+        failures into the coverage ledger (tools/webarena_prune_offfarm.py)."""
+        farm = {s for urls in (getattr(self.leases, "_stacks", None)
+                               or {}).values() for s in urls}
+        if not farm:
+            return
+        offenders = [(split, r.get("task_id"), sorted(set(r.get("sites", [])) - farm))
+                     for split, recs in self._items.items() for r in recs
+                     if set(r.get("sites", [])) - farm]
+        if offenders:
+            head = ", ".join(f"{s}/task {t} needs {o}" for s, t, o in offenders[:3])
+            raise ValueError(
+                f"{len(offenders)} task(s) reference sites the farm does not "
+                f"host ({head}...). Prune them: "
+                f"python3 tools/webarena_prune_offfarm.py --apply")
 
     def train_items(self) -> "list[dict]":
         return common.slice_split(self._items["train"], self.cfg, "train")

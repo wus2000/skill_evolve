@@ -1071,8 +1071,8 @@
      "status": "SUCCESS",
      "retrieved_data": [
       {
-       "width": "^16(?:\\.0+)?\\s*[-]?\\s*(?:inch(?:es)?|in\\.?|\u2033|\"|'|')$",
-       "height": "^24(?:\\.0+)?\\s*[-]?\\s*(?:inch(?:es)?|in\\.?|\u2033|\"|'|')$"
+       "width": "^16(?:\\.0+)?\\s*[-]?\\s*(?:inch(?:es)?|in\\.?|″|\"|'|')$",
+       "height": "^24(?:\\.0+)?\\s*[-]?\\s*(?:inch(?:es)?|in\\.?|″|\"|'|')$"
       }
      ]
     }
@@ -4369,76 +4369,6 @@
  },
  {
   "sites": [
-   "gitlab",
-   "wikipedia"
-  ],
-  "task_id": 561,
-  "intent_template_id": 87,
-  "start_urls": [
-   "__GITLAB__",
-   "__WIKIPEDIA__"
-  ],
-  "intent": "Create a repository named bafta_awards_nolan with a README file containing movies that are nominated BAFTA Awards by Christopher Nolan (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "intent_template": "Create a repository named {{name}} with a README file containing {{topics}} (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "instantiation_dict": {
-   "name": "bafta_awards_nolan",
-   "topics": "movies that are nominated BAFTA Awards by Christopher Nolan"
-  },
-  "eval": [
-   {
-    "evaluator": "AgentResponseEvaluator",
-    "results_schema": {
-     "type": "null"
-    },
-    "expected": {
-     "task_type": "mutate",
-     "status": "SUCCESS",
-     "retrieved_data": null
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "expected": {
-     "url": "__GITLAB__/projects",
-     "http_method": "POST",
-     "post_data": {
-      "project[name]": "bafta_awards_nolan",
-      "project[path]": "bafta_awards_nolan",
-      "project[namespace_id]": "2505"
-     },
-     "response_status": 302
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "post_data_schema": {
-     "type": "object",
-     "properties": {
-      "$.actions[0].content": {
-       "type": "string",
-       "format": "markdown"
-      }
-     }
-    },
-    "expected": {
-     "url": "__GITLAB__/api/v4/projects/byteblaze%2Fbafta_awards_nolan/repository/commits",
-     "http_method": "POST",
-     "post_data": {
-      "branch": "main",
-      "$.actions[0].action": "^(update|create)$",
-      "$.actions[0].file_path": "README.md",
-      "$.actions[0].content": "# bafta_awards_nolan\n\n- Batman Begins\n- The Dark Knight\n- Inception\n- The Dark Knight Rises\n- Interstellar\n- Dunkirk\n- Tenet",
-      "$.actions[1].action": null
-     },
-     "response_status": 201
-    }
-   }
-  ],
-  "revision": 3,
-  "id": "wa_0561"
- },
- {
-  "sites": [
    "shopping"
   ],
   "task_id": 324,
@@ -4690,76 +4620,6 @@
   ],
   "revision": 2,
   "id": "wa_0696"
- },
- {
-  "sites": [
-   "gitlab",
-   "wikipedia"
-  ],
-  "task_id": 559,
-  "intent_template_id": 87,
-  "start_urls": [
-   "__GITLAB__",
-   "__WIKIPEDIA__"
-  ],
-  "intent": "Create a repository named nolan_followers with a README file containing career timeline headings of Christopher Nolan in order (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "intent_template": "Create a repository named {{name}} with a README file containing {{topics}} (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "instantiation_dict": {
-   "name": "nolan_followers",
-   "topics": "career timeline headings of Christopher Nolan in order"
-  },
-  "eval": [
-   {
-    "evaluator": "AgentResponseEvaluator",
-    "results_schema": {
-     "type": "null"
-    },
-    "expected": {
-     "task_type": "mutate",
-     "status": "SUCCESS",
-     "retrieved_data": null
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "expected": {
-     "url": "__GITLAB__/projects",
-     "http_method": "POST",
-     "post_data": {
-      "project[name]": "nolan_followers",
-      "project[path]": "nolan_followers",
-      "project[namespace_id]": "2505"
-     },
-     "response_status": 302
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "post_data_schema": {
-     "type": "object",
-     "properties": {
-      "$.actions[0].content": {
-       "type": "string",
-       "format": "markdown"
-      }
-     }
-    },
-    "expected": {
-     "url": "__GITLAB__/api/v4/projects/byteblaze%2Fnolan_followers/repository/commits",
-     "http_method": "POST",
-     "post_data": {
-      "branch": "main",
-      "$.actions[0].action": "^(update|create)$",
-      "$.actions[0].file_path": "README.md",
-      "$.actions[0].content": "# nolan_followers\n\n- 1993\u20132003: Early career and breakthrough\n- 2003\u20132013: Widespread recognition\n- 2014\u20132019: Established Hollywood auteur\n- 2020\u2013present",
-      "$.actions[1].action": null
-     },
-     "response_status": 201
-    }
-   }
-  ],
-  "revision": 3,
-  "id": "wa_0559"
  },
  {
   "sites": [
@@ -5088,10 +4948,10 @@
   "start_urls": [
    "__GITLAB__"
   ],
-  "intent": "Jakub Klinkovsk\u00fd wants to check my dotfile configurations. Please invite him to the repo as a guest.",
+  "intent": "Jakub Klinkovský wants to check my dotfile configurations. Please invite him to the repo as a guest.",
   "intent_template": "{{name}} wants to check my dotfile configurations. Please invite him to the repo as a guest.",
   "instantiation_dict": {
-   "name": "Jakub Klinkovsk\u00fd"
+   "name": "Jakub Klinkovský"
   },
   "eval": [
    {
@@ -5349,76 +5209,6 @@
   ],
   "revision": 2,
   "id": "wa_0148"
- },
- {
-  "sites": [
-   "gitlab",
-   "wikipedia"
-  ],
-  "task_id": 560,
-  "intent_template_id": 87,
-  "start_urls": [
-   "__GITLAB__",
-   "__WIKIPEDIA__"
-  ],
-  "intent": "Create a repository named nolan_academy_awards with a README file containing movies that won Academy Awards by Christopher Nolan (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "intent_template": "Create a repository named {{name}} with a README file containing {{topics}} (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "instantiation_dict": {
-   "name": "nolan_academy_awards",
-   "topics": "movies that won Academy Awards by Christopher Nolan"
-  },
-  "eval": [
-   {
-    "evaluator": "AgentResponseEvaluator",
-    "results_schema": {
-     "type": "null"
-    },
-    "expected": {
-     "task_type": "mutate",
-     "status": "SUCCESS",
-     "retrieved_data": null
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "expected": {
-     "url": "__GITLAB__/projects",
-     "http_method": "POST",
-     "post_data": {
-      "project[name]": "nolan_academy_awards",
-      "project[path]": "nolan_academy_awards",
-      "project[namespace_id]": "2505"
-     },
-     "response_status": 302
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "post_data_schema": {
-     "type": "object",
-     "properties": {
-      "$.actions[0].content": {
-       "type": "string",
-       "format": "markdown"
-      }
-     }
-    },
-    "expected": {
-     "url": "__GITLAB__/api/v4/projects/byteblaze%2Fnolan_academy_awards/repository/commits",
-     "http_method": "POST",
-     "post_data": {
-      "branch": "main",
-      "$.actions[0].action": "^(update|create)$",
-      "$.actions[0].file_path": "README.md",
-      "$.actions[0].content": "# nolan_academy_awards\n\n- The Dark Knight\n- Inception\n- Interstellar\n- Dunkirk\n- Tenet",
-      "$.actions[1].action": null
-     },
-     "response_status": 201
-    }
-   }
-  ],
-  "revision": 3,
-  "id": "wa_0560"
  },
  {
   "sites": [
@@ -7751,76 +7541,6 @@
   ],
   "revision": 2,
   "id": "wa_0316"
- },
- {
-  "sites": [
-   "gitlab",
-   "wikipedia"
-  ],
-  "task_id": 557,
-  "intent_template_id": 87,
-  "start_urls": [
-   "__GITLAB__",
-   "__WIKIPEDIA__"
-  ],
-  "intent": "Create a repository named nolan_old_fans with a README file containing only Christopher Nolan's theatrically released feature-length films before 2010 (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "intent_template": "Create a repository named {{name}} with a README file containing {{topics}} (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "instantiation_dict": {
-   "name": "nolan_old_fans",
-   "topics": "only Christopher Nolan's theatrically released feature-length films before 2010"
-  },
-  "eval": [
-   {
-    "evaluator": "AgentResponseEvaluator",
-    "results_schema": {
-     "type": "null"
-    },
-    "expected": {
-     "task_type": "mutate",
-     "status": "SUCCESS",
-     "retrieved_data": null
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "expected": {
-     "url": "__GITLAB__/projects",
-     "http_method": "POST",
-     "post_data": {
-      "project[name]": "nolan_old_fans",
-      "project[path]": "nolan_old_fans",
-      "project[namespace_id]": "2505"
-     },
-     "response_status": 302
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "post_data_schema": {
-     "type": "object",
-     "properties": {
-      "$.actions[0].content": {
-       "type": "string",
-       "format": "markdown"
-      }
-     }
-    },
-    "expected": {
-     "url": "__GITLAB__/api/v4/projects/byteblaze%2Fnolan_old_fans/repository/commits",
-     "http_method": "POST",
-     "post_data": {
-      "branch": "main",
-      "$.actions[0].action": "^(update|create)$",
-      "$.actions[0].file_path": "README.md",
-      "$.actions[0].content": "# nolan_old_fans\n\n- Following\n- Memento\n- Insomnia\n- Batman Begins\n- The Prestige\n- The Dark Knight",
-      "$.actions[1].action": null
-     },
-     "response_status": 201
-    }
-   }
-  ],
-  "revision": 3,
-  "id": "wa_0557"
  },
  {
   "sites": [
@@ -11535,10 +11255,10 @@
   "start_urls": [
    "__GITLAB__"
   ],
-  "intent": "Follow [\"Jakub Klinkovsk\u00fd\", \"Koushik\", \"Vinta Chen\"] on Gitlab",
+  "intent": "Follow [\"Jakub Klinkovský\", \"Koushik\", \"Vinta Chen\"] on Gitlab",
   "intent_template": "Follow {{account_list}} on Gitlab",
   "instantiation_dict": {
-   "account_list": "[\"Jakub Klinkovsk\u00fd\", \"Koushik\", \"Vinta Chen\"]"
+   "account_list": "[\"Jakub Klinkovský\", \"Koushik\", \"Vinta Chen\"]"
   },
   "eval": [
    {
@@ -12691,10 +12411,10 @@
   "start_urls": [
    "__GITLAB__"
   ],
-  "intent": "Follow [\"Jakub K\", \"ghost\", \"Beno\u00eet Blanchon\"] on Gitlab",
+  "intent": "Follow [\"Jakub K\", \"ghost\", \"Benoît Blanchon\"] on Gitlab",
   "intent_template": "Follow {{account_list}} on Gitlab",
   "instantiation_dict": {
-   "account_list": "[\"Jakub K\", \"ghost\", \"Beno\u00eet Blanchon\"]"
+   "account_list": "[\"Jakub K\", \"ghost\", \"Benoît Blanchon\"]"
   },
   "eval": [
    {
@@ -14073,7 +13793,7 @@
      "url": "__REDDIT__/f/television/135156/-/edit",
      "http_method": "POST",
      "post_data": {
-      "submission[title]": "\u2018Ted Lasso\u2019 Season 3 Premiere Scores 870K U.S. Households, Up 59% From Season 2 Premiere",
+      "submission[title]": "‘Ted Lasso’ Season 3 Premiere Scores 870K U.S. Households, Up 59% From Season 2 Premiere",
       "submission[body]": "Done watching. I love the renew!"
      },
      "response_status": 302
@@ -14781,76 +14501,6 @@
   ],
   "revision": 2,
   "id": "wa_0544"
- },
- {
-  "sites": [
-   "gitlab",
-   "wikipedia"
-  ],
-  "task_id": 556,
-  "intent_template_id": 87,
-  "start_urls": [
-   "__GITLAB__",
-   "__WIKIPEDIA__"
-  ],
-  "intent": "Create a repository named nolan_honest_fans with a README file containing only Christopher Nolan's theatrically released feature-length films (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "intent_template": "Create a repository named {{name}} with a README file containing {{topics}} (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "instantiation_dict": {
-   "name": "nolan_honest_fans",
-   "topics": "only Christopher Nolan's theatrically released feature-length films"
-  },
-  "eval": [
-   {
-    "evaluator": "AgentResponseEvaluator",
-    "results_schema": {
-     "type": "null"
-    },
-    "expected": {
-     "task_type": "mutate",
-     "status": "SUCCESS",
-     "retrieved_data": null
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "expected": {
-     "url": "__GITLAB__/projects",
-     "http_method": "POST",
-     "post_data": {
-      "project[name]": "nolan_honest_fans",
-      "project[path]": "nolan_honest_fans",
-      "project[namespace_id]": "2505"
-     },
-     "response_status": 302
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "post_data_schema": {
-     "type": "object",
-     "properties": {
-      "$.actions[0].content": {
-       "type": "string",
-       "format": "markdown"
-      }
-     }
-    },
-    "expected": {
-     "url": "__GITLAB__/api/v4/projects/byteblaze%2Fnolan_honest_fans/repository/commits",
-     "http_method": "POST",
-     "post_data": {
-      "branch": "main",
-      "$.actions[0].action": "^(update|create)$",
-      "$.actions[0].file_path": "README.md",
-      "$.actions[0].content": "# nolan_honest_fans\n\n- Following\n- Memento\n- Insomnia\n- Batman Begins\n- The Prestige\n- The Dark Knight\n- Inception\n- The Dark Knight Rises\n- Interstellar\n- Dunkirk\n- Tenet\n- Oppenheimer",
-      "$.actions[1].action": null
-     },
-     "response_status": 201
-    }
-   }
-  ],
-  "revision": 3,
-  "id": "wa_0556"
  },
  {
   "sites": [
@@ -16948,7 +16598,7 @@
      "task_type": "retrieve",
      "status": "SUCCESS",
      "retrieved_data": [
-      "Quest Lumaflex\u2122 Band",
+      "Quest Lumaflex™ Band",
       [
        "Sprite Stasis Ball 65 cm",
        "Cruise Stasis Ball 65 cm",
@@ -17065,7 +16715,7 @@
      "task_type": "retrieve",
      "status": "SUCCESS",
      "retrieved_data": [
-      "Quest Lumaflex\u2122 Band"
+      "Quest Lumaflex™ Band"
      ]
     }
    }
@@ -17438,7 +17088,7 @@
      "url": "__REDDIT__/f/television/70886/-/edit",
      "http_method": "POST",
      "post_data": {
-      "submission[title]": "\u2018The Lord Of The Rings: The Rings Of Power\u2019 Adds 8 To Season 2 Cast",
+      "submission[title]": "‘The Lord Of The Rings: The Rings Of Power’ Adds 8 To Season 2 Cast",
       "submission[body]": "The cast is amazing!"
      },
      "response_status": 302
@@ -18217,7 +17867,7 @@
      "status": "SUCCESS",
      "retrieved_data": [
       "Shawn Allen",
-      "Inayaili Le\u00f3n",
+      "Inayaili León",
       "Aurora Pleguezuelo"
      ]
     }
@@ -18582,8 +18232,8 @@
      "status": "SUCCESS",
      "retrieved_data": [
       {
-       "width": "^16(?:\\.0+)?\\s*[-]?\\s*(?:inch(?:es)?|in\\.?|\u2033|\"|'|')$",
-       "height": "^24(?:\\.0+)?\\s*[-]?\\s*(?:inch(?:es)?|in\\.?|\u2033|\"|'|')$"
+       "width": "^16(?:\\.0+)?\\s*[-]?\\s*(?:inch(?:es)?|in\\.?|″|\"|'|')$",
+       "height": "^24(?:\\.0+)?\\s*[-]?\\s*(?:inch(?:es)?|in\\.?|″|\"|'|')$"
       }
      ]
     }
@@ -19356,76 +19006,6 @@
   ],
   "revision": 2,
   "id": "wa_0745"
- },
- {
-  "sites": [
-   "gitlab",
-   "wikipedia"
-  ],
-  "task_id": 558,
-  "intent_template_id": 87,
-  "start_urls": [
-   "__GITLAB__",
-   "__WIKIPEDIA__"
-  ],
-  "intent": "Create a repository named nolan_young_fans with a README file containing only Christopher Nolan's theatrically released feature-length films after 2010 (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "intent_template": "Create a repository named {{name}} with a README file containing {{topics}} (use the provided wiki site to look up any needed information). Use the Web IDE to create the README. Structure it with the repository name as the main heading and a bulleted list of the film titles. Commit to the default branch.",
-  "instantiation_dict": {
-   "name": "nolan_young_fans",
-   "topics": "only Christopher Nolan's theatrically released feature-length films after 2010"
-  },
-  "eval": [
-   {
-    "evaluator": "AgentResponseEvaluator",
-    "results_schema": {
-     "type": "null"
-    },
-    "expected": {
-     "task_type": "mutate",
-     "status": "SUCCESS",
-     "retrieved_data": null
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "expected": {
-     "url": "__GITLAB__/projects",
-     "http_method": "POST",
-     "post_data": {
-      "project[name]": "nolan_young_fans",
-      "project[path]": "nolan_young_fans",
-      "project[namespace_id]": "2505"
-     },
-     "response_status": 302
-    }
-   },
-   {
-    "evaluator": "NetworkEventEvaluator",
-    "post_data_schema": {
-     "type": "object",
-     "properties": {
-      "$.actions[0].content": {
-       "type": "string",
-       "format": "markdown"
-      }
-     }
-    },
-    "expected": {
-     "url": "__GITLAB__/api/v4/projects/byteblaze%2Fnolan_young_fans/repository/commits",
-     "http_method": "POST",
-     "post_data": {
-      "branch": "main",
-      "$.actions[0].action": "^(update|create)$",
-      "$.actions[0].file_path": "README.md",
-      "$.actions[0].content": "# nolan_young_fans\n\n- Inception\n- The Dark Knight Rises\n- Interstellar\n- Dunkirk\n- Tenet\n- Oppenheimer",
-      "$.actions[1].action": null
-     },
-     "response_status": 201
-    }
-   }
-  ],
-  "revision": 3,
-  "id": "wa_0558"
  },
  {
   "sites": [

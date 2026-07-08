@@ -39,7 +39,7 @@ import os
 import re
 from typing import TYPE_CHECKING, Any
 
-from css.envs.webarena import prompts
+from css.envs.webarena import auth, prompts
 from css.envs.webarena.history import (Scribe, TrajectoryHistory,
                                        effect_signature, short_path)
 from css.envs.webarena.scoring import write_agent_response
@@ -100,9 +100,19 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
     extra = getattr(cfg, "extra", {}) or {}
     max_turns = int(getattr(cfg, "max_turns", 0) or 30)
     har_content = str(extra.get("webarena_har_content", "omit"))
-    headers = dict(extra.get("webarena_extra_headers", {}) or {})
     nav_timeout_ms = int(extra.get("webarena_nav_timeout_ms", 30000))
     scribe_on = bool(extra.get("webarena_scribe", True))
+
+    # Authentication (css/envs/webarena/auth.py). Over half the benchmark acts
+    # as a logged-in user: cookie jars for shopping/reddit/gitlab, an auto-login
+    # header for shopping_admin. A read-only task that pinned no sites still
+    # gets the lease's stack jars — upstream starts every task authenticated.
+    auth_sites = tuple(lease.sites) or tuple(lease.urls)
+    headers = dict(extra.get("webarena_extra_headers", {}) or {})
+    headers.update(auth.extra_headers(auth_sites))
+    auth_dir = str(extra.get("webarena_auth_dir", "") or "")
+    storage_state = (auth.merged_state(auth_dir, lease.stack, auth_sites)
+                     if auth_dir else None)
 
     system = prompts.build_system_prompt(skill_text)
     objective = item.get("intent", "")
@@ -131,6 +141,7 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
         browser = p.chromium.launch(headless=True, channel="chromium")
         ctx = browser.new_context(
             viewport=VIEWPORT, device_scale_factor=1,
+            storage_state=storage_state,
             record_har_path=os.path.join(workdir, "network.har"),
             record_har_content=har_content)
         ctx.set_default_timeout(nav_timeout_ms)

@@ -6,7 +6,7 @@
  "split_unit": "intent_template_id groups within site category",
  "report": {
   "train": {
-   "n": 446,
+   "n": 440,
    "templates": 106,
    "per_category": {
     "shopping": 122,
@@ -52,6 +52,25 @@
     "mutate": 107,
     "navigate": 21
    }
+  }
+ },
+ "farm_sites": [
+  "gitlab",
+  "reddit",
+  "shopping",
+  "shopping_admin"
+ ],
+ "pruned_off_farm": {
+  "reason": "farm hosts only the core four sites; __WIKIPEDIA__ never resolves, so these tasks are permanently unsolvable",
+  "dropped": {
+   "train": [
+    561,
+    559,
+    560,
+    557,
+    556,
+    558
+   ]
   }
  }
 }
