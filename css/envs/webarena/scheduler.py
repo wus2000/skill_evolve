@@ -66,7 +66,8 @@ class SiteLeaseManager:
 
     def __init__(self, stacks: "dict[str, dict[str, str]]",
                  refresh_fn: "Callable[[str, str], None] | None" = None,
-                 refresh_concurrency: int = 3):
+                 refresh_concurrency: int = 3,
+                 gitlab_refresh_concurrency: int = 1):
         if not stacks:
             raise ValueError("SiteLeaseManager needs at least one stack")
         self._stacks = dict(stacks)
@@ -76,13 +77,20 @@ class SiteLeaseManager:
         self._rr = 0
         self._rr_lock = threading.Lock()
         self._mu = threading.Lock()   # guards lane.dirty / lane.refreshing
-        # Refresh-storm cap: batch boundaries release many mutating lanes at
-        # once and eager refresh would recreate them all concurrently — on the
-        # farm host that contention degraded gitlab recreate 81s -> 4-7 min
-        # (2026-07-06 smoke). Serializing to a few concurrent recreates keeps
-        # each near its nominal cost; the queue delay is hidden by eagerness.
-        self._refresh_gate = threading.BoundedSemaphore(
-            max(1, int(refresh_concurrency)))
+        # Refresh-storm cap: batch boundaries release many mutating lanes at once
+        # and eager refresh would recreate them all concurrently — on the HDD
+        # docker root that contention degraded gitlab recreate to minutes.
+        # PER-SITE gates (2026-07-09): gitlab's recreate is ~5x slower (heavy
+        # reconfigure, HDD-write-bound: ~163s vs ~30s). A single shared gate let
+        # one gitlab refresh hog a slot and starve the fast reddit/shopping/admin
+        # refreshes, collapsing the clean-lane supply. Split them so gitlab never
+        # blocks fast refreshes, while total concurrent recreates stay HDD-safe.
+        self._fast_gate = threading.BoundedSemaphore(max(1, int(refresh_concurrency)))
+        self._gitlab_gate = threading.BoundedSemaphore(
+            max(1, int(gitlab_refresh_concurrency)))
+
+    def _gate_for(self, site: str) -> "threading.BoundedSemaphore":
+        return self._gitlab_gate if site == "gitlab" else self._fast_gate
 
     @staticmethod
     def _log_wait(t0: float, wanted: "list[str]", task_type: str) -> None:
@@ -102,7 +110,7 @@ class SiteLeaseManager:
                 return
             lane.refreshing = True
         try:
-            with self._refresh_gate:
+            with self._gate_for(site):
                 self._refresh(stack, site)
             with self._mu:
                 lane.dirty = False

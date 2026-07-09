@@ -62,9 +62,13 @@ def _stack_urls(n: int) -> "dict[str, str]":
 # Replica stacks provisioned on the farm host 128 (zkgy-gpu, 64 cores / ~196GB
 # free — far more headroom than the contended 162). Each stack = 4 containers,
 # base_url isolated per stack. 2026-07-09 measured footprint: ~6.2GB idle per
-# stack (gitlab 3.6 + shopping 1.2 + admin 1.1 + reddit 0.25). Default 12 stacks
-# (~75GB idle, ~120GB under load — generous headroom, coexists with 128's other
-# tenants). Grow with tools/webarena/bring_up_waves.sh <N> <wave> + WEBARENA_STACKS=N.
+# stack (gitlab 3.6 + shopping 1.2 + admin 1.1 + reddit 0.25). Default 24 stacks
+# (~150GB idle in 128's 251GB) — DOUBLED from 12 to deepen the clean-lane buffer:
+# each mutate task needs an exclusive stack, and refresh (lane cleanup) is
+# HDD-bound, so more stacks = more parallel mutate lanes + more buffer so the
+# eager background refresh replenishes clean lanes before a task waits (raises
+# effective concurrency past the ~25 the 12-stack pool bottlenecked at).
+# Grow with tools/webarena/bring_up_waves.sh <N> <wave> + WEBARENA_STACKS=N.
 #
 # HDD CAVEAT: 128's docker root (/home/zkgy/docker) is on a spinning disk (sda),
 # so concurrent gitlab boots/reconfigures saturate disk I/O (all-12-at-once
@@ -77,7 +81,7 @@ def _stack_urls(n: int) -> "dict[str, str]":
 # base + live repoint: 163s solo (vs 162's 9-11min — still ~4x better on the idle
 # box), HDD-bound under concurrency. The 12-lane pool + eager background refresh
 # keep refresh off the episode critical path.
-N_STACKS = int(os.environ.get("WEBARENA_STACKS", "12"))
+N_STACKS = int(os.environ.get("WEBARENA_STACKS", "24"))
 STACKS = {f"s{n}": _stack_urls(n) for n in range(1, N_STACKS + 1)}
 
 # The stack origins WITHOUT any path suffix — health probes, cookie jars and
@@ -218,12 +222,15 @@ def main() -> None:
             # subprocess ceiling must exceed the farm-side gate.
             "webarena_refresh_cmd": FARM_SSH + " refresh {stack} {site}",
             "webarena_refresh_timeout_s": 1500,
-            # Refresh-storm cap: on 128's HDD docker root, concurrent gitlab
-            # recreates saturate disk I/O and degrade each other badly (163s solo
-            # base+repoint -> ~8min at 4 concurrent; the storm also 504s already-
-            # serving stacks). 2 keeps each refresh near-solo and protects serving
-            # latency; the 12-lane pool + eager background refresh absorb the rest.
-            "webarena_refresh_concurrency": 2,
+            # Refresh-storm caps (PER-SITE, scheduler.py). On 128's HDD docker
+            # root concurrent recreates saturate disk I/O; gitlab's recreate is
+            # ~5x slower (163s vs ~30s) so it gets its OWN small gate and the fast
+            # sites (reddit/shopping/admin) share a separate gate — a slow gitlab
+            # refresh no longer starves fast-site refreshes (which was collapsing
+            # the clean-lane supply and queuing mutate tasks). Raise both once the
+            # refresh path is on SSD/tmpfs (HDD is the current write ceiling).
+            "webarena_refresh_concurrency": 3,        # fast sites (shared)
+            "webarena_gitlab_refresh_concurrency": 1,  # gitlab (own, slow)
             "webarena_har_content": "omit",  # URLs+status suffice for evaluator
             "webarena_nav_timeout_ms": 30000,
             # ── Authentication (css/envs/webarena/auth.py) ──
