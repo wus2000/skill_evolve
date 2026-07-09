@@ -1,5 +1,5 @@
 #!/bin/bash
-# Grow the WebArena replica pool to N stacks. Runs ON the farm host (162).
+# Grow the WebArena replica pool to N stacks. Runs ON the farm host (128).
 # Idempotent: existing stacks are left alone; only missing sN are provisioned.
 #
 #   scale_pool.sh <N>
@@ -11,7 +11,7 @@
 # provisioned in parallel. Login state (127) and forwards are handled by the
 # caller (tools/webarena_login.py, wa_forwards_ensure.sh).
 set -u
-FARM=/data3/wushang/skills_evolve/webarena/scripts/farm.sh
+FARM=/home/wushang/skills_evolve/webarena/scripts/farm.sh
 N="${1:?usage: scale_pool.sh <N>}"
 
 provision() {  # provision one stack, then bake its gitlab

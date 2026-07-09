@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """CSS experiment on WebArena (Verified scoring, 684-task 4-domain scope) — SERVER run.
 
-Runs on the harness host (127): browsers + evaluator local, site farm on 162
-reached through localhost forwards (cron-ensured). Design + evidence:
+Runs on the harness host (127): browsers + evaluator local, site farm on 128
+(zkgy-gpu — replaced 162 on 2026-07-09; 162 keeps ONLY the LLM arms) reached
+through localhost forwards (cron-ensured). Design + evidence:
 docs/env_prep/webarena_PREP.md. Per-env defaults below follow the house
 convention: every value carries its rationale; agreed values must not change
 silently.
@@ -22,10 +23,12 @@ from css.model.client import build_clients
 from css.envs.registry import build_env
 from css.orchestrator import run_css
 
-FARM = "/data3/wushang/skills_evolve/webarena/scripts/farm.sh"
-FARM_SSH = f"ssh -p 5102 -o BatchMode=yes haoyang@10.77.110.162 {FARM}"
+FARM = "/home/wushang/skills_evolve/webarena/scripts/farm.sh"
+FARM_SSH = f"ssh -p 2822 -o BatchMode=yes wushang@10.77.110.128 {FARM}"
 
-# Replica stacks on 162, reached via localhost forwards on this host. Each
+# Replica stacks on the farm host (128), reached via localhost forwards on this
+# host — the URLs are localhost:PORT (host-agnostic), so migrating the farm only
+# moves the forward target (wa_forwards_ensure.sh) and FARM_SSH above. Each
 # stack sN uses a port prefix (s1="" s2=1 s3=2 ...; sN -> N-1), matching
 # farm.sh's prefix() and wa_forwards_ensure.sh. Concurrency scales with the
 # stack count: set WEBARENA_STACKS=N (env) to grow the pool — provision the
@@ -39,21 +42,39 @@ FARM_SSH = f"ssh -p 5102 -o BatchMode=yes haoyang@10.77.110.162 {FARM}"
 # ``__SHOPPING_ADMIN__`` placeholder expands to the storefront and all 182
 # admin tasks start on the wrong page (2026-07-08 probe: 7780/ is "Home Page",
 # 7780/admin is "Magento Admin").
-_BASE_PORT = {"shopping": 7770, "shopping_admin": 7780,
-              "reddit": 9999, "gitlab": 8023}
+# Port scheme mirrors farm.sh host_port() EXACTLY (that file is the single source
+# of truth): each stack owns a contiguous block BASE + (n-1)*STRIDE + site_offset.
+# The old "${n-1}${base}" concat capped the pool at s6 (s7 shopping = 67770 >
+# 65535, docker refused it); blocks from 30000 scale to ~50 stacks and stay below
+# the 32768 ephemeral floor. wa_forwards_ensure.sh mirrors the same three consts.
+_FARM_BASE_PORT = int(os.environ.get("WEBARENA_BASE_PORT", "30000"))
+_STACK_STRIDE = 10
+_SITE_OFFSET = {"shopping": 0, "shopping_admin": 1, "reddit": 2, "gitlab": 3}
 _ADMIN_SUFFIX = {"shopping_admin": "/admin"}
 
 
 def _stack_urls(n: int) -> "dict[str, str]":
-    pfx = "" if n == 1 else str(n - 1)          # s1="" s2=1 s3=2 ...
-    return {site: f"http://localhost:{pfx}{port}{_ADMIN_SUFFIX.get(site, '')}"
-            for site, port in _BASE_PORT.items()}
+    block = _FARM_BASE_PORT + (n - 1) * _STACK_STRIDE
+    return {site: f"http://localhost:{block + off}{_ADMIN_SUFFIX.get(site, '')}"
+            for site, off in _SITE_OFFSET.items()}
 
 
-# 6 replica stacks provisioned on 162 (2026-07-08): 24 containers, all sites
-# healthy + authenticated, base_url isolated per stack. Grow with
-# tools/webarena/scale_pool.sh <N> then WEBARENA_STACKS=<N>.
-N_STACKS = int(os.environ.get("WEBARENA_STACKS", "6"))
+# Replica stacks provisioned on the farm host 128 (zkgy-gpu, 64 cores / ~196GB
+# free — far more headroom than the contended 162). Each stack = 4 containers,
+# base_url isolated per stack. 2026-07-09 measured footprint: ~6.2GB idle per
+# stack (gitlab 3.6 + shopping 1.2 + admin 1.1 + reddit 0.25). Default 12 stacks
+# (~75GB idle, ~120GB under load — generous headroom, coexists with 128's other
+# tenants). Grow with tools/webarena/bring_up_waves.sh <N> <wave> + WEBARENA_STACKS=N.
+#
+# HDD CAVEAT: 128's docker root (/home/zkgy/docker) is on a spinning disk (sda),
+# so concurrent gitlab reconfigures (env-ctrl repoint -> gitlab-ctl reconfigure)
+# saturate disk I/O — bringing up all 12 at once thrashed to load 105 / 0
+# progress, so bring-up runs in WAVES (bring_up_waves.sh, 4/wave) and each stack's
+# gitlab is BAKED per-stack afterwards (farm.sh build-gitlab -> webarena-ready/
+# gitlab_sN with external_url baked). Runtime refresh then recreates gitlab from
+# the baked image (docker run, ~30s, NO reconfigure) instead of re-paying the
+# HDD-slow reconfigure — and webarena_refresh_concurrency stays low (see below).
+N_STACKS = int(os.environ.get("WEBARENA_STACKS", "12"))
 STACKS = {f"s{n}": _stack_urls(n) for n in range(1, N_STACKS + 1)}
 
 # The stack origins WITHOUT any path suffix — health probes, cookie jars and
@@ -143,6 +164,8 @@ def main() -> None:
         extra={
             "llm_backend": "openai_compat",
             # FOUR arms via llmfleet (162 dual LAN + guarded relay tunnels).
+            # NB: the vLLM arms stay on 162 — only the WebArena site farm moved
+            # to 128 (2026-07-09). LLM host != farm host by design.
             "base_url": ("http://10.77.110.162:8888/v1,"
                          "http://10.77.110.162:8889/v1,"
                          "http://127.0.0.1:8888/v1,"

@@ -1,6 +1,7 @@
 #!/bin/bash
-# WebArena stack farm manager. DEPLOYED COPY LIVES ON 162:
-#   /data3/wushang/skills_evolve/webarena/scripts/farm.sh
+# WebArena stack farm manager. DEPLOYED COPY LIVES ON 128 (zkgy-gpu; the site
+# farm moved off the contended 162 on 2026-07-09):
+#   /home/wushang/skills_evolve/webarena/scripts/farm.sh
 # (infra script, mechanism-free; version-controlled in the repo like this copy)
 #
 # A "stack" is one replica of all four sites on a distinct port block. Stacks
@@ -31,16 +32,23 @@ READY=webarena-ready
 SITES="shopping shopping_admin reddit gitlab"
 READY_TIMEOUT="${READY_TIMEOUT:-1200}"
 
-site_port()  { case "$1" in shopping) echo 7770;; shopping_admin) echo 7780;;
-               reddit) echo 9999;; gitlab) echo 8023;; esac; }
+# ── Port scheme (2026-07-09, farm on 128): each stack owns a contiguous 4-port
+# block  host_port = BASE_PORT + (N-1)*STACK_STRIDE + site_offset.  The old
+# "${N-1}${base}" concat capped the pool at s6 — s7 shopping = 67770 > 65535 and
+# docker refused it ("invalid hostPort"). Blocks from 30000 stay below the 32768
+# ephemeral floor and scale to ~50 stacks. host_port() is the SINGLE SOURCE OF
+# TRUTH; launcher _stack_urls() and wa_forwards_ensure.sh mirror it exactly
+# (BASE 30000, STRIDE 10, offsets shopping0/admin1/reddit2/gitlab3).
+BASE_PORT="${WEBARENA_BASE_PORT:-30000}"
+STACK_STRIDE=10
+site_offset() { case "$1" in shopping) echo 0;; shopping_admin) echo 1;;
+                reddit) echo 2;; gitlab) echo 3;; esac; }
+stack_num()  { echo "${1#s}"; }
+host_port()  { local n; n="$(stack_num "$1")"
+               echo $(( BASE_PORT + (n-1)*STACK_STRIDE + $(site_offset "$2") )); }
 # ctrl port (8877) is reached via `docker exec env-ctrl`, never published.
 inner_port() { case "$1" in gitlab) echo 8023;; *) echo 80;; esac; }
 ready_path() { case "$1" in gitlab) echo "/explore";; *) echo "/";; esac; }
-
-# Port prefix per stack: s1="" s2=1 s3=2 s4=3 ... (sN -> N-1). ctrl prefix
-# avoids the 18781 collision with another tenant by using 3,4,5,...
-stack_num()   { echo "${1#s}"; }
-prefix()      { local n; n="$(stack_num "$1")"; [ "$n" = 1 ] && echo "" || echo "$((n-1))"; }
 
 golden_img() { case "$1" in shopping_admin) echo "$GOLDEN/admin:warm";;
                reddit) echo "am1n3e/webarena-verified-reddit:latest";;
@@ -58,21 +66,19 @@ stack_img() {  # stack_img <site> <stack>
 }
 
 repoint() {  # repoint <name> <site> <stack> — set the container's own base_url
-    local name="$1" site="$2" stack="$3" p url
-    p="$(prefix "$stack")"; url="http://localhost:${p}$(site_port "$site")"
-    [ "$site" = shopping_admin ] && url="${url}"   # env-ctrl handles the /admin area
+    local name="$1" site="$2" stack="$3" url
+    url="http://localhost:$(host_port "$stack" "$site")"
     docker exec "$name" env-ctrl init --base-url "$url" >/dev/null 2>&1 \
         && echo "  repointed $name -> $url"
 }
 
 start_site() {  # start_site <stack> <site>
-    local stack="$1" site="$2" p cp name extra="" img
-    p="$(prefix "$stack")"
+    local stack="$1" site="$2" name extra="" img
     name="wa_${site}_${stack}"; img="$(stack_img "$site" "$stack")"
     docker rm -f "$name" >/dev/null 2>&1
     [ "$site" = gitlab ] && extra="--shm-size=512m"
     docker run -d --name "$name" $extra \
-        -p "${p}$(site_port "$site")":"$(inner_port "$site")" \
+        -p "$(host_port "$stack" "$site")":"$(inner_port "$site")" \
         "$img" >/dev/null && echo "started $name ($img)"
     # gitlab from a baked per-stack image already carries the right external_url;
     # everything else is re-pointed live after it comes up.
@@ -81,8 +87,8 @@ start_site() {  # start_site <stack> <site>
 }
 
 wait_ready() {  # wait_ready <stack> <site> — 3 consecutive rails-backed 2xx/3xx
-    local stack="$1" site="$2" p port t0 code ok=0
-    p="$(prefix "$stack")"; port="${p}$(site_port "$site")"
+    local stack="$1" site="$2" port t0 code ok=0
+    port="$(host_port "$stack" "$site")"
     t0=$(date +%s)
     while :; do
         code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' \
