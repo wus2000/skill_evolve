@@ -12,6 +12,7 @@ from .actions import (
     ActionParsingError,
     ActionTypes,
     action2str,
+    aexecute_action,
     create_id_based_action,
     execute_action,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "ActionParsingError",
     "ActionTypes",
     "action2str",
+    "aexecute_action",
     "create_id_based_action",
     "execute_action",
     "ObservationMetadata",

@@ -273,3 +273,157 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
     return {"messages": canonical, "n_turns": n_turns,
             "agent_response": stop_payload,
             "har_path": os.path.join(workdir, "network.har")}
+
+
+async def run_episode_async(pool: Any, item: dict, skill_text: str,
+                            target_client: Any, cfg: "CSSConfig",
+                            lease: "Lease", workdir: str) -> dict:
+    """High-concurrency twin of run_episode: identical turn logic, but the
+    browser context comes from the shared async BrowserPool (context-per-episode
+    over K reused browsers), every browser op is awaited, and the blocking LLM /
+    scribe / archive calls are offloaded off the event loop. Runs as a coroutine
+    on the pool's loop; env.run_one submits it and blocks on the future."""
+    from css.envs.webarena.vendor import (
+        ActionTypes, TextObervationProcessor, create_id_based_action,
+        aexecute_action)
+
+    extra = getattr(cfg, "extra", {}) or {}
+    max_turns = int(getattr(cfg, "max_turns", 0) or 30)
+    scribe_on = bool(extra.get("webarena_scribe", True))
+    stuck_stop = int(extra.get("webarena_stuck_stop_steps", 5))
+
+    auth_sites = tuple(lease.sites) or tuple(lease.urls)
+    headers = dict(extra.get("webarena_extra_headers", {}) or {})
+    headers.update(auth.extra_headers(auth_sites))
+    auth_dir = str(extra.get("webarena_auth_dir", "") or "")
+    storage_state = (auth.merged_state(auth_dir, lease.stack, auth_sites)
+                     if auth_dir else None)
+
+    system = prompts.build_system_prompt(skill_text)
+    objective = item.get("intent", "")
+    history = TrajectoryHistory(
+        budget_tokens=int(extra.get("webarena_history_budget_tokens", 3000)),
+        count_tokens=getattr(target_client, "count_tokens", None))
+    scribe = Scribe(target_client) if scribe_on else None
+
+    canonical: list[dict] = [{"role": "system", "content": system}]
+    stop_payload: "dict | None" = None
+    n_turns = 0
+    last_result = ""
+    prev_effect, prev_facts = "", []
+
+    os.makedirs(workdir, exist_ok=True)
+    turns_path = os.path.join(workdir, "turns.jsonl.gz")
+
+    def archive(rec: dict) -> None:
+        with gzip.open(turns_path, "at", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    har_path = os.path.join(workdir, "network.har")
+    async with pool.acquire(storage_state=storage_state, har_path=har_path,
+                            headers=headers) as (ctx, page):
+        await page.goto(resolve_start_url(item, lease),
+                        wait_until="domcontentloaded")
+        proc = TextObervationProcessor("accessibility_tree", True, VIEWPORT)
+        try:
+            obs = await proc.aprocess(page, await ctx.new_cdp_session(page))
+        except Exception as exc:  # noqa: BLE001 — obs failure ends episode
+            _log.warning("webarena/agent(async) — landing obs failed: %s", exc)
+            obs = None
+
+        while obs is not None and n_turns < max_turns:
+            n_turns += 1
+            url_before = page.url
+            hist_block = history.render(turn_now=n_turns, max_turns=max_turns)
+            user = prompts.build_turn(objective, hist_block, url_before,
+                                      obs, last_result)
+            reply = await pool.offload(
+                target_client.complete_target_messages,
+                [{"role": "system", "content": system},
+                 {"role": "user", "content": user}]) or ""
+            canonical.append({"role": "user", "content": build_canonical_user(
+                turn=n_turns, url=url_before,
+                objective=objective if n_turns == 1 else "",
+                prev_effect=prev_effect, prev_facts=prev_facts)})
+            canonical.append({"role": "assistant", "content": reply})
+
+            action_str = extract_action_str(reply)
+            last_result = ""
+            invalid, exec_error, stopped = False, "", False
+            try:
+                action = create_id_based_action(action_str)
+            except Exception as exc:  # noqa: BLE001 — ActionParsingError et al.
+                invalid = True
+                last_result = (f"Invalid action '{action_str[:120]}': {exc}. "
+                               "Reply with exactly one action from the "
+                               "action space, fenced in triple backticks.")
+            else:
+                if action["action_type"] == ActionTypes.STOP:
+                    stopped = True
+                    stop_payload = prompts.parse_stop_payload(
+                        action.get("answer", ""))
+                else:
+                    try:
+                        page = await aexecute_action(action, page, ctx, proc)
+                        await page.wait_for_load_state("domcontentloaded")
+                    except Exception as exc:  # noqa: BLE001 — surface to the agent
+                        exec_error = f"{type(exc).__name__}: {exc}"[:400]
+                        last_result = f"Action failed: {exec_error}"
+
+            obs_after = None
+            if not stopped:
+                if invalid:
+                    obs_after = obs   # page untouched — reuse the snapshot
+                else:
+                    try:
+                        obs_after = await proc.aprocess(
+                            page, await ctx.new_cdp_session(page))
+                    except Exception as exc:  # noqa: BLE001 — obs failure ends episode
+                        _log.warning(
+                            "webarena/agent(async) — obs failed: %s", exc)
+
+            effect, page_changed = (
+                ("episode ended by stop", False) if stopped else
+                effect_signature(url_before, page.url, obs,
+                                 obs_after or "", invalid=invalid,
+                                 exec_error=exec_error))
+            rec = history.append(turn=n_turns, action=action_str,
+                                 url=url_before, effect=effect,
+                                 page_changed=page_changed)
+            scribe_io: "dict | None" = None
+            if scribe is not None and not stopped and history.should_scribe():
+                rec.intent, rec.facts = await pool.offload(
+                    scribe.transcribe, objective=objective, url=url_before,
+                    observation=obs, reasoning=reply, action_str=action_str,
+                    effect=effect)
+                scribe_io = ({**scribe.telemetry[-1],
+                              "intent": rec.intent, "facts": rec.facts}
+                             if scribe.telemetry else None)
+            await pool.offload(archive, {
+                "turn": n_turns, "url": url_before, "history_block": hist_block,
+                "observation": obs, "reply": reply, "action": action_str,
+                "effect": effect, "page_changed": page_changed,
+                "scribe": scribe_io})
+            prev_effect, prev_facts = effect, list(rec.facts)
+            if stopped:
+                break
+            streak = history.no_change_streak()
+            if stuck_stop and streak >= stuck_stop:
+                _log.info("webarena/agent(async) — stuck-stop at turn %d "
+                          "(%d consecutive no-change steps)", n_turns, streak)
+                stop_payload = {
+                    "task_type": "retrieve", "status": "UNKNOWN_ERROR",
+                    "retrieved_data": None,
+                    "error_details": (f"early stop: {streak} consecutive "
+                                      "steps with no page change")}
+                break
+            obs = obs_after
+
+    if stop_payload is None:
+        stop_payload = {"task_type": "retrieve", "status": "UNKNOWN_ERROR",
+                        "retrieved_data": None,
+                        "error_details": f"no stop action within {max_turns} turns"}
+    write_agent_response(workdir, stop_payload)
+    return {"messages": canonical, "n_turns": n_turns,
+            "agent_response": stop_payload,
+            "har_path": os.path.join(workdir, "network.har")}

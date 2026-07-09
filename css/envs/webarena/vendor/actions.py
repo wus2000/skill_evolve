@@ -829,3 +829,316 @@ def create_id_based_action(action_str: str) -> Action:
             return create_stop_action(answer)
 
     raise ActionParsingError(f"Invalid action {action_str}")
+
+
+# ---------------------------------------------------------------------------
+# Async execution path (playwright.async_api). ADD-ONLY: byte-for-byte mirror
+# of the sync helpers above, awaiting only the coroutine Playwright calls.
+# The sync signatures/logic above are untouched (they are the regression
+# oracle). Page/context params are annotated ``Any`` so importing this module
+# never needs playwright.async_api types; the async objects are duck-typed at
+# runtime. ``locate`` stays sync (it only builds locators via getattr chains);
+# only the action applied to the returned locator is awaited here.
+# ---------------------------------------------------------------------------
+
+
+async def ais_in_viewport(
+    element: Any, viewport: ViewportSize, threshold: float = 0.3
+) -> bool:
+    """Given a playwright locator, check if it is in the viewport"""
+    box = await element.bounding_box()
+    assert box is not None
+    boxx0 = box["x"]
+    boxx1 = box["x"] + box["width"]
+    boxy0 = box["y"]
+    boxy1 = box["y"] + box["height"]
+    viewportx0, viewporty0 = 0, 0
+    viewportx1, viewporty1 = viewport["width"], viewport["height"]
+    inter = max(0, min(boxx1, viewportx1) - max(boxx0, viewportx0)) * max(
+        0, min(boxy1, viewporty1) - max(boxy0, viewporty0)
+    )
+    ratio = inter / (box["width"] * box["height"])
+    return ratio > threshold
+
+
+async def aexecute_scroll(direction: str, page: Any) -> None:
+    # perform the action
+    # code from natbot
+    if direction == "up":
+        await page.evaluate(
+            "(document.scrollingElement || document.body).scrollTop = (document.scrollingElement || document.body).scrollTop - window.innerHeight;"
+        )
+    elif direction == "down":
+        await page.evaluate(
+            "(document.scrollingElement || document.body).scrollTop = (document.scrollingElement || document.body).scrollTop + window.innerHeight;"
+        )
+
+
+async def aexecute_key_press(key: str, page: Any) -> None:
+    """Press a key."""
+    if "Meta" in key and "Mac" not in await page.evaluate("navigator.platform"):
+        key = key.replace("Meta", "Control")
+    await page.keyboard.press(key)
+
+
+async def aexecute_mouse_hover(left: float, top: float, page: Any) -> None:
+    """Click at coordinates (left, top)."""
+    viewport_size = page.viewport_size
+    assert viewport_size
+    await page.mouse.move(
+        left * viewport_size["width"], top * viewport_size["height"]
+    )
+
+
+async def aexecute_mouse_click(left: float, top: float, page: Any) -> None:
+    """Click at coordinates (left, top)."""
+    viewport_size = page.viewport_size
+    assert viewport_size
+    await page.mouse.click(
+        left * viewport_size["width"], top * viewport_size["height"]
+    )
+
+
+async def aexecute_keyboard_type(text: str, page: Any) -> None:
+    """Fill the focused element with text."""
+    await page.keyboard.type(text)
+
+
+async def aexecute_click_current(page: Any) -> None:
+    """Click at the current mouse position."""
+    locators = page.locator("*:focus")
+    if not await locators.count():
+        for frame in page.frames[1:]:
+            locators = frame.locator("*:focus")
+            if await locators.count():
+                break
+    await locators.click()
+
+
+async def aexecute_type(keys: list[int], page: Any) -> None:
+    """Send keystrokes to the focused element."""
+    text = "".join([_id2key[key] for key in keys])
+    await page.keyboard.type(text)
+
+
+async def aexecute_focus(
+    element_role: int, element_name: str, nth: int, page: Any
+) -> None:
+    """Click the specified DOM element."""
+    element_role_str = _id2role[element_role]
+    if page.viewport_size is None:
+        raise ValueError("Viewport size is not set for the current page")
+    element_location_list: list[tuple[Any, float, float]] = []
+    for frame in page.frames:
+        match element_role_str:
+            case "alt_text":
+                locators = frame.get_by_alt_text(element_name)
+            case "label":
+                locators = frame.get_by_label(element_name)
+            case "placeholder":
+                locators = frame.get_by_placeholder(element_name)
+            case _:
+                locators = frame.get_by_role(
+                    role=element_role_str, name=element_name
+                )
+        for locator_idx in range(await locators.count()):
+            locator = locators.nth(locator_idx)
+            if await ais_in_viewport(locator, page.viewport_size):
+                bounding_box = await locator.bounding_box()
+                assert bounding_box
+                element_location_list.append(
+                    (locator, bounding_box["x"], bounding_box["y"])
+                )
+    if len(element_location_list) <= nth:
+        raise ValueError(
+            f"There are only {len(element_location_list)} elements found in viewport, but {nth + 1} is requested"
+        )
+    element_location_list.sort(key=lambda x: (x[2], x[1]))  # row major order
+    await element_location_list[nth][0].focus()
+
+
+async def aexecute_playwright_click(
+    locator_code: list[ParsedPlaywrightCode],
+    page: Any,
+    pw_action_args: list[str] = [],
+    pw_action_kwargs: dict[str, Any] = {},
+) -> None:
+    locator = locate(locator_code, page)
+
+    # perform the action
+    await locator.click(*pw_action_args, **pw_action_kwargs)
+
+
+async def aexecute_playwright_hover(
+    locator_code: list[ParsedPlaywrightCode], page: Any
+) -> None:
+    locator = locate(locator_code, page)
+
+    # perform the action
+    await locator.hover()
+
+
+async def aexecute_playwright_type(
+    text: str,
+    locator_code: list[ParsedPlaywrightCode],
+    page: Any,
+    pw_action_args: list[str] = [],
+    pw_action_kwargs: dict[str, Any] = {},
+) -> None:
+    locator = locate(locator_code, page)
+    # perform the action
+    pw_action_args = [text] + pw_action_args  # text is the first argument
+    await locator.type(*pw_action_args, **pw_action_kwargs)
+
+
+async def aexecute_playwright_select_option(
+    locator_code: list[ParsedPlaywrightCode],
+    page: Any,
+    pw_action_args: list[str] = [],
+    pw_action_kwargs: dict[str, Any] = {},
+) -> None:
+    locator = locate(locator_code, page)
+    # perform the action
+    await locator.select_option(*pw_action_args, **pw_action_kwargs)
+
+
+async def aexecute_playwright_check(
+    locator_code: list[ParsedPlaywrightCode], page: Any
+) -> None:
+    locator = locate(locator_code, page)
+    # perform the action
+    await locator.check()
+
+
+async def aexecute_action(
+    action: Action,
+    page: Any,
+    browser_ctx: Any,
+    obseration_processor: ObservationProcessor,
+) -> Any:
+    """Execute the action on the ChromeDriver."""
+    action_type = action["action_type"]
+    match action_type:
+        case ActionTypes.NONE:
+            pass
+
+        case ActionTypes.SCROLL:
+            direction = "up" if "up" in action["direction"] else "down"
+            await aexecute_scroll(direction, page)
+        case ActionTypes.KEY_PRESS:
+            keys = action["key_comb"]
+            await aexecute_key_press(keys, page)
+
+        case ActionTypes.MOUSE_CLICK:
+            await aexecute_mouse_click(action["coords"][0], action["coords"][1], page)
+        case ActionTypes.MOUSE_HOVER:
+            await aexecute_mouse_hover(action["coords"][0], action["coords"][1], page)
+        case ActionTypes.KEYBOARD_TYPE:
+            await aexecute_type(action["text"], page)
+
+        case ActionTypes.CLICK:
+            # check each kind of locator in order
+            # TODO[shuyanzh]: order is temp now
+            if action["element_id"]:
+                element_id = action["element_id"]
+                element_center = obseration_processor.get_element_center(element_id)  # type: ignore[attr-defined]
+                await aexecute_mouse_click(element_center[0], element_center[1], page)
+            elif action["element_role"] and action["element_name"]:
+                element_role = int(action["element_role"])
+                element_name = action["element_name"]
+                nth = action["nth"]
+                await aexecute_focus(element_role, element_name, nth, page)
+                await aexecute_click_current(page)
+            elif action["pw_code"]:
+                parsed_code = parse_playwright_code(action["pw_code"])
+                locator_code = parsed_code[:-1]
+                # [shuyanzh], don't support action args and kwargs now
+                await aexecute_playwright_click(locator_code=locator_code, page=page)
+            else:
+                raise ValueError("No proper locator found for click action")
+        case ActionTypes.HOVER:
+            if action["element_id"]:
+                element_id = action["element_id"]
+                element_center = obseration_processor.get_element_center(element_id)  # type: ignore[attr-defined]
+                await aexecute_mouse_hover(element_center[0], element_center[1], page)
+            elif action["element_role"] and action["element_name"]:
+                element_role = int(action["element_role"])
+                element_name = action["element_name"]
+                nth = action["nth"]
+                await aexecute_focus(element_role, element_name, nth, page)
+            elif action["pw_code"]:
+                parsed_code = parse_playwright_code(action["pw_code"])
+                locator_code = parsed_code[:-1]
+                # [shuyanzh], don't support action args and kwargs now
+                await aexecute_playwright_hover(locator_code=locator_code, page=page)
+            else:
+                raise NotImplementedError(
+                    "No proper locator found for hover action"
+                )
+        case ActionTypes.TYPE:
+            if action["element_id"]:
+                element_id = action["element_id"]
+                element_center = obseration_processor.get_element_center(element_id)  # type: ignore[attr-defined]
+                await aexecute_mouse_click(element_center[0], element_center[1], page)
+                await aexecute_type(action["text"], page)
+            elif action["element_role"] and action["element_name"]:
+                element_role = int(action["element_role"])
+                element_name = action["element_name"]
+                nth = action["nth"]
+                await aexecute_focus(element_role, element_name, nth, page)
+                await aexecute_type(action["text"], page)
+            elif action["pw_code"]:
+                parsed_code = parse_playwright_code(action["pw_code"])
+                locator_code = parsed_code[:-1]
+                text = parsed_code[-1]["arguments"][0]
+                # [shuyanzh], don't support action args and kwargs now
+                await aexecute_playwright_type(
+                    text=text, locator_code=locator_code, page=page
+                )
+            else:
+                raise NotImplementedError(
+                    "No proper locator found for type action"
+                )
+
+        case ActionTypes.PAGE_FOCUS:
+            page = browser_ctx.pages[action["page_number"]]
+            await page.bring_to_front()
+        case ActionTypes.NEW_TAB:
+            page = await browser_ctx.new_page()
+            page.client = await page.context.new_cdp_session(page)  # type: ignore[attr-defined]
+        case ActionTypes.GO_BACK:
+            await page.go_back()
+        case ActionTypes.GO_FORWARD:
+            await page.go_forward()
+        case ActionTypes.GOTO_URL:
+            await page.goto(action["url"])
+        case ActionTypes.PAGE_CLOSE:
+            await page.close()
+            if len(browser_ctx.pages) > 0:
+                page = browser_ctx.pages[-1]
+            else:
+                page = await browser_ctx.new_page()
+
+        case ActionTypes.SELECT_OPTION:
+            if action["pw_code"]:
+                parsed_code = parse_playwright_code(action["pw_code"])
+                locator_code = parsed_code[:-1]
+                await aexecute_playwright_select_option(locator_code, page)
+            else:
+                raise NotImplementedError(
+                    "No proper locator found for select option action"
+                )
+        case ActionTypes.CHECK:
+            if action["pw_code"]:
+                parsed_code = parse_playwright_code(action["pw_code"])
+                locator_code = parsed_code[:-1]
+                await aexecute_playwright_check(locator_code, page)
+            else:
+                raise NotImplementedError(
+                    "No proper locator found for select option action"
+                )
+
+        case _:
+            raise ValueError(f"Unknown action type: {action_type}")
+
+    return page

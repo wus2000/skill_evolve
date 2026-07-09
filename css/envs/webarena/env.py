@@ -115,13 +115,11 @@ class WebArenaEnv:
                            if cli and env_config else None)
         # episode_fn injection keeps unit tests free of playwright.
         self._episode_fn = episode_fn
-        # Browser concurrency is a separate budget from LLM concurrency
-        # (max_api_workers): chromium instances are the CPU/RAM hogs on the
-        # harness host, so run_one gates episodes on this semaphore while the
-        # batch layer may hold many more task threads.
-        import threading
-        self._browser_slots = threading.BoundedSemaphore(
-            int(extra.get("webarena_max_browsers", 24)))
+        # Browser concurrency is owned by the async BrowserPool (browser_loop.py),
+        # started lazily in run_one: episodes run as coroutines over K reused
+        # browsers, capped by webarena_max_contexts. (Replaced the per-episode
+        # BoundedSemaphore + per-episode browser launch in the 2026-07-09 async
+        # refactor — see docs/env_prep/webarena_async_concurrency.md.)
         self._assert_sites_on_farm()
 
     # -- splits --------------------------------------------------------------
@@ -196,11 +194,27 @@ class WebArenaEnv:
         try:
             lease = self.leases.acquire(item.get("sites", []), ttype)
             episode_fn = self._episode_fn
-            if episode_fn is None:
-                from css.envs.webarena.agent import run_episode as episode_fn
-            with self._browser_slots:
+            if episode_fn is not None:
+                # injected (unit tests): synchronous, no playwright / pool.
                 episode = episode_fn(agent_item, skill_text, target_client,
                                      self.cfg, lease, pred_dir)
+            else:
+                # production: the async BrowserPool runs the episode as a
+                # coroutine (context-per-episode over K reused browsers).
+                # Concurrency is capped by the pool's max_contexts semaphore;
+                # task_timeout_s bounds a hung episode — asyncio.wait_for cancels
+                # it, and the `async with acquire` finally closes its context
+                # (flushing HAR) and frees the slot.
+                from css.envs.webarena.browser_loop import BrowserPool
+                from css.envs.webarena.agent import run_episode_async
+                pool = BrowserPool.get(self.cfg)
+                timeout_s = int(getattr(self.cfg, "task_timeout_s", 1800) or 1800)
+                fut = pool.submit(
+                    lambda: run_episode_async(pool, agent_item, skill_text,
+                                              target_client, self.cfg, lease,
+                                              pred_dir),
+                    timeout=timeout_s)
+                episode = fut.result(timeout=timeout_s + 60)
             result["conversation"] = episode.get("messages", [])
             result["n_turns"] = int(episode.get("n_turns", 0))
             result["agent_response"] = episode.get("agent_response")

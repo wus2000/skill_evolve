@@ -88,7 +88,7 @@ def _extra(env_config: str) -> dict:
         "target_temperature": 0.6, "optimizer_temperature": 0.0,
         "enable_thinking": False, "timeout_seconds": 1800,
         "webarena_split_dir": "data/webarena_splits",
-        "webarena_max_browsers": 4,
+        "webarena_browser_procs": 1, "webarena_max_contexts": 4,
         "webarena_verified_cli":
             "/home/wushang/miniconda3/envs/webarena/bin/webarena-verified",
         "webarena_env_config": env_config,

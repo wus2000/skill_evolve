@@ -645,3 +645,209 @@ class TextObervationProcessor(ObservationProcessor):
             center_x / self.viewport_size["width"],
             center_y / self.viewport_size["height"],
         )
+
+    # ── async variants (skills_evolve 2026-07-09) ─────────────────────────────
+    # Line-for-line mirrors of the sync methods above, awaiting only the
+    # playwright/CDP calls; all pure logic (tree building, viewport filtering,
+    # parse_accessibility_tree, clean_accesibility_tree) is REUSED from the sync
+    # side so the two paths cannot drift. Only the accessibility_tree observation
+    # is ported (the sole path agent.py uses). The sync methods are untouched and
+    # serve as the regression oracle (see test_webarena_async_parity).
+    @staticmethod
+    async def aget_bounding_client_rect(
+        client: Any, backend_node_id: str
+    ) -> dict[str, Any]:
+        try:
+            remote_object = await client.send(
+                "DOM.resolveNode", {"backendNodeId": int(backend_node_id)}
+            )
+            remote_object_id = remote_object["object"]["objectId"]
+            response = await client.send(
+                "Runtime.callFunctionOn",
+                {
+                    "objectId": remote_object_id,
+                    "functionDeclaration": """
+                        function() {
+                            if (this.nodeType == 3) {
+                                var range = document.createRange();
+                                range.selectNode(this);
+                                var rect = range.getBoundingClientRect().toJSON();
+                                range.detach();
+                                return rect;
+                            } else {
+                                return this.getBoundingClientRect().toJSON();
+                            }
+                        }
+                    """,
+                    "returnByValue": True,
+                },
+            )
+            return response
+        except Exception:
+            return {"result": {"subtype": "error"}}
+
+    async def afetch_browser_info(self, page: Any, client: Any) -> BrowserInfo:
+        tree = await client.send(
+            "DOMSnapshot.captureSnapshot",
+            {
+                "computedStyles": [],
+                "includeDOMRects": True,
+                "includePaintOrder": True,
+            },
+        )
+        bounds = tree["documents"][0]["layout"]["bounds"]
+        b = bounds[0]
+        n = b[2] / self.viewport_size["width"]
+        bounds = [[x / n for x in bound] for bound in bounds]
+        tree["documents"][0]["layout"]["bounds"] = bounds
+
+        win_top_bound = await page.evaluate("window.pageYOffset")
+        win_left_bound = await page.evaluate("window.pageXOffset")
+        win_width = await page.evaluate("window.screen.width")
+        win_height = await page.evaluate("window.screen.height")
+        win_right_bound = win_left_bound + win_width
+        win_lower_bound = win_top_bound + win_height
+        device_pixel_ratio = await page.evaluate("window.devicePixelRatio")
+        assert device_pixel_ratio == 1.0, "devicePixelRatio is not 1.0"
+
+        config: BrowserConfig = {
+            "win_top_bound": win_top_bound,
+            "win_left_bound": win_left_bound,
+            "win_width": win_width,
+            "win_height": win_height,
+            "win_right_bound": win_right_bound,
+            "win_lower_bound": win_lower_bound,
+            "device_pixel_ratio": device_pixel_ratio,
+        }
+        info: BrowserInfo = {"DOMTree": tree, "config": config}
+        return info
+
+    async def afetch_page_accessibility_tree(
+        self, info: BrowserInfo, client: Any, current_viewport_only: bool
+    ) -> AccessibilityTree:
+        accessibility_tree: AccessibilityTree = (
+            await client.send("Accessibility.getFullAXTree", {})
+        )["nodes"]
+
+        seen_ids = set()
+        _accessibility_tree = []
+        for node in accessibility_tree:
+            if node["nodeId"] not in seen_ids:
+                _accessibility_tree.append(node)
+                seen_ids.add(node["nodeId"])
+        accessibility_tree = _accessibility_tree
+
+        nodeid_to_cursor = {}
+        for cursor, node in enumerate(accessibility_tree):
+            nodeid_to_cursor[node["nodeId"]] = cursor
+            if "backendDOMNodeId" not in node:
+                node["union_bound"] = None
+                continue
+            backend_node_id = str(node["backendDOMNodeId"])
+            if node["role"]["value"] == "RootWebArea":
+                node["union_bound"] = [0.0, 0.0, 10.0, 10.0]
+            else:
+                response = await self.aget_bounding_client_rect(
+                    client, backend_node_id
+                )
+                if response.get("result", {}).get("subtype", "") == "error":
+                    node["union_bound"] = None
+                else:
+                    x = response["result"]["value"]["x"]
+                    y = response["result"]["value"]["y"]
+                    width = response["result"]["value"]["width"]
+                    height = response["result"]["value"]["height"]
+                    node["union_bound"] = [x, y, width, height]
+
+        if current_viewport_only:
+
+            def remove_node_in_graph(node: AccessibilityTreeNode) -> None:
+                nodeid = node["nodeId"]
+                node_cursor = nodeid_to_cursor[nodeid]
+                parent_nodeid = node["parentId"]
+                children_nodeids = node["childIds"]
+                parent_cursor = nodeid_to_cursor[parent_nodeid]
+                assert (
+                    accessibility_tree[parent_cursor].get("parentId", "Root")
+                    is not None
+                )
+                index = accessibility_tree[parent_cursor]["childIds"].index(
+                    nodeid
+                )
+                accessibility_tree[parent_cursor]["childIds"].pop(index)
+                for child_nodeid in children_nodeids:
+                    accessibility_tree[parent_cursor]["childIds"].insert(
+                        index, child_nodeid
+                    )
+                    index += 1
+                for child_nodeid in children_nodeids:
+                    child_cursor = nodeid_to_cursor[child_nodeid]
+                    accessibility_tree[child_cursor]["parentId"] = parent_nodeid
+                accessibility_tree[node_cursor]["parentId"] = "[REMOVED]"
+
+            config = info["config"]
+            for node in accessibility_tree:
+                if not node["union_bound"]:
+                    remove_node_in_graph(node)
+                    continue
+                [x, y, width, height] = node["union_bound"]
+                if width == 0 or height == 0:
+                    remove_node_in_graph(node)
+                    continue
+                in_viewport_ratio = self.get_element_in_viewport_ratio(
+                    elem_left_bound=float(x),
+                    elem_top_bound=float(y),
+                    width=float(width),
+                    height=float(height),
+                    config=config,
+                )
+                if in_viewport_ratio < IN_VIEWPORT_RATIO_THRESHOLD:
+                    remove_node_in_graph(node)
+
+            accessibility_tree = [
+                node
+                for node in accessibility_tree
+                if node.get("parentId", "Root") != "[REMOVED]"
+            ]
+
+        return accessibility_tree
+
+    async def aprocess(self, page: Any, client: Any) -> str:
+        open_tabs = page.context.pages
+        try:
+            tab_titles = [await tab.title() for tab in open_tabs]
+            current_tab_idx = open_tabs.index(page)
+            for idx in range(len(open_tabs)):
+                if idx == current_tab_idx:
+                    tab_titles[idx] = f"Tab {idx} (current): {tab_titles[idx]}"
+                else:
+                    tab_titles[idx] = f"Tab {idx}: {tab_titles[idx]}"
+            tab_title_str = " | ".join(tab_titles)
+        except Exception:
+            tab_title_str = " | ".join(
+                ["Tab {idx}" for idx in range(len(open_tabs))]
+            )
+
+        try:
+            browser_info = await self.afetch_browser_info(page, client)
+        except Exception:
+            await page.wait_for_load_state("load", timeout=500)
+            browser_info = await self.afetch_browser_info(page, client)
+
+        if self.observation_type != "accessibility_tree":
+            raise NotImplementedError(
+                "aprocess supports only accessibility_tree "
+                f"(got {self.observation_type})"
+            )
+        accessibility_tree = await self.afetch_page_accessibility_tree(
+            browser_info, client,
+            current_viewport_only=self.current_viewport_only)
+        content, obs_nodes_info = self.parse_accessibility_tree(
+            accessibility_tree)
+        content = self.clean_accesibility_tree(content)
+        self.obs_nodes_info = obs_nodes_info
+        self.meta_data["obs_nodes_info"] = obs_nodes_info
+
+        self.browser_config = browser_info["config"]
+        content = f"{tab_title_str}\n\n{content}"
+        return content
