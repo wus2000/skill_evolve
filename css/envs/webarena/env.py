@@ -199,22 +199,20 @@ class WebArenaEnv:
                 episode = episode_fn(agent_item, skill_text, target_client,
                                      self.cfg, lease, pred_dir)
             else:
-                # production: the async BrowserPool runs the episode as a
-                # coroutine (context-per-episode over K reused browsers).
-                # Concurrency is capped by the pool's max_contexts semaphore;
-                # task_timeout_s bounds a hung episode — asyncio.wait_for cancels
-                # it, and the `async with acquire` finally closes its context
-                # (flushing HAR) and frees the slot.
-                from css.envs.webarena.browser_loop import BrowserPool
-                from css.envs.webarena.agent import run_episode_async
-                pool = BrowserPool.get(self.cfg)
+                # production: dispatch the episode to the multi-process browser
+                # pool (M worker processes, each a single-loop async BrowserPool
+                # on its own core). The lease scheduler + scorer stay here in the
+                # main process; the worker runs the episode (own LLM client),
+                # writes HAR+response to the shared workdir, and returns the
+                # transcript. task_timeout_s bounds a hung episode (worker-side
+                # asyncio.wait_for + main-side grace).
+                from css.envs.webarena.worker_pool import MultiprocBrowserPool
+                pool = MultiprocBrowserPool.get(self.cfg)
                 timeout_s = int(getattr(self.cfg, "task_timeout_s", 1800) or 1800)
-                fut = pool.submit(
-                    lambda: run_episode_async(pool, agent_item, skill_text,
-                                              target_client, self.cfg, lease,
-                                              pred_dir),
-                    timeout=timeout_s)
-                episode = fut.result(timeout=timeout_s + 60)
+                lease_view = {"stack": lease.stack, "urls": dict(lease.urls),
+                              "sites": list(lease.sites)}
+                episode = pool.submit(agent_item, skill_text, lease_view,
+                                      pred_dir, timeout_s)
             result["conversation"] = episode.get("messages", [])
             result["n_turns"] = int(episode.get("n_turns", 0))
             result["agent_response"] = episode.get("agent_response")

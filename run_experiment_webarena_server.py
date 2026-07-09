@@ -191,19 +191,21 @@ def main() -> None:
             # ── WebArena env knobs (PREP §7) ──
             "webarena_split_dir": "data/webarena_splits",
             "webarena_stacks": STACKS,
-            # Browser concurrency (async BrowserPool, css/envs/webarena/
-            # browser_loop.py). The old design launched one full chromium per
-            # episode (~2-4GB, thread-affine) → capped ~24 on 127. Now K reused
-            # async browsers host context-per-episode (~100MB each), so
-            # concurrency is decoupled from process count:
-            #   webarena_browser_procs = K async chromium processes (the RAM/CPU
-            #     hogs; ~1GB each). 8 on 127's 80c/112GB.
-            #   webarena_max_contexts  = concurrent episodes (the real cap). 100
-            #     ≈ 8 browsers + 100×~0.1GB ≈ 18GB; LLM assumed to scale (user
-            #     ruling 2026-07-09). Raise once observed stable.
-            # A hung episode is bounded by task_timeout_s (asyncio.wait_for).
-            "webarena_browser_procs": 8,
-            "webarena_max_contexts": 100,
+            # Browser/episode concurrency (multi-process pool, css/envs/webarena/
+            # worker_pool.py). The old design launched one thread-affine chromium
+            # per episode (~2-4GB) → capped ~24 on 127; the single-loop async pool
+            # then hit the GIL (one event-loop thread = one core). So we run M
+            # worker PROCESSES (M cores), each a single-loop async BrowserPool:
+            #   webarena_worker_procs  = M processes = loop cores used. 16 on
+            #     127's 80c (leaves cores for chromium + AW/SS).
+            #   webarena_max_contexts  = TOTAL concurrent episodes; split /M across
+            #     workers. 128 ≈ 16 browsers + 128 ctx ≈ 55-65GB in 127's 111GB.
+            #   webarena_browser_procs = async browsers PER worker (1-2). 16 total.
+            # LLM assumed to scale (user ruling 2026-07-09). task_timeout_s bounds
+            # a hung episode (worker asyncio.wait_for + main-side grace).
+            "webarena_worker_procs": 16,
+            "webarena_browser_procs": 1,
+            "webarena_max_contexts": 128,
             "webarena_verified_cli":
                 "/home/wushang/miniconda3/envs/webarena/bin/webarena-verified",
             "webarena_env_config": env_config,
@@ -263,8 +265,9 @@ def main() -> None:
         cfg.gate_screen_k = 1
         cfg.max_decisions = 1
         cfg.batch_size = 8
-        cfg.extra["webarena_browser_procs"] = 2
-        cfg.extra["webarena_max_contexts"] = 6
+        cfg.extra["webarena_worker_procs"] = 2
+        cfg.extra["webarena_browser_procs"] = 1
+        cfg.extra["webarena_max_contexts"] = 4
 
     os.makedirs(out_root, exist_ok=True)
     logging.basicConfig(
@@ -278,8 +281,10 @@ def main() -> None:
     env = build_env(cfg)
     log.info("Train=%d  Val=%d  Test=%d", len(env.train_items()),
              len(env.val_items()), len(env.test_items()))
-    log.info("Config: workers=%d browser_procs=%s max_contexts=%s turns=%d stacks=%d",
-             cfg.max_api_workers, cfg.extra.get("webarena_browser_procs"),
+    log.info("Config: api_workers=%d worker_procs=%s browsers/worker=%s "
+             "max_contexts=%s turns=%d stacks=%d", cfg.max_api_workers,
+             cfg.extra.get("webarena_worker_procs"),
+             cfg.extra.get("webarena_browser_procs"),
              cfg.extra.get("webarena_max_contexts"), cfg.max_turns, len(STACKS))
 
     run_css(env=env, target_client=target_client,

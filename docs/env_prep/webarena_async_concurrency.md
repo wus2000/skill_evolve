@@ -65,6 +65,41 @@ Split the vendored harness into **pure logic (shared)** + **thin Playwright call
 7. Deploy to 127 + smoke.
 
 ## Config (per-env defaults, launcher)
-- `webarena_browser_procs`: K async browsers on 127 (default 8).
-- `webarena_max_contexts`: episode concurrency cap (default 100; RAM ≈ K + 100×~0.1 GB).
-- `webarena_max_browsers`: ret/deprecated → becomes an alias for max_contexts.
+- `webarena_browser_procs`: K async browsers per worker process.
+- `webarena_max_contexts`: episode concurrency cap PER WORKER.
+- `webarena_max_browsers`: back-compat alias for max_contexts.
+
+## Phase 2 (2026-07-09): multi-PROCESS scaling — the GIL wall
+Single-loop measurement at C=50 (127): the event-loop **thread pegged at 99.9%
+of one core** (CDP-response deserialization + AXTree parse are Python), process
+total 99.8% = exactly 1 core; chromium idle (133%), 79 cores idle, RAM fine.
+=> The browser bottleneck is **GIL-bound Python CPU**, so more event-loop THREADS
+can't help (one Python thread runs at a time). To use the 80 cores the fix must
+be **multi-PROCESS**.
+
+Architecture (`css/envs/webarena/worker_pool.py`, `MultiprocBrowserPool`):
+- M worker processes, each its own GIL/core, each running the validated
+  single-loop `BrowserPool` + `run_episode_async` (async-harness parity carries
+  over — no new hot-path risk) + its own LLM client, with C_w contexts / B_w
+  browsers.
+- Dispatch: main `env.run_one` acquires the lease (scheduler stays in main),
+  puts (rid, item, skill, lease-view, workdir) on a shared req queue, blocks on
+  a per-rid result routed from a shared res queue by a main-side dispatcher
+  thread; then scores (worker wrote HAR+response to the shared FS) and releases
+  the lease.
+- Total concurrency = M × C_w; CPU = M loop-cores (parallel).
+- Sizing 127 (80c/111G): default M=16 × C_w=8 = 128 concurrent, ~16 browsers +
+  128 contexts ≈ 55-65G, 16 loop-cores. Config: webarena_worker_procs (M).
+- Robust: worker-crash monitor (restart + fail in-flight), per-worker FD raise,
+  clean shutdown; cfg/item/lease-view/result all picklable; clients built inside
+  workers.
+- Reuses browser_loop.BrowserPool verbatim inside each worker (single loop per
+  process is optimal — one GIL per process).
+
+## Farm-side (128) throughput plan — spend the RAM, get off the HDD
+HDD (sda) is the farm root cause (refresh recreate + serving I/O → sda 93%):
+1. page-cache warmth (free): 162G RAM caches image layers; post-warmup refreshes
+   read from RAM. Confirm 93% is cold-reads (self-heals) vs writable-layer writes.
+2. SSD (sdb) / tmpfs data-root or volumes for our containers → refresh+serving at
+   SSD/RAM speed, HDD out of the loop.
+3. bump php-fpm max_children (now 5) per container for read-only-sharing concurrency.
