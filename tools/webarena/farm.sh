@@ -125,7 +125,12 @@ case "${1:-}" in
                  img="$(stack_img "$3" "$2")"
                  if [ "$3" != gitlab ] || [ "$img" = "$(golden_img gitlab)" ]; then
                      repoint "wa_${3}_$2" "$3" "$2"
-                     [ "$3" = gitlab ] && wait_ready "$2" "$3"
+                     # if-fi (not `&& wait_ready`): a bare `[ x = gitlab ] &&`
+                     # tail evaluates FALSE for non-gitlab sites, which made the
+                     # whole refresh arm exit rc=1 on success (env.py then raised
+                     # "refresh rc=1" and leaked the lane). if-fi returns 0 when
+                     # the condition is false.
+                     if [ "$3" = gitlab ]; then wait_ready "$2" "$3"; fi
                  fi; } ;;
     wait)    for s in $SITES; do wait_ready "$2" "$s" || exit 1; done ;;
     build-gitlab)  # bake the running (re-pointed) gitlab into a per-stack image
