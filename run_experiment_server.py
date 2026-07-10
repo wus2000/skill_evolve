@@ -201,6 +201,36 @@ def main() -> None:
             "optimizer_json_mode": True,
         },
     )
+    # ── Variant switches (env-var driven; the agreed defaults above stay
+    #    intact — per-env default-config convention). Same semantics as the
+    #    WEBARENA_L0_ONLY block (2026-07-10), generalized for this launcher. ──
+    if os.environ.get("CSS_L0_ONLY"):
+        # L0-EXPLOITATION-ONLY variant: root node bursts only — no spawns, no
+        # exploration sessions, no tree branching. Pure config:
+        #  - max_decisions = N bursts (a decision == one burst when spawning
+        #    is impossible);
+        #  - spawn_supply_lambda=0 => spawn_score==0, arbitration always
+        #    keeps exploiting (ties keep exploiting by design);
+        #  - saturation_dry_bursts=99 => the hard-stall forced-spawn backstop
+        #    can't trigger inside the budget.
+        cfg.max_decisions = int(os.environ.get("CSS_L0_BURSTS", "6"))
+        cfg.spawn_supply_lambda = 0.0
+        cfg.saturation_dry_bursts = 99
+        print(f"L0-ONLY variant: bursts={cfg.max_decisions} "
+              f"(spawn disabled, saturation backstop parked)", flush=True)
+    if os.environ.get("CSS_MODEL"):
+        # Model-swap variant (2026-07-11: Qwen3.5-9B self-evolve probe).
+        # Self-evolve = BOTH roles (target + optimizer) run the same model.
+        cfg.target_model = os.environ["CSS_MODEL"]
+        cfg.optimizer_model = os.environ["CSS_MODEL"]
+        print(f"MODEL override: target=optimizer={cfg.target_model}", flush=True)
+    if os.environ.get("CSS_BASE_URL"):
+        cfg.extra["base_url"] = os.environ["CSS_BASE_URL"]
+        print(f"BASE_URL override: {cfg.extra['base_url']}", flush=True)
+    if os.environ.get("CSS_WORKERS"):
+        cfg.max_api_workers = int(os.environ["CSS_WORKERS"])
+        print(f"WORKERS override: {cfg.max_api_workers}", flush=True)
+
     cfg.validate()
 
     os.makedirs(out_root, exist_ok=True)
