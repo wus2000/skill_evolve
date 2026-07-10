@@ -109,40 +109,65 @@ _VERIFY_PATH = {"shopping": "/customer/account/",
 
 
 def generate_state(stack: str, site: str, base_url: str, auth_dir: str,
-                   *, timeout_ms: int = 60000) -> str:
+                   *, timeout_ms: int = 60000, tries: int = 4,
+                   base_delay: float = 2.0) -> str:
     """Drive a real UI login and dump ``storage_state``. Returns the path.
 
     Raises on failure — a silently unauthenticated run would look like a model
     problem for the next several hours (the 2026-07-08 probes: wa_0144 looping
     on the login page, wa_0187 hunting admin inventory in the storefront).
+
+    A3 (2026-07-10): retry with backoff. A magento freshly recreated or under
+    concurrent refresh load transiently 500s the login POST / serves the verify
+    page slowly, so a single attempt intermittently "does not stick" — which
+    left the lane permanently dirty and starved the clean-lane supply. Retrying
+    rides out that window; a genuinely broken login exhausts the tries and
+    raises, exactly as before.
     """
     if site in HEADER_SITES:
         raise ValueError(f"{site} authenticates by header, not by cookie")
     from playwright.sync_api import sync_playwright
+    import time as _t
 
     os.makedirs(auth_dir, exist_ok=True)
     path = state_path(auth_dir, stack, site)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, channel="chromium")
-        ctx = browser.new_context()
-        ctx.set_default_timeout(timeout_ms)
+
+    def _attempt() -> None:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, channel="chromium")
+            ctx = browser.new_context()
+            ctx.set_default_timeout(timeout_ms)
+            try:
+                page = ctx.new_page()
+                _LOGIN_FN[site](page, base_url)
+                page.wait_for_load_state("domcontentloaded")
+                # Verify: hit a page only an authenticated session may see.
+                page.goto(_origin(base_url) + _VERIFY_PATH[site],
+                          wait_until="domcontentloaded")
+                url = page.url
+                if "login" in url or "sign_in" in url:
+                    raise RuntimeError(
+                        f"{stack}/{site}: login did not stick (landed on {url})")
+                ctx.storage_state(path=path)
+            finally:
+                ctx.close()
+                browser.close()
+
+    last_exc: "Exception | None" = None
+    for attempt in range(max(1, tries)):
         try:
-            page = ctx.new_page()
-            _LOGIN_FN[site](page, base_url)
-            page.wait_for_load_state("domcontentloaded")
-            # Verify: hit a page only an authenticated session may see.
-            page.goto(_origin(base_url) + _VERIFY_PATH[site],
-                      wait_until="domcontentloaded")
-            url = page.url
-            if "login" in url or "sign_in" in url:
-                raise RuntimeError(
-                    f"{stack}/{site}: login did not stick (landed on {url})")
-            ctx.storage_state(path=path)
-        finally:
-            ctx.close()
-            browser.close()
-    _log.info("webarena/auth — %s/%s logged in -> %s", stack, site, path)
-    return path
+            _attempt()
+            _log.info("webarena/auth — %s/%s logged in -> %s", stack, site, path)
+            return path
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt == tries - 1:
+                raise
+            _log.warning("webarena/auth — %s/%s login attempt %d/%d failed "
+                         "(%s); retrying", stack, site, attempt + 1, tries,
+                         str(exc)[:120])
+            _t.sleep(base_delay * (2 ** attempt))
+    raise last_exc  # pragma: no cover — loop returns or raises above
 
 
 def merged_state(auth_dir: str, stack: str, sites: "tuple | list") -> "dict | None":

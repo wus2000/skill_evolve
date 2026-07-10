@@ -12,9 +12,13 @@
 # so EVERY replica must be re-pointed at its own ports or its in-page links
 # send the agent to s1 (silent cross-stack bleed — mutations land on the wrong
 # replica, isolation is a lie). shopping/admin/reddit are re-pointed live with
-# `env-ctrl init --base-url` (3-6s). gitlab boots from a per-stack baked image
-# `webarena-ready/gitlab_<stack>` so its ~9-min cold boot reconfigures ONCE
-# with the right external_url instead of twice.
+# `env-ctrl init --base-url` (3-6s). gitlab boots from the am1n3e base + a live
+# re-point (per-stack baking was abandoned: a baked re-run skips reconfigure and
+# comes up 502 nginx->puma).
+#
+# HYBRID daemons (2026-07-09): heavy-boot sites (gitlab + shopping/admin magento)
+# → rootless RAM daemon (/dev/shm); reddit (light, no ES) → shared HDD daemon (see
+# dk() below). Both publish the same host ports.
 #
 #   farm.sh start   <stack>        start all four sites, re-point, wait ready
 #   farm.sh stop    <stack>        stop+remove the stack's containers
@@ -31,6 +35,22 @@ GOLDEN=webarena-golden
 READY=webarena-ready
 SITES="shopping shopping_admin reddit gitlab"
 READY_TIMEOUT="${READY_TIMEOUT:-1200}"
+
+# ── Daemon routing (2026-07-09 HYBRID, HDD-aversion driven). The heavy-boot sites
+# — gitlab (gitlab-ctl reconfigure = random-write thrash) and shopping/admin
+# (magento + elasticsearch = disk-heavy boot) — run on the ROOTLESS RAM daemon
+# (/dev/shm); only reddit (postgres+rails, light, no ES) runs on the shared HDD
+# daemon. Measured: on HDD gitlab refresh >5min under load and shopping was still
+# booting ES at 8min, while on RAM all three refresh in ~20-125s; reddit is ~30s
+# even on HDD. gitlab's RAM writable is tiny (~0.5GB/stack) so it barely costs
+# tmpfs; magento's writable is the real budget item (sets the stack count). dk()
+# routes each docker call by site; both daemons publish the SAME host ports so the
+# launcher/forwards are unaffected.
+RAM_HOST="${WEBARENA_RAM_DOCKER_HOST:-unix:///run/user/1026/docker.sock}"
+HDD_HOST="${WEBARENA_HDD_DOCKER_HOST:-unix:///var/run/docker.sock}"
+dk() { local s="$1"; shift; case "$s" in
+         reddit) docker -H "$HDD_HOST" "$@";;
+         *)      docker -H "$RAM_HOST" "$@";; esac; }
 
 # ── Port scheme (2026-07-09, farm on 128): each stack owns a contiguous 4-port
 # block  host_port = BASE_PORT + (N-1)*STACK_STRIDE + site_offset.  The old
@@ -58,7 +78,7 @@ golden_img() { case "$1" in shopping_admin) echo "$GOLDEN/admin:warm";;
 # single boot reconfigure); falls back to the base image + live re-point.
 stack_img() {  # stack_img <site> <stack>
     local site="$1" stack="$2"
-    if [ "$site" = gitlab ] && docker image inspect "$READY/gitlab_${stack}:latest" >/dev/null 2>&1; then
+    if [ "$site" = gitlab ] && dk gitlab image inspect "$READY/gitlab_${stack}:latest" >/dev/null 2>&1; then
         echo "$READY/gitlab_${stack}:latest"
     else
         golden_img "$site"
@@ -68,16 +88,16 @@ stack_img() {  # stack_img <site> <stack>
 repoint() {  # repoint <name> <site> <stack> — set the container's own base_url
     local name="$1" site="$2" stack="$3" url
     url="http://localhost:$(host_port "$stack" "$site")"
-    docker exec "$name" env-ctrl init --base-url "$url" >/dev/null 2>&1 \
+    dk "$site" exec "$name" env-ctrl init --base-url "$url" >/dev/null 2>&1 \
         && echo "  repointed $name -> $url"
 }
 
 start_site() {  # start_site <stack> <site>
     local stack="$1" site="$2" name extra="" img
     name="wa_${site}_${stack}"; img="$(stack_img "$site" "$stack")"
-    docker rm -f "$name" >/dev/null 2>&1
+    dk "$site" rm -f "$name" >/dev/null 2>&1
     [ "$site" = gitlab ] && extra="--shm-size=512m"
-    docker run -d --name "$name" $extra \
+    dk "$site" run -d --name "$name" $extra \
         -p "$(host_port "$stack" "$site")":"$(inner_port "$site")" \
         "$img" >/dev/null && echo "started $name ($img)"
     # gitlab from a baked per-stack image already carries the right external_url;
@@ -119,7 +139,7 @@ start_stack() {  # start + repoint(non-gitlab, or gitlab-on-base) + wait
 
 case "${1:-}" in
     start)   start_stack "$2" ;;
-    stop)    for s in $SITES; do docker rm -f "wa_${s}_$2" >/dev/null 2>&1; done
+    stop)    for s in $SITES; do dk "$s" rm -f "wa_${s}_$2" >/dev/null 2>&1; done
              echo "stopped $2" ;;
     refresh) start_site "$2" "$3" && wait_ready "$2" "$3" && {
                  img="$(stack_img "$3" "$2")"
@@ -135,9 +155,11 @@ case "${1:-}" in
     wait)    for s in $SITES; do wait_ready "$2" "$s" || exit 1; done ;;
     build-gitlab)  # bake the running (re-pointed) gitlab into a per-stack image
              name="wa_gitlab_$2"
-             docker exec "$name" grep -E '^external_url' /etc/gitlab/gitlab.rb
-             docker commit "$name" "$READY/gitlab_$2:latest" >/dev/null \
+             dk gitlab exec "$name" grep -E '^external_url' /etc/gitlab/gitlab.rb
+             dk gitlab commit "$name" "$READY/gitlab_$2:latest" >/dev/null \
                  && echo "committed $READY/gitlab_$2:latest" ;;
-    status)  docker ps --format '{{.Names}}\t{{.Status}}' | grep -E '^wa_' | sort ;;
+    status)  { docker -H "$RAM_HOST" ps --format '{{.Names}}\t{{.Status}}';
+               docker -H "$HDD_HOST" ps --format '{{.Names}}\t{{.Status}}'; } \
+             | grep -E '^wa_' | sort ;;
     *) echo "usage: $0 {start <stack>|stop <stack>|refresh <stack> <site>|wait <stack>|build-gitlab <stack>|status}"; exit 1 ;;
 esac

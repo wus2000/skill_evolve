@@ -44,10 +44,12 @@ class Lease:
     urls: dict            # site -> base_url for THIS stack
     sites: tuple          # sites this lease pinned (mutating) — () for read-only
     exclusive: bool
+    read_slots: tuple = ()  # (stack, site) read-only admission slots held (A1)
 
 
 @dataclass
 class _Lane:
+    slots: "threading.BoundedSemaphore"  # read-only per-stack concurrency cap (A1)
     lock: threading.Lock = field(default_factory=threading.Lock)
     dirty: bool = False        # mutated since last refresh (guarded by _mu)
     refreshing: bool = False   # container recreate in flight (guarded by _mu)
@@ -67,13 +69,34 @@ class SiteLeaseManager:
     def __init__(self, stacks: "dict[str, dict[str, str]]",
                  refresh_fn: "Callable[[str, str], None] | None" = None,
                  refresh_concurrency: int = 3,
-                 gitlab_refresh_concurrency: int = 1):
+                 gitlab_refresh_concurrency: int = 1,
+                 read_concurrency: "dict | int | None" = None):
         if not stacks:
             raise ValueError("SiteLeaseManager needs at least one stack")
         self._stacks = dict(stacks)
         self._refresh = refresh_fn or (lambda stack, site: None)
-        self._lanes = {(s, site): _Lane()
-                       for s, urls in self._stacks.items() for site in urls}
+        # A1 admission control (2026-07-10): per-(stack, site) READ-ONLY
+        # concurrency cap. magento (shopping/shopping_admin) is fragile under
+        # concurrent browser sessions — a few piled episodes exhaust php-fpm/
+        # nginx workers -> net::ERR_CONNECTION_RESET/REFUSED. A read-only episode
+        # now holds ONE slot per site it touches for its whole run; excess
+        # episodes queue in acquire() instead of overloading the container.
+        # (mutate stays lane-exclusive as before — already 1/lane.) Sized per
+        # site: heavy magento low, lighter reddit/gitlab higher. Overridable via
+        # cfg.extra['webarena_read_concurrency'] = {site: K, '_default': K}.
+        rc = read_concurrency if isinstance(read_concurrency, dict) else {}
+        rc_flat = read_concurrency if isinstance(read_concurrency, int) else None
+        _DEFAULTS = {"shopping": 2, "shopping_admin": 2, "reddit": 4, "gitlab": 3}
+
+        def _cap(site: str) -> int:
+            if rc_flat is not None:
+                return max(1, rc_flat)
+            return max(1, int(rc.get(site, rc.get("_default",
+                                                  _DEFAULTS.get(site, 3)))))
+        self._lanes = {
+            (s, site): _Lane(slots=threading.BoundedSemaphore(_cap(site)))
+            for s, urls in self._stacks.items() for site in urls}
+        self._read_cap = _cap  # exposed for telemetry / B1 capacity probing
         self._rr = 0
         self._rr_lock = threading.Lock()
         self._mu = threading.Lock()   # guards lane.dirty / lane.refreshing
@@ -155,15 +178,34 @@ class SiteLeaseManager:
                     with self._mu:
                         busy = any(self._lanes[(stack, s)].refreshing
                                    for s in wanted)
-                    if not busy:
+                    if busy:
+                        continue
+                    # A1: admission control — hold ONE read slot per wanted site
+                    # on THIS stack for the whole episode; queue (retry next
+                    # scan) if the stack's magento is already at its per-site
+                    # cap, instead of piling another browser session on it.
+                    got: list = []
+                    ok = True
+                    for s in wanted:
+                        if self._lanes[(stack, s)].slots.acquire(blocking=False):
+                            got.append(s)
+                        else:
+                            ok = False
+                            break
+                    if ok:
                         self._log_wait(t0, wanted, task_type)
-                        return Lease(stack=stack, urls=self._stacks[stack],
-                                     sites=(), exclusive=False)
+                        return Lease(
+                            stack=stack, urls=self._stacks[stack], sites=(),
+                            exclusive=False,
+                            read_slots=tuple((stack, s) for s in got))
+                    for s in got:  # partial acquire — roll back, try next stack
+                        self._lanes[(stack, s)].slots.release()
                 if time.monotonic() >= deadline_ts:
                     break
                 time.sleep(0.5)
             raise TimeoutError(
-                f"all stacks mid-refresh for sites={wanted} within {timeout_s}s")
+                f"no read slot for sites={wanted} within {timeout_s}s "
+                f"(farm at per-site capacity)")
 
         deadline = threading.Event()
         timer = threading.Timer(timeout_s, deadline.set)
@@ -196,6 +238,12 @@ class SiteLeaseManager:
         raise TimeoutError(f"no free lane for sites={wanted} within {timeout_s}s")
 
     def release(self, lease: Lease) -> None:
+        # A1: free the read-only admission slots this episode held.
+        for stack, site in getattr(lease, "read_slots", ()) or ():
+            try:
+                self._lanes[(stack, site)].slots.release()
+            except (ValueError, KeyError):
+                pass  # BoundedSemaphore over-release guard — release never raises
         if not lease.exclusive:
             return
         for site in lease.sites:

@@ -1,43 +1,53 @@
 """WebArena agent prompt contract (base harness — deliberately un-optimized).
 
-The base prompt mirrors the official WebArena harness semantics (AXTree
-observation, id-based action DSL, one action per turn, ```action``` fencing)
-so our zero-skill baseline is community-comparable. It adds exactly ONE
-extension the official prompt lacks: the structured final answer required by
-the WebArena-Verified evaluator (task_type/status/retrieved_data JSON inside
-``stop [...]``). Do NOT fold tactical advice into this file — that headroom
-belongs to the optimized skill document (CSS layers it as a separate system
-section), and hand-tuning here would contaminate the "learned" claim.
+The base prompt mirrors the official WebArena harness SEMANTICS (AXTree
+observation, id-based actions over the SAME action space, one action per turn).
+Only the action WIRE PROTOCOL differs: actions are emitted as a structured JSON
+object {"name", "parameters"} (OpAgent-style, arXiv:2602.13559) rather than the
+text DSL `type [id] [content]`. This is a pure protocol swap — json_action.py
+decodes it into the byte-identical vendored Action — motivated by robustness: the
+DSL's positional/bracket parse rejected 99% of `type` and 100% of `goto` outputs
+(bare args) on our model, whereas typed JSON fields + schema defaults align with
+the model's natural output. The stop answer (task_type/status/retrieved_data)
+lives in the stop action's parameters. Do NOT fold tactical advice into this file
+— that headroom belongs to the optimized skill document (CSS layers it as a
+separate system section), and hand-tuning here would contaminate the "learned"
+claim.
 """
 from __future__ import annotations
 
 import json
 
 ACTION_SPACE_DESCRIPTION = """\
-Web-browser agent operating on an accessibility-tree observation. Each
-element line looks like `[1234] button 'Add to cart'` where 1234 is the
-element id. Exactly one action per turn, chosen from:
+Web-browser agent operating on an accessibility-tree observation. Each element
+line looks like `[1234] button 'Add to cart'` where 1234 is the element id.
+Choose exactly ONE action per turn and output it as a single JSON object of the
+form {"name": <action>, "parameters": {<...>}} — chosen from:
 
 Page operations:
-- `click [id]` — click element id
-- `type [id] [content] [press_enter_after]` — clear the field, type content;
-  press_enter_after is 1 (default, submits) or 0
-- `hover [id]` — hover over element id
-- `press [key_comb]` — keyboard combo (e.g. Ctrl+v)
-- `scroll [down]` / `scroll [up]` — scroll the page
+- {"name": "click", "parameters": {"id": <int>}}
+- {"name": "type", "parameters": {"id": <int>, "content": <string>, "press_enter_after": <0 or 1>}}
+    clear the field and type content; press_enter_after 1 submits (default), 0 keeps focus
+- {"name": "hover", "parameters": {"id": <int>}}
+- {"name": "press", "parameters": {"key_comb": <string>}}    keyboard combo, e.g. "Ctrl+v"
+- {"name": "scroll", "parameters": {"direction": "up" | "down"}}
 
 Tab management:
-- `new_tab`, `tab_focus [tab_index]`, `close_tab`
+- {"name": "new_tab", "parameters": {}}
+- {"name": "tab_focus", "parameters": {"index": <int>}}
+- {"name": "close_tab", "parameters": {}}
 
 Navigation:
-- `goto [url]`, `go_back`, `go_forward`
+- {"name": "goto", "parameters": {"url": <string>}}
+- {"name": "go_back", "parameters": {}}
+- {"name": "go_forward", "parameters": {}}
 
 Completion (ends the episode):
-- `stop [answer]` — answer MUST be one JSON object:
-  {"task_type": "retrieve"|"mutate"|"navigate",
-   "status": "SUCCESS"|"NOT_FOUND_ERROR"|"PERMISSION_DENIED_ERROR"|
-             "DATA_VALIDATION_ERROR"|"ACTION_NOT_ALLOWED_ERROR"|"UNKNOWN_ERROR",
-   "retrieved_data": <list of retrieved values for retrieve tasks, else null>}
+- {"name": "stop", "parameters": {
+      "task_type": "retrieve" | "mutate" | "navigate",
+      "status": "SUCCESS" | "NOT_FOUND_ERROR" | "PERMISSION_DENIED_ERROR" |
+                "DATA_VALIDATION_ERROR" | "ACTION_NOT_ALLOWED_ERROR" | "UNKNOWN_ERROR",
+      "retrieved_data": <list of retrieved values for retrieve tasks, else null>}}
 """
 
 SYSTEM_PROMPT = """\
@@ -54,13 +64,12 @@ result of your previous action.
 Rules:
 1. Issue exactly ONE action per turn.
 2. Only reference element ids present in the CURRENT observation.
-3. Think briefly first, then end your reply with the action fenced in triple
-   backticks, introduced verbatim as: In summary, the next action I will
-   perform is ```action```
-4. When the task is complete (or genuinely impossible), issue `stop [...]`
-   with the JSON answer contract above. Report honest status: use
-   "NOT_FOUND_ERROR" when the requested thing does not exist, an error status
-   when the site forbids the operation — do not fabricate SUCCESS.
+3. Think briefly first, then end your reply with the single action as ONE JSON
+   object {"name": ..., "parameters": {...}} inside a ```json fenced code block.
+4. When the task is complete (or genuinely impossible), issue the `stop` action
+   with the answer contract above. Report honest status: use "NOT_FOUND_ERROR"
+   when the requested thing does not exist, an error status when the site forbids
+   the operation — do not fabricate SUCCESS.
 5. For retrieve tasks put the answer value(s) in `retrieved_data` as a list
    (numbers as plain numbers, strings exactly as shown on the page). For
    mutate/navigate tasks set `retrieved_data` to null.
@@ -69,7 +78,9 @@ Rules:
 
 def build_system_prompt(skill_text: str) -> str:
     """Base contract + the (possibly empty) optimized skill document."""
-    base = SYSTEM_PROMPT.format(action_space=ACTION_SPACE_DESCRIPTION)
+    # .replace (not .format): the JSON action schema contains literal { } braces
+    # that str.format would misread as fields.
+    base = SYSTEM_PROMPT.replace("{action_space}", ACTION_SPACE_DESCRIPTION)
     skill = (skill_text or "").strip()
     if not skill:
         return base

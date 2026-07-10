@@ -188,6 +188,10 @@ class TestWebArenaEnv(unittest.TestCase):
         for _ in range(6):                       # RR must never land on it
             ro = mgr.acquire(["reddit"], "retrieve", timeout_s=2)
             self.assertNotEqual(ro.stack, refreshing[0])
+            mgr.release(ro)                       # A1: free the read slot before
+            #                                      the next acquire — this test
+            #                                      checks routing, not the per-
+            #                                      site concurrency cap.
         # unrelated sites are unaffected by the busy lane
         gate.set()
 
@@ -209,6 +213,30 @@ class TestWebArenaEnv(unittest.TestCase):
         gate.set()
         ro = mgr.acquire(["reddit"], "retrieve", timeout_s=10)
         self.assertFalse(ro.exclusive)
+
+    def test_readonly_admission_cap_enforced(self):
+        # A1: read-only episodes are capped per (stack, site); excess queue out.
+        mgr = SiteLeaseManager({"s1": {"reddit": "http://h:9999"}},
+                               read_concurrency={"reddit": 2})
+        a = mgr.acquire(["reddit"], "retrieve", timeout_s=2)
+        b = mgr.acquire(["reddit"], "retrieve", timeout_s=2)     # cap=2: both OK
+        self.assertEqual(len(a.read_slots), 1)                   # slot recorded
+        with self.assertRaises(TimeoutError):                    # 3rd over cap
+            mgr.acquire(["reddit"], "retrieve", timeout_s=1)
+        mgr.release(a)                                            # frees a slot
+        c = mgr.acquire(["reddit"], "retrieve", timeout_s=2)     # now admitted
+        self.assertFalse(c.exclusive)
+        mgr.release(b)
+        mgr.release(c)
+
+    def test_readonly_flat_read_concurrency_int(self):
+        # read_concurrency may be a flat int applied to every site.
+        mgr = SiteLeaseManager({"s1": {"shopping": "http://h:7770"}},
+                               read_concurrency=1)
+        a = mgr.acquire(["shopping"], "retrieve", timeout_s=2)
+        with self.assertRaises(TimeoutError):
+            mgr.acquire(["shopping"], "retrieve", timeout_s=1)
+        mgr.release(a)
 
     def test_refresh_storm_capped(self):
         active = {"n": 0, "peak": 0}

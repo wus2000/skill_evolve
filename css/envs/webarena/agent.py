@@ -63,6 +63,27 @@ def extract_action_str(reply: str) -> str:
     return lines[-1] if lines else ""
 
 
+def parse_action_from_reply(reply: str):
+    """Decode the LLM's chosen action. JSON protocol is PRIMARY (structured,
+    schema-tolerant — see json_action.py); the text DSL is a FALLBACK for any
+    straggler reply still in the old form. Returns (action | None, action_str,
+    err | None); a non-None err means the reply had no valid action (invalid)."""
+    from css.envs.webarena.json_action import (
+        action_display, create_json_action, extract_action_json)
+    from css.envs.webarena.vendor import create_id_based_action
+    obj = extract_action_json(reply)
+    if obj is not None:
+        try:
+            return create_json_action(obj), action_display(obj), None
+        except Exception as exc:  # noqa: BLE001 — bad schema => invalid action
+            return None, action_display(obj), f"{type(exc).__name__}: {exc}"
+    dsl = extract_action_str(reply)     # legacy text-DSL fallback
+    try:
+        return create_id_based_action(dsl), dsl, None
+    except Exception as exc:  # noqa: BLE001
+        return None, (dsl or reply or "")[:120], f"{type(exc).__name__}: {exc}"
+
+
 def resolve_start_url(item: dict, lease: "Lease") -> str:
     """Map the record's first ``__SITE__`` placeholder to this lease's URL."""
     urls = item.get("start_urls") or []
@@ -70,6 +91,83 @@ def resolve_start_url(item: dict, lease: "Lease") -> str:
     for site, base in lease.urls.items():
         raw = raw.replace(f"__{site.upper()}__", base.rstrip("/"))
     return raw
+
+
+def _auth_sites_for(item: dict, lease: "Lease") -> tuple:
+    """Sites whose login state THIS task needs — from its start_urls'
+    ``__SITE__`` placeholders, NOT every site on the stack. The old
+    ``lease.sites or lease.urls`` loaded ALL sites for read tasks; shopping AND
+    reddit both name their session cookie ``PHPSESSID`` (domain=localhost,
+    port-agnostic), so merging them into one browser context collided the two,
+    the wrong one won, and magento lost the session (guest). That is exactly why
+    read shopping tasks failed while mutate ones (single-site lease) worked.
+    Scoping to the task's own site(s) removes the collision."""
+    found: list = []
+    for u in (item.get("start_urls") or []):
+        for m in re.findall(r"__([A-Z_]+)__", u or ""):
+            s = m.lower()
+            if s in lease.urls and s not in found:
+                found.append(s)
+    if found:
+        return tuple(found)
+    decl = tuple(s for s in (item.get("sites") or []) if s in lease.urls)
+    if decl:
+        return decl
+    if lease.sites:
+        return tuple(lease.sites)
+    return tuple(lease.urls)   # last resort (site unknown) — legacy behavior
+
+
+# ── A2: transient farm-overload retry (2026-07-10) ───────────────────────────
+# A magento under concurrent browser sessions momentarily exhausts its php-fpm/
+# nginx workers and returns net::ERR_CONNECTION_RESET / REFUSED / EMPTY_RESPONSE
+# until it drains. These are TRANSIENT overload signals, not a dead site —
+# retrying the navigation with backoff rides it out instead of failing the
+# episode (which would record a fake failure in the coverage ledger). A truly
+# dead site exhausts the retries and raises, exactly as before.
+_TRANSIENT_NET = ("ERR_CONNECTION_RESET", "ERR_CONNECTION_REFUSED",
+                  "ERR_EMPTY_RESPONSE", "ERR_CONNECTION_CLOSED",
+                  "ERR_NETWORK_CHANGED", "ERR_ADDRESS_UNREACHABLE",
+                  "ERR_CONNECTION_TIMED_OUT", "ERR_TIMED_OUT")
+
+
+def _is_transient_net(exc: Exception) -> bool:
+    m = str(exc)
+    return any(t in m for t in _TRANSIENT_NET)
+
+
+async def _agoto_retry(page, url: str, *, wait_until: str = "domcontentloaded",
+                       tries: int = 4, base_delay: float = 2.0):
+    """page.goto with exponential backoff on transient farm overload (A2)."""
+    import asyncio
+    last: "Exception | None" = None
+    for i in range(tries):
+        try:
+            return await page.goto(url, wait_until=wait_until)
+        except Exception as exc:  # noqa: BLE001
+            if i == tries - 1 or not _is_transient_net(exc):
+                raise
+            last = exc
+            await asyncio.sleep(base_delay * (2 ** i))
+    if last:  # pragma: no cover — the loop always returns or raises above
+        raise last
+
+
+def _goto_retry(page, url: str, *, wait_until: str = "domcontentloaded",
+                tries: int = 4, base_delay: float = 2.0):
+    """Sync twin of _agoto_retry for the non-pool run_episode path (A2)."""
+    import time as _t
+    last: "Exception | None" = None
+    for i in range(tries):
+        try:
+            return page.goto(url, wait_until=wait_until)
+        except Exception as exc:  # noqa: BLE001
+            if i == tries - 1 or not _is_transient_net(exc):
+                raise
+            last = exc
+            _t.sleep(base_delay * (2 ** i))
+    if last:  # pragma: no cover
+        raise last
 
 
 def build_canonical_user(*, turn: int, url: str, objective: str = "",
@@ -113,7 +211,7 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
     # as a logged-in user: cookie jars for shopping/reddit/gitlab, an auto-login
     # header for shopping_admin. A read-only task that pinned no sites still
     # gets the lease's stack jars — upstream starts every task authenticated.
-    auth_sites = tuple(lease.sites) or tuple(lease.urls)
+    auth_sites = _auth_sites_for(item, lease)
     headers = dict(extra.get("webarena_extra_headers", {}) or {})
     headers.update(auth.extra_headers(auth_sites))
     auth_dir = str(extra.get("webarena_auth_dir", "") or "")
@@ -159,8 +257,7 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
             # stall the load event past 30s (two probe launches failed on it,
             # 2026-07-08) while the CDP AXTree snapshot only needs the DOM —
             # matching the post-action wait below.
-            page.goto(resolve_start_url(item, lease),
-                      wait_until="domcontentloaded")
+            _goto_retry(page, resolve_start_url(item, lease))
             proc = TextObervationProcessor("accessibility_tree", True, VIEWPORT)
 
             try:
@@ -186,16 +283,14 @@ def run_episode(item: dict, skill_text: str, target_client: Any,
                     prev_effect=prev_effect, prev_facts=prev_facts)})
                 canonical.append({"role": "assistant", "content": reply})
 
-                action_str = extract_action_str(reply)
+                action, action_str, perr = parse_action_from_reply(reply)
                 last_result = ""
                 invalid, exec_error, stopped = False, "", False
-                try:
-                    action = create_id_based_action(action_str)
-                except Exception as exc:  # noqa: BLE001 — ActionParsingError et al.
+                if perr is not None:
                     invalid = True
-                    last_result = (f"Invalid action '{action_str[:120]}': {exc}. "
-                                   "Reply with exactly one action from the "
-                                   "action space, fenced in triple backticks.")
+                    last_result = (f"Invalid action ({perr}). Reply with exactly "
+                                   'ONE action as a single JSON object '
+                                   '{"name": ..., "parameters": {...}} in a ```json block.')
                 else:
                     if action["action_type"] == ActionTypes.STOP:
                         stopped = True
@@ -292,7 +387,7 @@ async def run_episode_async(pool: Any, item: dict, skill_text: str,
     scribe_on = bool(extra.get("webarena_scribe", True))
     stuck_stop = int(extra.get("webarena_stuck_stop_steps", 5))
 
-    auth_sites = tuple(lease.sites) or tuple(lease.urls)
+    auth_sites = _auth_sites_for(item, lease)
     headers = dict(extra.get("webarena_extra_headers", {}) or {})
     headers.update(auth.extra_headers(auth_sites))
     auth_dir = str(extra.get("webarena_auth_dir", "") or "")
@@ -319,11 +414,30 @@ async def run_episode_async(pool: Any, item: dict, skill_text: str,
         with gzip.open(turns_path, "at", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+    # ── Throughput probe (benchmarking only; webarena_scripted_probe=0 in
+    # production). Exercises the real env hot path — context acquire, page nav,
+    # AXTree parse — at full pool concurrency WITHOUT the LLM, to isolate the
+    # task-environment throughput ceiling (LLM latency excluded).
+    probe_steps = int(extra.get("webarena_scripted_probe", 0) or 0)
+    if probe_steps > 0:
+        done = 0
+        async with pool.acquire(storage_state=storage_state,
+                                har_path=os.path.join(workdir, "network.har"),
+                                headers=headers) as (ctx, page):
+            await _agoto_retry(page, resolve_start_url(item, lease))
+            proc = TextObervationProcessor("accessibility_tree", True, VIEWPORT)
+            for _ in range(probe_steps):
+                try:
+                    await proc.aprocess(page, await ctx.new_cdp_session(page))
+                    done += 1
+                except Exception:  # noqa: BLE001 — parse failure ends the probe
+                    break
+        return {"messages": [], "n_turns": done, "agent_response": "probe"}
+
     har_path = os.path.join(workdir, "network.har")
     async with pool.acquire(storage_state=storage_state, har_path=har_path,
                             headers=headers) as (ctx, page):
-        await page.goto(resolve_start_url(item, lease),
-                        wait_until="domcontentloaded")
+        await _agoto_retry(page, resolve_start_url(item, lease))
         proc = TextObervationProcessor("accessibility_tree", True, VIEWPORT)
         try:
             obs = await proc.aprocess(page, await ctx.new_cdp_session(page))
@@ -347,16 +461,14 @@ async def run_episode_async(pool: Any, item: dict, skill_text: str,
                 prev_effect=prev_effect, prev_facts=prev_facts)})
             canonical.append({"role": "assistant", "content": reply})
 
-            action_str = extract_action_str(reply)
+            action, action_str, perr = parse_action_from_reply(reply)
             last_result = ""
             invalid, exec_error, stopped = False, "", False
-            try:
-                action = create_id_based_action(action_str)
-            except Exception as exc:  # noqa: BLE001 — ActionParsingError et al.
+            if perr is not None:
                 invalid = True
-                last_result = (f"Invalid action '{action_str[:120]}': {exc}. "
-                               "Reply with exactly one action from the "
-                               "action space, fenced in triple backticks.")
+                last_result = (f"Invalid action ({perr}). Reply with exactly ONE "
+                               'action as a single JSON object '
+                               '{"name": ..., "parameters": {...}} in a ```json block.')
             else:
                 if action["action_type"] == ActionTypes.STOP:
                     stopped = True

@@ -82,6 +82,44 @@ def task_type_of(record: dict) -> str:
     return _expected(record).get("task_type") or "retrieve"
 
 
+def _distill_eval(detail: dict) -> str:
+    """Distill the raw WebArena-Verified eval_detail into the optimizer's
+    diagnostic: per-evaluator {status, expected (the real target/GT), actual,
+    mismatches}. Drops provenance noise (checksums, version, template ids,
+    actual_normalized). The ``expected`` TARGET is never clipped — it is the
+    diagnostic gold, and where the *substantive* GT lives (retrieve → the answer
+    in AgentResponse.expected.retrieved_data; mutate/navigate → the target
+    request in NetworkEvent.expected). ``actual`` is bounded (it can be a large
+    HAR dump). This replaces the old lossy eval_detail[:2000] clip AND the
+    tautological standalone ground_truth line, so the trajectory-end eval info
+    is the single, complete, correctly-located source of ground truth."""
+    evs = (detail or {}).get("evaluators_results") or []
+    if not evs:  # defensive: unknown shape — pass through, bounded
+        return json.dumps(detail, ensure_ascii=False, default=str)[:1500]
+    blocks: list[str] = []
+    for e in evs:
+        lines = [f"Evaluator {e.get('evaluator_name', '?')} "
+                 f"[{e.get('status', '?')}]"]
+        exp = e.get("expected")
+        if exp is not None:  # the TARGET / ground truth — never clipped
+            lines.append("  expected (target/GT): "
+                         + json.dumps(exp, ensure_ascii=False, default=str))
+        act = e.get("actual")
+        if act == [] or act == "":
+            lines.append("  actual: (none observed)")
+        elif act is not None:
+            a = json.dumps(act, ensure_ascii=False, default=str)
+            lines.append("  actual: " + (a[:500] + " …[bounded]"
+                                         if len(a) > 500 else a))
+        for a in (e.get("assertions") or []):
+            if a.get("status") != "success":
+                msgs = "; ".join(a.get("assertion_msgs") or [])
+                lines.append(f"  mismatch [{a.get('assertion_name', '?')}]: "
+                             f"{msgs}")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
 class WebArenaEnv:
     """TaskEnv implementation for WebArena-Verified (684-task scope)."""
 
@@ -106,7 +144,8 @@ class WebArenaEnv:
                 refresh_concurrency=int(
                     extra.get("webarena_refresh_concurrency", 3)),
                 gitlab_refresh_concurrency=int(
-                    extra.get("webarena_gitlab_refresh_concurrency", 1)))
+                    extra.get("webarena_gitlab_refresh_concurrency", 1)),
+                read_concurrency=extra.get("webarena_read_concurrency"))
 
         if scorer is not None:
             self.scorer = scorer
@@ -240,12 +279,14 @@ class WebArenaEnv:
                 self.leases.release(lease)
 
         outcome = "PASS" if result["hard"] else "FAIL"
+        # GT lives in the DISTILLED per-evaluator diagnostic (expected=the real
+        # target, never clipped) — not in the old tautological standalone
+        # ground_truth line ({type,success,null} for mutate/navigate) nor a lossy
+        # eval_detail[:2000] clip. Single, complete, correctly-located source.
         result["conversation"] = list(result["conversation"]) + [
             eval_annotation_message(
                 outcome=outcome,
-                ground_truth=json.dumps(_expected(item), ensure_ascii=False),
-                detail=json.dumps(result.get("eval_detail", {}),
-                                  ensure_ascii=False, default=str)[:2000])]
+                detail=_distill_eval(result.get("eval_detail", {})))]
         return common.persist_result(result, pred_dir,
                                      rollout_index=rollout_index,
                                      epoch=epoch, node_id=node_id)
