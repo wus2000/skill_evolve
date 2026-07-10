@@ -219,3 +219,40 @@ class TestTruncation:
         result = _truncate(long, limit=1000)
         assert len(result) < 1200
         assert "TRUNCATED" in result
+
+
+# ── cross-process writer safety (WebArena spawned workers share one file) ────
+
+def _mp_hammer(path: str, n: int, size: int) -> None:
+    """Spawn target: hammer the shared jsonl with large records."""
+    from css.tracing import _JSONLWriter
+    w = _JSONLWriter(path)
+    payload = "x" * size
+    for i in range(n):
+        w.write({"pid": os.getpid(), "i": i, "payload": payload})
+
+
+class TestCrossProcessWriter:
+    def test_concurrent_multiprocess_appends_do_not_interleave(self, tmp_path):
+        """4 spawned processes x 120 records x 64KB lines into ONE file:
+        every line must parse and every (pid, i) must survive — the flock in
+        _JSONLWriter is what makes this hold beyond a single write(2)."""
+        import multiprocessing as mp
+        ctx = mp.get_context("spawn")
+        path = str(tmp_path / "llm_calls.jsonl")
+        procs = [ctx.Process(target=_mp_hammer, args=(path, 120, 64_000))
+                 for _ in range(4)]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(120)
+            assert p.exitcode == 0
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        assert len(lines) == 480
+        seen = set()
+        for ln in lines:
+            rec = json.loads(ln)          # an interleaved line would blow up here
+            assert len(rec["payload"]) == 64_000
+            seen.add((rec["pid"], rec["i"]))
+        assert len(seen) == 480

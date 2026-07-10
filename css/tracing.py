@@ -27,11 +27,24 @@ import threading
 import time
 from typing import Any, Callable
 
+try:  # POSIX only; every runtime we target (Linux servers, macOS dev) has it.
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover — non-POSIX fallback: in-process lock only
+    _fcntl = None
 
-# ── JSONL writer (thread-safe) ───────────────────────────────────────────────
+
+# ── JSONL writer (thread- AND process-safe) ─────────────────────────────────
 
 class _JSONLWriter:
-    """Append-only, thread-safe JSONL file writer."""
+    """Append-only JSONL file writer, safe across threads and processes.
+
+    In-process serialization via ``threading.Lock``; cross-process via
+    ``flock(LOCK_EX)`` around the flush — WebArena's spawned browser workers
+    all append to the SAME file, and a multi-hundred-KB line can exceed one
+    ``write(2)`` syscall, so O_APPEND alone is not enough. The lock rides the
+    fd and dies with the process — no stale-lock hazard. (Would not hold on
+    NFS; run dirs live on local disks.)
+    """
 
     def __init__(self, path: str) -> None:
         self._path = path
@@ -45,7 +58,14 @@ class _JSONLWriter:
         line = json.dumps(record, ensure_ascii=False, default=str)
         with self._lock:
             with open(self._path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+                if _fcntl is not None:
+                    _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
+                try:
+                    f.write(line + "\n")
+                    f.flush()  # all bytes hit the fd while the flock is held
+                finally:
+                    if _fcntl is not None:
+                        _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
 
 
 # ── Global trace sinks ──────────────────────────────────────────────────────
@@ -58,14 +78,17 @@ _call_counter_lock = threading.Lock()
 
 
 def _next_call_id() -> str:
+    """Process-unique call id: the counter is process-local state, and several
+    processes (main + spawned WebArena workers) share one llm_calls.jsonl —
+    the pid keeps trace<->llm_calls cross-references unambiguous."""
     global _call_counter
     with _call_counter_lock:
         cid = _call_counter
         _call_counter += 1
-    return f"call_{cid:06d}"
+    return f"call_{os.getpid()}_{cid:06d}"
 
 
-def init_trace(out_dir: str, *, filename_suffix: str = "") -> str:
+def init_trace(out_dir: str) -> str:
     """Initialize the global trace sinks. Returns the trace file path.
 
     Creates two files:
@@ -76,16 +99,15 @@ def init_trace(out_dir: str, *, filename_suffix: str = "") -> str:
     call verbatim for deep auditability. Events in both files share a ``call_id``
     for cross-reference.
 
-    ``filename_suffix`` (e.g. ``".w3"``) gives a subprocess its OWN pair of
-    files (``trace.w3.jsonl`` / ``llm_calls.w3.jsonl``). The sinks are
-    process-global, so a spawned worker (WebArena multiproc browser workers)
-    must call this itself — and per-process files sidestep the cross-process
-    append-interleaving hazard the in-process threading.Lock cannot cover.
-    Audit tooling should glob ``llm_calls*.jsonl``.
+    The sinks are process-global: a SPAWNED subprocess (WebArena multiproc
+    browser workers) must call this itself with the same ``out_dir``. All
+    processes append to the same two files — cross-process safety comes from
+    the flock in :class:`_JSONLWriter`, and pid-scoped call_ids keep the
+    cross-references unique.
     """
     global _writer, _llm_writer, _call_counter
-    path = os.path.join(out_dir, f"trace{filename_suffix}.jsonl")
-    llm_path = os.path.join(out_dir, f"llm_calls{filename_suffix}.jsonl")
+    path = os.path.join(out_dir, "trace.jsonl")
+    llm_path = os.path.join(out_dir, "llm_calls.jsonl")
     with _trace_lock:
         _writer = _JSONLWriter(path)
         _llm_writer = _JSONLWriter(llm_path)

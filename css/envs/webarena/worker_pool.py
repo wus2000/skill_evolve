@@ -61,13 +61,13 @@ def _worker_main(cfg: Any, wid: int, req_q: Any, res_q: Any,
     # wrap (tree_search.run_css_tree) never reaches this spawned process — so
     # without this block every target/scribe LLM call of a WebArena episode
     # vanished from the audit trail (llm_calls.jsonl stayed 0 bytes while the
-    # thread-pool envs recorded 9 GB). Per-worker files (".wN") avoid
-    # cross-process appends to one jsonl.
+    # thread-pool envs recorded 9 GB). All workers append to the run's single
+    # trace/llm_calls pair; the writer's flock makes that process-safe.
     out_root = str(getattr(cfg, "out_root", "") or "")
     if out_root:
         try:
             from css.tracing import TracingLLMClient, init_trace
-            init_trace(out_root, filename_suffix=f".w{wid}")
+            init_trace(out_root)
             if isinstance(client, TargetOnlyClient):
                 client._inner = TracingLLMClient(client._inner, role="target")
             else:  # defensive: build_clients contract is TargetOnlyClient
