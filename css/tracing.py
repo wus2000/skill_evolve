@@ -65,7 +65,7 @@ def _next_call_id() -> str:
     return f"call_{cid:06d}"
 
 
-def init_trace(out_dir: str) -> str:
+def init_trace(out_dir: str, *, filename_suffix: str = "") -> str:
     """Initialize the global trace sinks. Returns the trace file path.
 
     Creates two files:
@@ -75,10 +75,17 @@ def init_trace(out_dir: str) -> str:
     The split keeps trace.jsonl fast to grep/load while preserving every LLM
     call verbatim for deep auditability. Events in both files share a ``call_id``
     for cross-reference.
+
+    ``filename_suffix`` (e.g. ``".w3"``) gives a subprocess its OWN pair of
+    files (``trace.w3.jsonl`` / ``llm_calls.w3.jsonl``). The sinks are
+    process-global, so a spawned worker (WebArena multiproc browser workers)
+    must call this itself — and per-process files sidestep the cross-process
+    append-interleaving hazard the in-process threading.Lock cannot cover.
+    Audit tooling should glob ``llm_calls*.jsonl``.
     """
     global _writer, _llm_writer, _call_counter
-    path = os.path.join(out_dir, "trace.jsonl")
-    llm_path = os.path.join(out_dir, "llm_calls.jsonl")
+    path = os.path.join(out_dir, f"trace{filename_suffix}.jsonl")
+    llm_path = os.path.join(out_dir, f"llm_calls{filename_suffix}.jsonl")
     with _trace_lock:
         _writer = _JSONLWriter(path)
         _llm_writer = _JSONLWriter(llm_path)

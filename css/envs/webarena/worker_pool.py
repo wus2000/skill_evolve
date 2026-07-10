@@ -52,11 +52,28 @@ def _worker_main(cfg: Any, wid: int, req_q: Any, res_q: Any,
         _ensure_fd_limit()
     except Exception:  # noqa: BLE001
         pass
-    from css.model.client import build_clients
+    from css.model.client import build_clients, TargetOnlyClient
     from css.envs.webarena.browser_loop import BrowserPool
     from css.envs.webarena.agent import run_episode_async
 
     client = build_clients(cfg)[0]     # target client only (own connection pool)
+    # Tracing sinks are process-global and the main process's TracingLLMClient
+    # wrap (tree_search.run_css_tree) never reaches this spawned process — so
+    # without this block every target/scribe LLM call of a WebArena episode
+    # vanished from the audit trail (llm_calls.jsonl stayed 0 bytes while the
+    # thread-pool envs recorded 9 GB). Per-worker files (".wN") avoid
+    # cross-process appends to one jsonl.
+    out_root = str(getattr(cfg, "out_root", "") or "")
+    if out_root:
+        try:
+            from css.tracing import TracingLLMClient, init_trace
+            init_trace(out_root, filename_suffix=f".w{wid}")
+            if isinstance(client, TargetOnlyClient):
+                client._inner = TracingLLMClient(client._inner, role="target")
+            else:  # defensive: build_clients contract is TargetOnlyClient
+                client = TracingLLMClient(client, role="target")
+        except Exception as exc:  # noqa: BLE001 — tracing must never kill a worker
+            _log.warning("worker %d tracing init failed (untraced): %s", wid, exc)
     extra = getattr(cfg, "extra", {}) or {}
     pool = BrowserPool(
         browser_procs=browser_procs, max_contexts=max_contexts,

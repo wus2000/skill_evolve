@@ -128,7 +128,13 @@ def _auth_sites_for(item: dict, lease: "Lease") -> tuple:
 _TRANSIENT_NET = ("ERR_CONNECTION_RESET", "ERR_CONNECTION_REFUSED",
                   "ERR_EMPTY_RESPONSE", "ERR_CONNECTION_CLOSED",
                   "ERR_NETWORK_CHANGED", "ERR_ADDRESS_UNREACHABLE",
-                  "ERR_CONNECTION_TIMED_OUT", "ERR_TIMED_OUT")
+                  "ERR_CONNECTION_TIMED_OUT", "ERR_TIMED_OUT",
+                  # playwright nav timeout ("Page.goto: Timeout 30000ms
+                  # exceeded"): under a burst-start load spike a healthy site
+                  # can miss the 30s nav budget once (measured: wa_0029 on a
+                  # reddit that answered 200/0.22s moments later) — same
+                  # transient-overload class as the ERR_* family.
+                  "ms exceeded")
 
 
 def _is_transient_net(exc: Exception) -> bool:
