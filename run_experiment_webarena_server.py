@@ -59,29 +59,31 @@ def _stack_urls(n: int) -> "dict[str, str]":
             for site, off in _SITE_OFFSET.items()}
 
 
-# Replica stacks provisioned on the farm host 128 (zkgy-gpu, 64 cores / ~196GB
-# free — far more headroom than the contended 162). Each stack = 4 containers,
-# base_url isolated per stack. 2026-07-09 measured footprint: ~6.2GB idle per
-# stack (gitlab 3.6 + shopping 1.2 + admin 1.1 + reddit 0.25). Default 24 stacks
-# (~150GB idle in 128's 251GB) — DOUBLED from 12 to deepen the clean-lane buffer:
-# each mutate task needs an exclusive stack, and refresh (lane cleanup) is
-# HDD-bound, so more stacks = more parallel mutate lanes + more buffer so the
-# eager background refresh replenishes clean lanes before a task waits (raises
-# effective concurrency past the ~25 the 12-stack pool bottlenecked at).
-# Grow with tools/webarena/bring_up_waves.sh <N> <wave> + WEBARENA_STACKS=N.
+# Replica stacks provisioned on the farm host 128 (zkgy-gpu, 64 cores / 251GB).
+# Each stack = 4 containers, base_url isolated per stack. HYBRID daemons
+# (2026-07-09, HDD-aversion driven): the heavy-boot sites — gitlab (reconfigure
+# thrash) + shopping/admin (magento + elasticsearch) — run on a ROOTLESS docker
+# daemon with data-root on /dev/shm (RAM tmpfs, 126GB); only reddit (postgres+
+# rails, light, no ES) runs on the shared HDD daemon. Measured on HDD: gitlab
+# refresh >5min under load and shopping stalled booting ES at 8min, so every
+# heavy site goes to RAM; reddit is HDD-fine (~30s). gitlab's RAM writable is tiny
+# (~0.5GB/stack), so magento's writable is the real budget item.
+# Footprint: RAM images = gitlab 31.6 + shopping 9.9 + admin 2.9 = ~44GB (fixed)
+# + per-stack WARM writable ~7.7GB (gitlab ~0.9 + admin ~0.35 + shopping ~6.5 —
+# shopping's running mysql + elasticsearch DATA lands on the container writable
+# layer, which rootless `docker ps --size` UNDERCOUNTS; the true tmpfs cost only
+# shows in `df /dev/shm`). So N ≈ (90-44)/7.7 ≈ 6 keeps ~36GB tmpfs free for the
+# SHARED host's ~45 tenants (co-tenant safety is the hard limit) — this 6-lane cap
+# is now the throughput ceiling. Lifting it needs magento's DB/ES moved off the
+# per-stack writable (image surgery). reddit data is on the TB HDD, off budget.
+# Grow with WEBARENA_STACKS=N + bring_up_waves.sh <N> <wave> — but WATCH
+# `df /dev/shm`: warm magento can hit 100% and break co-tenants.
 #
-# HDD CAVEAT: 128's docker root (/home/zkgy/docker) is on a spinning disk (sda),
-# so concurrent gitlab boots/reconfigures saturate disk I/O (all-12-at-once
-# thrashed to load 105 / 0 progress; 4 concurrent gitlab reconfigures ~8min each
-# vs ~40s solo). Mitigations: bring up in WAVES (bring_up_waves.sh, 4/wave) and
-# keep webarena_refresh_concurrency LOW (2). Per-stack gitlab BAKING was tried
-# and abandoned: a committed gitlab re-run skips gitlab-ctl reconfigure (env-ctrl
-# sees the baked external_url already correct) and comes up with broken
-# nginx->puma wiring (instant 502). So refresh recreates gitlab from the am1n3e
-# base + live repoint: 163s solo (vs 162's 9-11min — still ~4x better on the idle
-# box), HDD-bound under concurrency. The 12-lane pool + eager background refresh
-# keep refresh off the episode critical path.
-N_STACKS = int(os.environ.get("WEBARENA_STACKS", "24"))
+# gitlab NOTE: refresh = recreate from am1n3e base + live repoint (per-stack
+# BAKING stays abandoned: a baked re-run skips reconfigure -> 502 nginx->puma). On
+# RAM the reconfigure no longer thrashes so its gate goes high (8). Eager
+# background refresh + the deep lane pool keep refresh off the episode critical path.
+N_STACKS = int(os.environ.get("WEBARENA_STACKS", "6"))
 STACKS = {f"s{n}": _stack_urls(n) for n in range(1, N_STACKS + 1)}
 
 # The stack origins WITHOUT any path suffix — health probes, cookie jars and
@@ -116,6 +118,93 @@ def _latest_run_dir() -> "str | None":
     import glob
     runs = sorted(glob.glob("runs/webarena_*"))
     return runs[-1] if runs else None
+
+
+def _run_throughput_probe(cfg, env, target_client, out_root) -> None:
+    """Benchmark-only (env WEBARENA_THROUGHPUT_PROBE=1): measure the TASK-
+    ENVIRONMENT throughput ceiling — browser-context acquire + page nav + AXTree
+    parse, driven through the real multiprocess browser pool + lease scheduler,
+    but WITHOUT the LLM (webarena_scripted_probe short-circuits run_episode_async).
+    Isolates env capacity from LLM latency (which the user said is not the ceiling).
+    Knobs: WEBARENA_PROBE_STEPS (parses/episode, default 8), WEBARENA_PROBE_ITEMS
+    (total episodes, default 640), WEBARENA_PROBE_C (concurrency; default =
+    webarena_max_contexts)."""
+    import time
+    from css.rollout.batch import batch_rollout
+    log = logging.getLogger("css")
+    steps = int(os.environ.get("WEBARENA_PROBE_STEPS", "8"))
+    n_items = int(os.environ.get("WEBARENA_PROBE_ITEMS", "640"))
+    conc = int(os.environ.get("WEBARENA_PROBE_C",
+                              str(cfg.extra.get("webarena_max_contexts", 128))))
+    cfg.extra["webarena_scripted_probe"] = steps   # workers read it at spawn
+    env.scorer = None                              # skip Verified scoring (synthetic ids)
+    if os.environ.get("WEBARENA_PROBE_WORKERS"):   # sweep parse-core count
+        cfg.extra["webarena_worker_procs"] = int(os.environ["WEBARENA_PROBE_WORKERS"])
+
+    # Synthetic READ items across every stack's 4 sites (read task_type => shared
+    # leases => full concurrency). Site mix ~ realistic (shopping/reddit heavy).
+    ph = {"shopping": "__SHOPPING__", "shopping_admin": "__SHOPPING_ADMIN__",
+          "reddit": "__REDDIT__", "gitlab": "__GITLAB__"}
+    mix = ["shopping"] * 4 + ["reddit"] * 3 + ["shopping_admin"] * 2 + ["gitlab"]
+    items = [{"task_id": 900000 + i, "id": f"probe{i}", "intent": "probe",
+              "sites": [mix[i % len(mix)]], "start_urls": [ph[mix[i % len(mix)]]],
+              "eval": {}} for i in range(n_items)]
+
+    def _nt(r):
+        return (r.get("n_turns", 0) if isinstance(r, dict)
+                else int(getattr(r, "n_turns", 0) or 0))
+
+    out_dir = os.path.join(out_root, "throughput_probe")
+    log.info("THROUGHPUT PROBE: %d episodes x %d parses, C=%d, %d stacks",
+             n_items, steps, conc, len(STACKS))
+    t0 = time.time()
+    results = batch_rollout(env, items, "", target_client, k_rollouts=1,
+                            out_dir=out_dir, max_workers=conc,
+                            task_timeout=int(getattr(cfg, "task_timeout_s", 600) or 600))
+    dt = max(1e-6, time.time() - t0)
+    done = sum(1 for r in results if _nt(r) >= 1)
+    full = sum(1 for r in results if _nt(r) >= steps)
+    parses = sum(_nt(r) for r in results)
+    msg = (f"THROUGHPUT_RESULT eps_min={n_items/(dt/60.0):.1f} "
+           f"episodes_ok={done}/{n_items} full_{steps}parse={full} "
+           f"parses_per_s={parses/dt:.1f} wallclock_s={dt:.1f} C={conc}")
+    log.info(msg)
+    print(msg, flush=True)
+
+
+def _run_e2e_measure(cfg, env, target_client, out_root) -> None:
+    """REAL end-to-end throughput (env WEBARENA_E2E_MEASURE=1): one batch_rollout
+    over the train set at C=webarena_max_contexts with the REAL LLM + real Verified
+    scoring + real mutate/refresh (the actual training-pass workload). Reports
+    wall-clock eps/min, pass rate, mean turns. WEBARENA_E2E_ITEMS caps the task
+    count (default: all train); WEBARENA_E2E_C overrides concurrency."""
+    import time
+    from css.rollout.batch import batch_rollout
+    from css.envs.webarena.env import task_type_of
+    log = logging.getLogger("css")
+    items = list(env.train_items())
+    n = int(os.environ.get("WEBARENA_E2E_ITEMS", str(len(items))))
+    items = items[:max(1, n)]
+    conc = int(os.environ.get("WEBARENA_E2E_C",
+                              str(cfg.extra.get("webarena_max_contexts", 128))))
+    n_mut = sum(1 for it in items if task_type_of(it) == "mutate")
+    log.info("E2E MEASURE: %d train tasks (%d mutate / %d read), C=%d, %d stacks, "
+             "REAL LLM+scoring", len(items), n_mut, len(items) - n_mut, conc, len(STACKS))
+    t0 = time.time()
+    results = batch_rollout(env, items, "", target_client, k_rollouts=1,
+                            out_dir=os.path.join(out_root, "e2e_measure"),
+                            max_workers=conc,
+                            task_timeout=int(getattr(cfg, "task_timeout_s", 1800) or 1800))
+    dt = max(1e-6, time.time() - t0)
+    g = lambda r, k: (r.get(k, 0) if isinstance(r, dict) else getattr(r, k, 0))
+    passed = sum(1 for r in results if g(r, "hard"))
+    turns = sum(int(g(r, "n_turns") or 0) for r in results)
+    msg = (f"E2E_RESULT tasks={len(items)} eps_min={len(items)/(dt/60.0):.2f} "
+           f"pass={passed}/{len(items)}({100*passed/max(1,len(items)):.0f}%) "
+           f"mean_turns={turns/max(1,len(items)):.1f} wallclock_min={dt/60.0:.1f} "
+           f"C={conc} mutate={n_mut}")
+    log.info(msg)
+    print(msg, flush=True)
 
 
 def main() -> None:
@@ -157,6 +246,9 @@ def main() -> None:
         batch_size=40,
         k_rollouts=3,
         gate_screen_k=3,   # val=67 (small) -> 3-vote screen per house rule
+        # Latest mechanism (2026-07-10, matches SS/AW): editpipe v3
+        # (plan/draft/review/apply). consolidation stays off (default False).
+        edit_pipeline="v3",
 
         # ── Tree mechanism (agreed 2026-07-05 rulings, shared across envs) ──
         burst_steps=5,
@@ -200,16 +292,28 @@ def main() -> None:
             # per episode (~2-4GB) → capped ~24 on 127; the single-loop async pool
             # then hit the GIL (one event-loop thread = one core). So we run M
             # worker PROCESSES (M cores), each a single-loop async BrowserPool:
-            #   webarena_worker_procs  = M processes = loop cores used. 16 on
-            #     127's 80c (leaves cores for chromium + AW/SS).
+            #   webarena_worker_procs  = M processes = loop cores used. 32 on
+            #     127's 80c (measured 2026-07-09 throughput probe: M=16 -> 9.7
+            #     parses/s / 72.8 short-eps/min; M=32 -> 14.4 parses/s / 107.9
+            #     short-eps/min at C=128, 0 failures over 640+320 episodes; +48%.
+            #     Sub-linear past ~16 cores as page-load/forward transport
+            #     co-limits, so 32 is the knee; 48c left for chromium + AW/SS).
             #   webarena_max_contexts  = TOTAL concurrent episodes; split /M across
-            #     workers. 128 ≈ 16 browsers + 128 ctx ≈ 55-65GB in 127's 111GB.
-            #   webarena_browser_procs = async browsers PER worker (1-2). 16 total.
+            #     workers. 128 total (M=32 -> 4 ctx/worker).
+            #   webarena_browser_procs = async browsers PER worker (1-2).
             # LLM assumed to scale (user ruling 2026-07-09). task_timeout_s bounds
             # a hung episode (worker asyncio.wait_for + main-side grace).
-            "webarena_worker_procs": 16,
+            # 2026-07-10 CORRECTION: C=128 above was validated on a SYNTHETIC
+            # throughput probe (short scripted episodes, 0 failures over 640+320).
+            # The first REAL formal run (long multi-turn episodes; mutate tasks lock
+            # a per-site lane for minutes) hit lane waits up to 29.5min >= the 30min
+            # episode budget -> 49 worker TimeoutErrors + 2 magento containers
+            # OOM-killed (exit 137: wa_shopping_s3, wa_shopping_admin_s2), which
+            # deflated the baseline (val 0.036 was an artifact). Concurrency must
+            # match the 6-stack farm's per-site lane capacity, not a synthetic probe.
+            "webarena_worker_procs": 24,
             "webarena_browser_procs": 1,
-            "webarena_max_contexts": 128,
+            "webarena_max_contexts": 24,
             "webarena_verified_cli":
                 "/home/wushang/miniconda3/envs/webarena/bin/webarena-verified",
             "webarena_env_config": env_config,
@@ -222,15 +326,20 @@ def main() -> None:
             # subprocess ceiling must exceed the farm-side gate.
             "webarena_refresh_cmd": FARM_SSH + " refresh {stack} {site}",
             "webarena_refresh_timeout_s": 1500,
-            # Refresh-storm caps (PER-SITE, scheduler.py). On 128's HDD docker
-            # root concurrent recreates saturate disk I/O; gitlab's recreate is
-            # ~5x slower (163s vs ~30s) so it gets its OWN small gate and the fast
-            # sites (reddit/shopping/admin) share a separate gate — a slow gitlab
-            # refresh no longer starves fast-site refreshes (which was collapsing
-            # the clean-lane supply and queuing mutate tasks). Raise both once the
-            # refresh path is on SSD/tmpfs (HDD is the current write ceiling).
-            "webarena_refresh_concurrency": 3,        # fast sites (shared)
-            "webarena_gitlab_refresh_concurrency": 1,  # gitlab (own, slow)
+            # Refresh-storm caps (PER-SITE, scheduler.py). HYBRID farm (2026-07-09,
+            # HDD-aversion driven): the heavy-boot sites — gitlab (gitlab-ctl
+            # reconfigure = random-write thrash) + shopping/admin (magento +
+            # elasticsearch = disk-heavy boot) — run on the ROOTLESS RAM daemon;
+            # only reddit (postgres+rails, light, no ES) runs on the shared HDD
+            # daemon. Measured on HDD: gitlab refresh >5min under load, shopping
+            # still booting ES at 8min; on RAM all three refresh in ~20-125s with no
+            # thrash, so gates go high. gitlab keeps its own gate (reconfigure is CPU,
+            # ~125s, 8 concurrent fits the 64-core box); the "fast" gate covers
+            # shopping/admin (RAM, ~24s) + reddit (HDD, ~30s, light) — a shared 8 is
+            # ample (their combined demand is well under supply). (docker save stalled
+            # 0-byte on the loaded daemon, so RAM images came via export|import.)
+            "webarena_refresh_concurrency": 8,         # shopping/admin (RAM) + reddit (HDD)
+            "webarena_gitlab_refresh_concurrency": 8,  # gitlab, RAM daemon (no thrash)
             "webarena_har_content": "omit",  # URLs+status suffice for evaluator
             "webarena_nav_timeout_ms": 30000,
             # ── Authentication (css/envs/webarena/auth.py) ──
@@ -264,17 +373,41 @@ def main() -> None:
         },
     )
 
+    if os.environ.get("WEBARENA_L0_ONLY"):
+        # L0-EXPLOITATION-ONLY variant (user request 2026-07-10): root node
+        # bursts only — no spawns, no exploration sessions, no tree branching.
+        # Pure config, no mechanism change:
+        #  - max_decisions = N bursts (a decision = one burst when spawning
+        #    is impossible), default 4 => 20 L0 steps;
+        #  - spawn_supply_lambda=0 => spawn_score==0, arbitration always
+        #    keeps exploiting (ties keep exploiting by design);
+        #  - saturation_dry_bursts=99 => the hard-stall forced-spawn backstop
+        #    can't trigger inside the budget (window 99*5 steps >> 20).
+        # n_val is set to the REAL val size (67): meaningful_delta() reads
+        # cfg.n_val and 0 (=whole split) degenerates the delta to 2.0, which
+        # would misjudge every best as non-meaningful (bug noted 2026-07-10,
+        # mechanism fix to be ruled on separately; 67 == whole split here).
+        cfg.max_decisions = int(os.environ.get("WEBARENA_L0_BURSTS", "4"))
+        cfg.spawn_supply_lambda = 0.0
+        cfg.saturation_dry_bursts = 99
+        cfg.n_val = 67
+        print(f"L0-ONLY variant: bursts={cfg.max_decisions} "
+              f"(spawn disabled, saturation backstop parked)", flush=True)
+
     if smoke:
-        # End-to-end machinery validation, not science: tiny slices, single
-        # rollout, one tree decision, few browsers.
-        cfg.n_train, cfg.n_val, cfg.n_test = 8, 4, 4
+        # GAP-2 mechanism-engagement check (not science): a few tasks, single
+        # rollout, one tree decision — but real concurrency so it finishes fast
+        # (the farm is validated at C=128). Goal: confirm run_css produces
+        # non-empty, sensible rules from the trajectories + distilled eval
+        # feedback and val evaluates, in one round, without crashing.
+        cfg.n_train, cfg.n_val, cfg.n_test = 16, 8, 8
         cfg.k_rollouts = 1
         cfg.gate_screen_k = 1
         cfg.max_decisions = 1
-        cfg.batch_size = 8
-        cfg.extra["webarena_worker_procs"] = 2
+        cfg.batch_size = 16
+        cfg.extra["webarena_worker_procs"] = 16
         cfg.extra["webarena_browser_procs"] = 1
-        cfg.extra["webarena_max_contexts"] = 4
+        cfg.extra["webarena_max_contexts"] = 48
 
     os.makedirs(out_root, exist_ok=True)
     logging.basicConfig(
@@ -286,6 +419,12 @@ def main() -> None:
 
     target_client, optimizer_client = build_clients(cfg)
     env = build_env(cfg)
+    if os.environ.get("WEBARENA_THROUGHPUT_PROBE"):
+        _run_throughput_probe(cfg, env, target_client, out_root)
+        return
+    if os.environ.get("WEBARENA_E2E_MEASURE"):
+        _run_e2e_measure(cfg, env, target_client, out_root)
+        return
     log.info("Train=%d  Val=%d  Test=%d", len(env.train_items()),
              len(env.val_items()), len(env.test_items()))
     log.info("Config: api_workers=%d worker_procs=%s browsers/worker=%s "
@@ -296,7 +435,8 @@ def main() -> None:
 
     run_css(env=env, target_client=target_client,
             optimizer_client=optimizer_client,
-            cfg=cfg, out_dir=out_root, max_rounds=20, resume=resume)
+            cfg=cfg, out_dir=out_root, max_rounds=(1 if smoke else 20),
+            resume=resume)
 
 
 if __name__ == "__main__":
