@@ -203,6 +203,17 @@ class WebArenaEnv:
     def test_items(self) -> "list[dict]":
         return common.slice_split(self._items["test"], self.cfg, "test")
 
+    @property
+    def max_rollout_workers(self) -> int:
+        """Hard rollout-concurrency ceiling = browser-context capacity.
+
+        batch_rollout clamps its thread pool to this: any submitter beyond
+        the context count just queues inside the worker pool while the
+        episode timeout ticks (queue-time ate the whole 30-min budget of the
+        val-tail units on 2026-07-10 — wa_0184 r1/r2 died at turn ~22 to a
+        timeout that had started during the queue wait)."""
+        return int((self.cfg.extra or {}).get("webarena_max_contexts", 24))
+
     def action_space_description(self) -> str:
         from css.envs.webarena.prompts import ACTION_SPACE_DESCRIPTION
         return ACTION_SPACE_DESCRIPTION

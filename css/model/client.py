@@ -985,4 +985,11 @@ def build_clients(cfg: "CSSConfig") -> tuple["TargetOnlyClient", "OptimizerOnlyC
             optimizer_model=cfg.optimizer_model,
             backend=backend,
         )
-    return TargetOnlyClient(inner), OptimizerOnlyClient(inner)
+    # Tracing is baked in HERE, not stitched in by run_css_tree, so every
+    # consumer of build_clients is audited — spawned WebArena workers and
+    # standalone drivers (EX experiment scripts) used to produce 0-byte
+    # llm_calls.jsonl because they never passed through the tree entrypoint.
+    # With no init_trace() sink the wrapper is a transparent no-op.
+    from css.tracing import TracingLLMClient
+    return (TargetOnlyClient(TracingLLMClient(inner, role="target")),
+            OptimizerOnlyClient(TracingLLMClient(inner, role="optimizer")))

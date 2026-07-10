@@ -52,26 +52,22 @@ def _worker_main(cfg: Any, wid: int, req_q: Any, res_q: Any,
         _ensure_fd_limit()
     except Exception:  # noqa: BLE001
         pass
-    from css.model.client import build_clients, TargetOnlyClient
+    from css.model.client import build_clients
     from css.envs.webarena.browser_loop import BrowserPool
     from css.envs.webarena.agent import run_episode_async
 
     client = build_clients(cfg)[0]     # target client only (own connection pool)
-    # Tracing sinks are process-global and the main process's TracingLLMClient
-    # wrap (tree_search.run_css_tree) never reaches this spawned process — so
-    # without this block every target/scribe LLM call of a WebArena episode
-    # vanished from the audit trail (llm_calls.jsonl stayed 0 bytes while the
-    # thread-pool envs recorded 9 GB). All workers append to the run's single
-    # trace/llm_calls pair; the writer's flock makes that process-safe.
+    # Tracing sinks are process-global, so this SPAWNED process must open its
+    # own (build_clients already bakes the TracingLLMClient wrap in; without a
+    # sink it stays a no-op — which is exactly how every target/scribe call of
+    # a WebArena episode used to vanish from the audit trail). All processes
+    # append to the run's single trace/llm_calls pair; the writer's flock
+    # makes that process-safe.
     out_root = str(getattr(cfg, "out_root", "") or "")
     if out_root:
         try:
-            from css.tracing import TracingLLMClient, init_trace
+            from css.tracing import init_trace
             init_trace(out_root)
-            if isinstance(client, TargetOnlyClient):
-                client._inner = TracingLLMClient(client._inner, role="target")
-            else:  # defensive: build_clients contract is TargetOnlyClient
-                client = TracingLLMClient(client, role="target")
         except Exception as exc:  # noqa: BLE001 — tracing must never kill a worker
             _log.warning("worker %d tracing init failed (untraced): %s", wid, exc)
     extra = getattr(cfg, "extra", {}) or {}
@@ -100,7 +96,17 @@ def _worker_main(cfg: Any, wid: int, req_q: Any, res_q: Any,
     _log.info("worker %d up (browsers=%d contexts=%d)", wid, browser_procs,
               max_contexts)
 
+    # Throttle: at most max_contexts episodes SUBMITTED (= timing) at once.
+    # pool.submit wraps the episode in wait_for(timeout) immediately, but the
+    # episode's first await is the context-semaphore acquire — so an eagerly
+    # submitted backlog burns its execution budget queueing (wa_0184 died at
+    # turn ~22 to a timeout that started ticking during the queue wait,
+    # 2026-07-10). Excess requests now stay in req_q, untimed. Defence in
+    # depth: batch_rollout's env.max_rollout_workers clamp should keep the
+    # backlog ~0 in the first place.
+    inflight = threading.Semaphore(max_contexts)
     while True:
+        inflight.acquire()
         msg = req_q.get()
         if msg is None:            # shutdown sentinel
             break
@@ -113,6 +119,8 @@ def _worker_main(cfg: Any, wid: int, req_q: Any, res_q: Any,
             except Exception as exc:  # noqa: BLE001 — episode/timeout error
                 out.put((rid, {"ok": False,
                                "error": f"{type(exc).__name__}: {exc}"[:300]}))
+            finally:
+                inflight.release()
 
         try:
             f = pool.submit(
@@ -123,6 +131,7 @@ def _worker_main(cfg: Any, wid: int, req_q: Any, res_q: Any,
         except Exception as exc:  # noqa: BLE001 — submit itself failed
             out.put((rid, {"ok": False,
                            "error": f"submit: {type(exc).__name__}: {exc}"[:200]}))
+            inflight.release()
 
     out.put(None)
     pool.shutdown()
@@ -201,6 +210,13 @@ class MultiprocBrowserPool:
                 if slot is not None:
                     slot["result"] = payload
                     slot["ev"].set()
+                else:
+                    # A silently dropped result here is indistinguishable from
+                    # a hung episode upstream — say so. (Late arrival after a
+                    # main-side timeout pop is the expected benign cause.)
+                    _log.warning("dispatch: result for unknown rid %s dropped "
+                                 "(ok=%s) — late arrival after timeout?",
+                                 rid, payload.get("ok") if isinstance(payload, dict) else "?")
 
     def _monitor(self) -> None:
         import time

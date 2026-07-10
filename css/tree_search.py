@@ -517,15 +517,32 @@ def run_css_tree(
               burst_steps=cfg.burst_steps, node_degree=cfg.node_degree,
               max_decisions=max_decisions or cfg.max_decisions, resume=resume)
 
-    if isinstance(target_client, TargetOnlyClient):
+    # build_clients now bakes the tracing wrap in (so out-of-tree drivers get
+    # audited too); keep this stitch ONLY for hand-built clients (unit tests,
+    # legacy paths) and never double-wrap.
+    if isinstance(target_client, TargetOnlyClient) and not isinstance(
+            getattr(target_client, "_inner", None), TracingLLMClient):
         target_client._inner = TracingLLMClient(target_client._inner, role="target")
-    if isinstance(optimizer_client, OptimizerOnlyClient):
+    if isinstance(optimizer_client, OptimizerOnlyClient) and not isinstance(
+            getattr(optimizer_client, "_inner", None), TracingLLMClient):
         optimizer_client._inner = TracingLLMClient(optimizer_client._inner, role="optimizer")
 
     spawn = spawner or _unwired_spawner
     do_burst = burst_fn or run_burst
     budget = max_decisions if max_decisions is not None else cfg.max_decisions
     fp = config_fingerprint(cfg)
+    # Normalize the "n_val=0 = whole split" launcher convention AFTER
+    # fingerprinting (old checkpoints hashed the raw 0; changing the input to
+    # the hash would refuse every legacy resume). meaningful_delta() reads
+    # cfg.n_val, and 0 degenerates delta to k/max(1,0) = 2.0 — every new best
+    # would be judged non-meaningful, so every burst looks dry: spurious
+    # saturation + spawn pressure (found on the 2026-07-10 WebArena launch,
+    # where n_train/n_val/n_test are all 0 by convention).
+    if not getattr(cfg, "n_val", 0) and env is not None and hasattr(env, "val_items"):
+        try:
+            cfg.n_val = len(env.val_items())
+        except Exception:  # noqa: BLE001 — envless harness paths stay as-is
+            pass
     decisions: list[dict] = []
     global_best: dict = {}
     ckpt_path = latest_checkpoint(out_dir) if resume else None

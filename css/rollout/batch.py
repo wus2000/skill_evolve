@@ -209,6 +209,18 @@ def batch_rollout(
     results: list[TaskResult] = []
     t0 = time.time()
 
+    # Envs with a hard execution-capacity ceiling (WebArena: 24 browser
+    # contexts) declare it via ``max_rollout_workers``. Submitting more
+    # threads than that just parks units inside the env's own dispatch queue
+    # — where the per-episode timeout is ALREADY ticking, so tail units die
+    # of queue-time, not run-time (wa_0184, 2026-07-10). Clamp here, at the
+    # single choke point every caller goes through.
+    cap = int(getattr(env, "max_rollout_workers", 0) or 0)
+    if cap and cap < max_workers:
+        print(f"  [batch_rollout] max_workers {max_workers} -> {cap} "
+              "(env.max_rollout_workers capacity cap)")
+        max_workers = cap
+
     ex = ThreadPoolExecutor(max_workers=max(1, max_workers))
     try:
         # unit_id -> (future-key) mapping so we can resolve item/index on completion.

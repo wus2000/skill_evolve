@@ -247,7 +247,12 @@ class TestBuildClients:
         target_view, opt_view = build_clients(cfg)
         assert isinstance(target_view, TargetOnlyClient)
         assert isinstance(opt_view, OptimizerOnlyClient)
-        inner = target_view._inner
+        # build_clients bakes the tracing wrap in (audit-everywhere, 2026-07-10);
+        # a sink-less TracingLLMClient is a transparent no-op.
+        from css.tracing import TracingLLMClient
+        wrap = target_view._inner
+        assert isinstance(wrap, TracingLLMClient)
+        inner = wrap._inner
         assert isinstance(inner, OpenAICompatLLMClient)
         assert inner.target_model == "qwen-test"
         assert inner.base_url == "http://10.0.0.1:8888/v1"
@@ -259,7 +264,7 @@ class TestBuildClients:
         # RouterLLMClient will fail on _resolve_backend without skillopt,
         # but construction should succeed.
         target_view, opt_view = build_clients(cfg)
-        assert isinstance(target_view._inner, RouterLLMClient)
+        assert isinstance(target_view._inner._inner, RouterLLMClient)
 
 
 # ── CSSConfig.max_turns ───────────────────────────────────────────────────────
